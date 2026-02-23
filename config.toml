@@ -1,0 +1,20 @@
+[server]
+host = "192.168.128.152"
+port = 5247
+log_level = "Warning"
+
+[gitlab]
+url = "http://192.168.128.147"
+expand_submodule_diffs = false
+pr_commands = [
+    "/describe --pr_description.final_update_message=false",
+    "/review",
+    "/improve",
+]
+handle_push_trigger = false
+push_commands = [
+    "/describe",
+    "/review",
+]
+# Configure SSL validation for GitLab. Can be either set to the path of a custom CA or disabled entirely.
+ssl_verify = false
