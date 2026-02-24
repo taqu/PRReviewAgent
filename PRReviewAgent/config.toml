@@ -4,7 +4,8 @@ port = 5247
 log_level = "Warning"
 
 [gitlab]
-url = "http://192.168.128.147"
+#url = "http://192.168.128.147"
+url = "http://localhost:5001/v1/"
 expand_submodule_diffs = false
 pr_commands = [
     "/describe --pr_description.final_update_message=false",

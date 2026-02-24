@@ -1,4 +1,3 @@
-using GitLabApiClient.Models.Groups.Requests;
 using Newtonsoft.Json;
 
 namespace PRReviewAgent.Services.GitLabWebhook
