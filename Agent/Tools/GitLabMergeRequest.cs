@@ -17,11 +17,11 @@ namespace Agent.Tools
             return mergeRequest_.Description;
         }
 
-        [Description("List commits to review.")]
-        public string GetMergeRequest()
-        {
-            return mergeRequest_.Description;
-        }
+        //[Description("List commits to review.")]
+        //public string GetMergeRequest()
+        //{
+        //    return mergeRequest_.Description;
+        //}
 
         private MergeRequest mergeRequest_;
         private Commit[] commits_;

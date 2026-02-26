@@ -10,6 +10,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc1" />
     <PackageReference Include="NGitLab" Version="11.4.1" />
+    <PackageReference Include="Spectre.Console" Version="0.54.0" />
+    <PackageReference Include="Spectre.Console.Cli" Version="0.53.1" />
   </ItemGroup>
 
 </Project>

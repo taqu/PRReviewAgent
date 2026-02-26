@@ -38,6 +38,7 @@ namespace PRReviewAgent.Services
             NGitLab.IMergeRequestCommitClient mergeRequestCommitClient = mergeRequestClient.Commits(payload_.merge_request.iid);
             NGitLab.Models.Commit[] commits = mergeRequestCommitClient.All.ToArray();
             NGitLab.ICommitClient commitClient = gitLabClient.GetCommits(payload_.project.id);
+            gitLabClient.GetCommitStatus
         }
 
         private PayloadComment payload_;

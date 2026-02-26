@@ -1,14 +1,10 @@
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
-using OpenAI;
-using OpenAI.Chat;
-using System.ClientModel;
-using System.Xml.Linq;
+using Spectre.Console;
 
 namespace Agent
 {
     internal class Program
     {
+        #if false
         static void Main(string[] args)
         {
             OpenAIClientOptions options = new OpenAIClientOptions();
@@ -28,6 +24,21 @@ namespace Agent
             });
 
             Task.Run(async () => Console.WriteLine(await agent.RunAsync("What is the weather like in Amsterdam?"))).Wait();
+        }
+        #endif
+        static void Main(string[] args)
+        {
+            AnsiConsole.Markup("[underline red]こんにちは[/] world!\n");
+
+            var table = new Table();
+            {
+                table.AddColumn("Foo");
+                table.AddColumn(new TableColumn("Bar").Centered());
+
+                table.AddRow("行１列１", "[green]行１列２[/]");
+                table.AddRow(new Markup("[blue]行２列１[/]"), new Panel("行２列２"));
+            }
+            AnsiConsole.Write(table);
         }
     }
 }
