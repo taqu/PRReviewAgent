@@ -1,6 +1,7 @@
 
 using Microsoft.Extensions.Logging;
 using PRReviewAgent.Services;
+using System;
 
 namespace PRReviewAgent
 {
@@ -38,14 +39,12 @@ namespace PRReviewAgent
             builder.Services.AddHostedService<QueuedProcessorBackgroundService>();
             try
             {
-                string url = string.Empty;
-                string accessToken = string.Empty;
-                Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Settings.Instance.Config["gitlab"];
-                url = (string)config["url"];
-                Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Settings.Instance.Secrets["gitlab"];
-                accessToken = (string)secrets["personal_access_token"];
-                GitLabClientService gitLabClientService = new GitLabClientService(url, accessToken);
-                builder.Services.AddSingleton<GitLabClientService>(gitLabClientService);
+                {
+                    Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Settings.Instance.Config["gitlab"];
+                    Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Settings.Instance.Secrets["gitlab"];
+                    GitLabClientService gitLabClientService = new GitLabClientService((string)config["url"], (string)secrets["personal_access_token"]);
+                    builder.Services.AddSingleton<GitLabClientService>(gitLabClientService);
+                }
             }
             catch (Exception ex)
             {

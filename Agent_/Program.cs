@@ -1,4 +1,4 @@
-using Spectre.Console;
+using Terminal.Gui.App;
 
 namespace Agent
 {
@@ -28,17 +28,9 @@ namespace Agent
         #endif
         static void Main(string[] args)
         {
-            AnsiConsole.Markup("[underline red]こんにちは[/] world!\n");
-
-            var table = new Table();
-            {
-                table.AddColumn("Foo");
-                table.AddColumn(new TableColumn("Bar").Centered());
-
-                table.AddRow("行１列１", "[green]行１列２[/]");
-                table.AddRow(new Markup("[blue]行２列１[/]"), new Panel("行２列２"));
-            }
-            AnsiConsole.Write(table);
+            using IApplication app = Application.Create();
+            app.Init();
+            app.Run<MainWindow>();
         }
     }
 }

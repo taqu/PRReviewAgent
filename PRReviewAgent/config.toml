@@ -3,9 +3,19 @@ host = "192.168.128.152"
 port = 5247
 log_level = "Warning"
 
+[agent]
+planner = "http://192.168.128.152:9090/v1/"
+coordinator = "http://192.168.128.152:9090/v1/"
+executor = "http://192.168.128.152:9091/v1/"
+
+planner_name = "Assignor"
+planner_instructions = "You are a review assignor for a pull request. Your answer should be brief."
+
+executor_name = "Reviewer"
+executor_instructions = "You are a reviewer for a pull request. Your review should be correct and strict."
+
 [gitlab]
-#url = "http://192.168.128.147"
-url = "http://localhost:5001/v1/"
+url = "http://192.168.128.147"
 expand_submodule_diffs = false
 pr_commands = [
     "/describe --pr_description.final_update_message=false",

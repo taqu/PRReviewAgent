@@ -5,6 +5,8 @@ VisualStudioVersion = 17.14.37012.4
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PRReviewAgent", "PRReviewAgent\PRReviewAgent.csproj", "{F82767E3-6F87-5D9C-22FD-AC42C25BEA24}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PRReviewAgent.Test", "PRReviewAgent.Test\PRReviewAgent.Test.csproj", "{FB77CD2E-AEF1-4166-9735-588BE6F42EA7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{F82767E3-6F87-5D9C-22FD-AC42C25BEA24}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F82767E3-6F87-5D9C-22FD-AC42C25BEA24}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F82767E3-6F87-5D9C-22FD-AC42C25BEA24}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FB77CD2E-AEF1-4166-9735-588BE6F42EA7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FB77CD2E-AEF1-4166-9735-588BE6F42EA7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FB77CD2E-AEF1-4166-9735-588BE6F42EA7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FB77CD2E-AEF1-4166-9735-588BE6F42EA7}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

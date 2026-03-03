@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using NGitLab.Models;
 using PRReviewAgent.Services.GitLabWebhook;
 
 namespace PRReviewAgent.Services
@@ -12,6 +14,10 @@ namespace PRReviewAgent.Services
         public GitLabWebhookCommentTask(PayloadComment payload)
         {
             payload_ = payload;
+#if DEBUG
+            string json = Newtonsoft.Json.JsonConvert.SerializeObject(payload_, Newtonsoft.Json.Formatting.Indented);
+            System.IO.File.WriteAllText("payload_comment.json", json);
+#endif
         }
 
         public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
@@ -32,13 +38,15 @@ namespace PRReviewAgent.Services
                 },
                 cancellationToken: cancellationToken
                 );
-
-            logger.LogInformation($"Merge Request: {Newtonsoft.Json.JsonConvert.SerializeObject(mergeRequest)}");
-
+#if DEBUG
+            string json = Newtonsoft.Json.JsonConvert.SerializeObject(mergeRequest, Newtonsoft.Json.Formatting.Indented);
+            logger.LogInformation($"Merge Request: {json}");
+            System.IO.File.WriteAllText("mergerequest.json", json);
+#endif
             NGitLab.IMergeRequestCommitClient mergeRequestCommitClient = mergeRequestClient.Commits(payload_.merge_request.iid);
             NGitLab.Models.Commit[] commits = mergeRequestCommitClient.All.ToArray();
             NGitLab.ICommitClient commitClient = gitLabClient.GetCommits(payload_.project.id);
-            gitLabClient.GetCommitStatus
+            //gitLabClient.GetCommitStatus
         }
 
         private PayloadComment payload_;
