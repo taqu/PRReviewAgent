@@ -70,10 +70,40 @@ namespace PRReviewAgent.Tools
             {
                 path = diff.NewPath;
             }
-
             diffs_.Add(new Difference { Change = new Change { path = path, summary = string.Empty }, Diff = diff });
         }
+
+        public Difference? Find(string path)
+        {
+            return diffs_.Find(d => d.Change.path == path);
+        }
+
+        public string? GetReviewDiffs(string[] paths, string language)
+        {
+            string? template = Settings.Instance.GetReviewTemplate(language);
+            if(null == template)
+            {
+                return null;
+            }
+            stringBuilder_.Clear();
+            stringBuilder_.Append(template);
+            stringBuilder_.Append("\n\n");
+                
+            foreach (string path in paths)
+            {
+                Difference? diff = Find(path);
+                if (diff == null)
+                {
+                    continue;
+                }
+                stringBuilder_.Append(path).Append("\n----\n");
+                stringBuilder_.Append(diff.Diff.Difference).Append("\n");
+            }
+            return stringBuilder_.ToString();
+        }
+
         private List<Change> changes_ = new List<Change>();
         private List<Difference> diffs_ = new List<Difference>();
+        private System.Text.StringBuilder stringBuilder_ = new System.Text.StringBuilder();
     }
 }

@@ -48,8 +48,53 @@ namespace PRReviewAgent
                     return false;
                 }
             }
+
+            if (System.IO.Directory.Exists("Templates"))
+            {
+                foreach (string file in System.IO.Directory.EnumerateFiles("Templates", "review.*.md"))
+                {
+                    string filename = System.IO.Path.GetFileName(file);
+                    ReadOnlySpan<char> key = filename.AsSpan().Slice("review.".Length, filename.Length - "review.".Length - ".md".Length);
+                    try
+                    {
+                        string template = System.IO.File.ReadAllText(file);
+                        settings.reviewTemplates_.Add(key.ToString(), template);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                foreach (string file in System.IO.Directory.EnumerateFiles("Templates", "organize.*.md"))
+                {
+                    string filename = System.IO.Path.GetFileName(file);
+                    ReadOnlySpan<char> key = filename.AsSpan().Slice("organize.".Length, filename.Length - "organize.".Length - ".md".Length);
+                    try
+                    {
+                        string template = System.IO.File.ReadAllText(file);
+                        settings.organizeTemplates_.Add(key.ToString(), template);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
             Instance = settings;
             return true;
+        }
+
+        public string? GetReviewTemplate(string lang)
+        {
+            string? template = null;
+            reviewTemplates_.TryGetValue(lang, out template);
+            return template;
+        }
+
+        public string? GetOrganizeTemplate(string lang)
+        {
+            string? template = null;
+            organizeTemplates_.TryGetValue(lang, out template);
+            return template;
         }
 
         public Tomlyn.Model.TomlTable? Secrets => secrets_;
@@ -57,5 +102,7 @@ namespace PRReviewAgent
 
         private Tomlyn.Model.TomlTable? secrets_;
         private Tomlyn.Model.TomlTable? config_;
+        private Dictionary<string, string> reviewTemplates_ = new Dictionary<string, string>();
+        private Dictionary<string, string> organizeTemplates_ = new Dictionary<string, string>();
     }
 }

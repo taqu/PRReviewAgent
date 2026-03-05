@@ -2,6 +2,7 @@ using NGitLab;
 using NGitLab.Impl;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.GitLabWebhook;
+using System.Text;
 using static PRReviewAgent.Tools.GitLabChanges;
 
 namespace PRReviewAgent.Test
@@ -62,9 +63,48 @@ namespace PRReviewAgent.Test
                 Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync($"Summarize a next diff briefly in few lines.\n{diff.Change.path}\n----\n{diff.Diff.Difference}", context.CancellationToken);
                 diff.Change.summary = agentResponse.Text;
             }
+            string changeFilePaths = context.Agents.GitLabChanges.GetChangeFilePaths();
+            Assignments? assignments = await context.Agents.RunExecutorAsync<Assignments>($"Group next diffs in the pull request by relevance and assign file paths to each reviewer.\n```json\n{changeFilePaths}```", context.CancellationToken);
+            if (null == assignments)
             {
-                string json = context.Agents.GitLabChanges.GetChangeFilePaths();
-                Assignments assignments = await context.Agents.RunExecutorAsync<Assignments>($"Group next diffs in the pull request by relevance and assign file paths to each reviewer.\n```json\n{json}```", context.CancellationToken);
+                return;
+            }
+            List<string> reviews = new List<string>();
+            foreach (Assign assign in assignments.assigns)
+            {
+                string? reviewText = context.Agents.GitLabChanges.GetReviewDiffs(assign.paths, "ja");
+                if (string.IsNullOrEmpty(reviewText))
+                {
+                    continue;
+                }
+                try
+                {
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync(reviewText, context.CancellationToken);
+                    if (string.IsNullOrEmpty(agentResponse.Text))
+                    {
+                        continue;
+                    }
+                    reviews.Add(agentResponse.Text);
+                }
+                catch
+                {
+                    continue;
+                }
+            }
+
+            StringBuilder stringBuilder = new StringBuilder();
+            stringBuilder.Append("Organize the following reviews:\n");
+            foreach(string review in reviews)
+            {
+                stringBuilder.Append(review).Append("\n\n");
+            }
+            if(0 < stringBuilder.Length)
+            {
+                Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync(stringBuilder.ToString(), context.CancellationToken);
+                if(!string.IsNullOrEmpty(agentResponse.Text))
+                {
+                    System.IO.File.WriteAllText("result.txt", agentResponse.Text);
+                }
             }
         }
 

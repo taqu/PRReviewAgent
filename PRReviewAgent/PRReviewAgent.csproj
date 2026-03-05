@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="Templates\review.jp.md" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-rc2" />
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
