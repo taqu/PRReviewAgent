@@ -1,5 +1,7 @@
+using Microsoft.Agents.AI;
 using NGitLab;
 using NGitLab.Impl;
+using NGitLab.Models;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.GitLabWebhook;
 using System.Text;
@@ -17,14 +19,10 @@ namespace PRReviewAgent.Test
         {
             try
             {
-                Settings.Initialize();
+                Context.Initialize();
                 {
-                    Context.Initialize();
-                }
-
-                {
-                    Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Settings.Instance.Config["gitlab"];
-                    Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Settings.Instance.Secrets["gitlab"];
+                    Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["gitlab"];
+                    Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["gitlab"];
                     gitLabClient_ = new NGitLab.GitLabClient((string)config["url"], (string)secrets["personal_access_token"]);
                 }
             }
@@ -42,20 +40,41 @@ namespace PRReviewAgent.Test
         [TestMethod]
         public async Task TestCommentPayloadAsync()
         {
+            await Context.Instance.WarmUpAsync();
             PayloadComment? payloadComment = null;
             {
                 string json = System.IO.File.ReadAllText("TestData\\payload_comment.json");
                 payloadComment = Newtonsoft.Json.JsonConvert.DeserializeObject<PayloadComment>(json);
             }
             NGitLab.IMergeRequestClient mergeRequestClient = gitLabClient_.GetMergeRequest(payloadComment.project.id);
+            #if false
+            {
+                IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment.merge_request.iid);
+                MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
+                string result = System.IO.File.ReadAllText("result.md");
+                StringBuilder tempBuilder = new StringBuilder();
+                tempBuilder.Append($"{payloadComment.object_attributes.note}\n\n");
+                tempBuilder.Append(result);
+                mergeRequestCommentEdit.Body = tempBuilder.ToString();
+                try
+                {
+                    mergeRequestCommentClient.Edit(payloadComment.object_attributes.id, mergeRequestCommentEdit);
+                }
+                catch
+                {
+                }
+
+            }
+            #endif
             GitLabCollectionResponse<NGitLab.Models.Diff> response = mergeRequestClient.GetDiffsAsync(payloadComment.merge_request.iid);
             List<NGitLab.Models.Diff> diffs = new List<NGitLab.Models.Diff>();
 
             Context context = Context.Instance;
+            Microsoft.Agents.AI.AgentResponse helloResponse = await context.Agents.RunExecutorAsync("Hello!", context.CancellationToken);
             context.Agents.GitLabChanges.ClearDiffs();
             foreach (NGitLab.Models.Diff diff in response)
             {
-                context.Agents.GitLabChanges.AddDiff(diff);
+                context.Agents.GitLabChanges.AddDiff(diff, context.Settings.IsTargetExtension);
             }
 
             foreach (Difference diff in context.Agents.GitLabChanges.Diffs)
@@ -103,7 +122,22 @@ namespace PRReviewAgent.Test
                 Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync(stringBuilder.ToString(), context.CancellationToken);
                 if(!string.IsNullOrEmpty(agentResponse.Text))
                 {
-                    System.IO.File.WriteAllText("result.txt", agentResponse.Text);
+                    System.IO.File.WriteAllText("result.md", agentResponse.Text);
+
+                    IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment.merge_request.iid);
+                    MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
+                    stringBuilder.Clear();
+                    stringBuilder.Append($"{payloadComment.object_attributes.note}\n\n");
+                    stringBuilder.Append(agentResponse.Text);
+                    mergeRequestCommentEdit.Body = stringBuilder.ToString();
+                    try
+                    {
+                        mergeRequestCommentClient.Edit(payloadComment.object_attributes.id, mergeRequestCommentEdit);
+                    }
+                    catch
+                    {
+                    }
+
                 }
             }
         }

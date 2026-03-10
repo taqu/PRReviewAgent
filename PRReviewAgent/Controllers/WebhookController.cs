@@ -26,10 +26,10 @@ namespace PRReviewAgent.Controllers
         [HttpPost("gitlab")]
         public async Task<IActionResult> ReceiveGitLabWebhook([FromBody] dynamic payload)
         {
-            lock (Settings.Instance)
+            lock (Context.Instance)
             {
                 // Validate the token
-                Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Settings.Instance.Secrets["gitlab"];
+                Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["gitlab"];
                 StringValues token;
                 if (!HttpContext.Request.Headers.TryGetValue(GitlabTokenKey, out token))
                 {
@@ -57,13 +57,21 @@ namespace PRReviewAgent.Controllers
                 {
                     case "Note Hook":
                         {
-                            string str = payload.ToString();
-                            PayloadComment payloadComment = JsonConvert.DeserializeObject<PayloadComment>(str);
+                            PayloadComment payloadComment = JsonConvert.DeserializeObject<PayloadComment>(payload.ToString());
                             if (payloadComment.object_attributes.noteable_type == "MergeRequest" && null != payloadComment.merge_request)
                             {
-                                // Enqueue
-                                GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
-                                taskQueue_.QueueBackgroundWorkItem(gitLabWebhookTask.RunAsync);
+                                ReadOnlySpan<char> line = payloadComment.object_attributes.note.AsSpan().Trim();
+                                int index = line.IndexOfAny("\n\r".AsSpan());
+                                if(0<=index)
+                                {
+                                    line = line.Slice(0, index);
+                                }
+                                if(line .Contains("/review", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    // Enqueue
+                                    GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
+                                    taskQueue_.QueueBackgroundWorkItem(gitLabWebhookTask.RunAsync);
+                                }
                             }
                         }
                         break;

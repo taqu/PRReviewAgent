@@ -7,12 +7,32 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="Templates\organize.en.md" />
+    <None Remove="Templates\organize.ja.md" />
+    <None Remove="Templates\review.en.md" />
+    <None Remove="Templates\review.ja.md" />
     <None Remove="Templates\review.jp.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Templates\organize.en.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Templates\organize.ja.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Templates\review.en.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Templates\review.ja.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-rc2" />
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc2" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Certificate" Version="9.0.13" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="NGitLab" Version="11.4.0" />
     <PackageReference Include="Tomlyn.Signed" Version="0.20.0" />

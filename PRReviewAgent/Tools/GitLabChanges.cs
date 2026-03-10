@@ -40,7 +40,7 @@ namespace PRReviewAgent.Tools
             diffs_.Clear();
         }
 
-        public void AddDiff(NGitLab.Models.Diff diff)
+        public void AddDiff(NGitLab.Models.Diff diff, Func<string, bool> isTarget)
         {
             if (diff.IsDeletedFile)
             {
@@ -70,6 +70,10 @@ namespace PRReviewAgent.Tools
             {
                 path = diff.NewPath;
             }
+            if (!isTarget(path))
+            {
+                return;
+            }
             diffs_.Add(new Difference { Change = new Change { path = path, summary = string.Empty }, Diff = diff });
         }
 
@@ -80,7 +84,7 @@ namespace PRReviewAgent.Tools
 
         public string? GetReviewDiffs(string[] paths, string language)
         {
-            string? template = Settings.Instance.GetReviewTemplate(language);
+            string? template = Context.Instance.Settings.GetReviewTemplate(language);
             if(null == template)
             {
                 return null;
@@ -96,7 +100,7 @@ namespace PRReviewAgent.Tools
                 {
                     continue;
                 }
-                stringBuilder_.Append(path).Append("\n----\n");
+                stringBuilder_.Append("# ").Append(path).Append("\n");
                 stringBuilder_.Append(diff.Diff.Difference).Append("\n");
             }
             return stringBuilder_.ToString();

@@ -1,0 +1,34 @@
+[server]
+url = ""
+log_level = "Warning"
+
+[agent]
+planner = "https://api.openai.com/v1"
+executor = "https://api.openai.com/v1"
+
+planner_name = "Assignor"
+planner_model = "gpt-5-mini"
+planner_instructions = "You are a review assignor for a pull request. Your answer should be brief."
+planner_temperature = 0.1
+planner_thinking_effort = 2 # None:0 Low:1 Medium:2 High:3
+planner_thinking_output = 0 # None:0 Summary:1 Full:2
+planner_timeout = 7200
+
+executor_name = "Reviewer"
+executor_model = "gpt-5-mini"
+executor_instructions = "You are a reviewer for a pull request. Your review should be correct and strict."
+executor_temperature = 0.1
+executor_thinking_effort = 1 # None:0 Low:1 Medium:2 High:3
+executor_thinking_output = 0 # None:0 Summary:1 Full:2
+executor_timeout = 7200
+
+[gitlab]
+url = ""
+ssl_verify = false
+
+[common]
+default_language = "ja"
+
+[review]
+# file extensions to review
+target_extensions = ["c","cpp", "cxx", "cc", "h", "hpp", "inl", "cs", "py", "rs"]

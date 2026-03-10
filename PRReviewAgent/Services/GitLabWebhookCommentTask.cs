@@ -1,8 +1,12 @@
+using Microsoft.Agents.AI;
+using Microsoft.AspNetCore.Mvc.ViewEngines;
+using Microsoft.Extensions.FileSystemGlobbing.Internal;
 using Microsoft.Extensions.Logging;
 using NGitLab;
 using NGitLab.Models;
 using PRReviewAgent.Services.GitLabWebhook;
 using System.Text;
+using System.Text.RegularExpressions;
 using static PRReviewAgent.Tools.GitLabChanges;
 
 namespace PRReviewAgent.Services
@@ -14,9 +18,55 @@ namespace PRReviewAgent.Services
 
     public class GitLabWebhookCommentTask
     {
+        public string FindLanguage()
+        {
+            ReadOnlySpan<char> line = payloadComment_.object_attributes.note.AsSpan().Trim();
+            int index = line.IndexOfAny("\n\r".AsSpan());
+            if (0 <= index)
+            {
+                line = line.Slice(0, index);
+            }
+            for(int i = 0; i < line.Length;)
+            {
+                if ('/' != line[i])
+                {
+                    ++i;
+                    continue;
+                }
+
+                if ((i + 3) <= line.Length)
+                {
+                    ReadOnlySpan<char> lang = line.Slice(i, 3);
+                    if (!char.IsAsciiLetter(lang[1])
+                        || !char.IsAsciiLetter(lang[2]))
+                    {
+                        i += 3;
+                        continue;
+                    }
+                    if ((i + 4) <= line.Length)
+                    {
+                        ReadOnlySpan<char> rest = line.Slice(i + 4);
+                        if (!char.IsWhiteSpace(rest[0]))
+                        {
+                            i += 4;
+                            continue;
+                        }
+                    }
+                    return lang.ToString();
+                }
+            }
+            return string.Empty;
+        }
+
         public GitLabWebhookCommentTask(PayloadComment payloadComment)
         {
             payloadComment_ = payloadComment;
+            language_ = FindLanguage();
+            if (string.IsNullOrEmpty(language_) || !Context.Instance.Settings.HasTemplate(language_))
+            {
+                Tomlyn.Model.TomlTable? commonTable = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["common"];
+                language_ = (string)commonTable["default_language"];
+            }
 #if false
             string json = Newtonsoft.Json.JsonConvert.SerializeObject(payload_, Newtonsoft.Json.Formatting.Indented);
             System.IO.File.WriteAllText("payload_comment.json", json);
@@ -46,7 +96,7 @@ namespace PRReviewAgent.Services
             context.Agents.GitLabChanges.ClearDiffs();
             await foreach (NGitLab.Models.Diff diff in response)
             {
-                context.Agents.GitLabChanges.AddDiff(diff);
+                context.Agents.GitLabChanges.AddDiff(diff, context.Settings.IsTargetExtension);
             }
 
             foreach (Difference diff in context.Agents.GitLabChanges.Diffs)
@@ -84,28 +134,66 @@ namespace PRReviewAgent.Services
             }
 
             StringBuilder stringBuilder = new StringBuilder();
-            string? organizeTemplate = Settings.Instance.GetOrganizeTemplate("ja");
-            if(null != organizeTemplate)
+            if (reviews.Count == 1)
             {
-                stringBuilder.Append(organizeTemplate);
+                stringBuilder.Append(reviews[0]);
             }
-            else {
-                stringBuilder.Append("Organize the following reviews:\n");
-            }
-            foreach(string review in reviews)
+            else
             {
-                stringBuilder.Append(review).Append("\n\n");
+                string? organizeTemplate = Context.Instance.Settings.GetOrganizeTemplate("ja");
+                if (null != organizeTemplate)
+                {
+                    stringBuilder.Append(organizeTemplate);
+                }
+                else
+                {
+                    stringBuilder.Append("Organize the following reviews:\n");
+                }
+                foreach (string review in reviews)
+                {
+                    stringBuilder.Append(review).Append("\n\n");
+                }
             }
-            if(0 < stringBuilder.Length)
+
+            if (0 < stringBuilder.Length)
             {
                 Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync(stringBuilder.ToString(), context.CancellationToken);
                 if(!string.IsNullOrEmpty(agentResponse.Text))
                 {
-                    System.IO.File.WriteAllText("result.txt", agentResponse.Text);
+                    IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
+                    MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
+                    stringBuilder.Clear();
+                    stringBuilder.Append($"{payloadComment_.object_attributes.note}\n\n");
+                    stringBuilder.Append(agentResponse.Text);
+                    mergeRequestCommentEdit.Body = stringBuilder.ToString();
+                    try
+                    {
+                        mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            else
+            {
+                IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
+                MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
+                stringBuilder.Clear();
+                stringBuilder.Append($"{payloadComment_.object_attributes.note}\n\n");
+                stringBuilder.Append("no reviews are generated.");
+                mergeRequestCommentEdit.Body = stringBuilder.ToString();
+                try
+                {
+                    mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+                }
+                catch
+                {
                 }
             }
         }
 
         private PayloadComment payloadComment_;
+        private string language_;
     }
 }

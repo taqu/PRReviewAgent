@@ -8,12 +8,16 @@ using System.Collections.Generic;
 
 namespace PRReviewAgent
 {
-   public class Agents
+    public class Agents
     {
         public Agents()
         {
-            Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Settings.Instance.Config["agent"];
+            Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["github"];
+            string apiKey = (string)secrets["api_key"];
+
+            Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["agent"];
             {
+                string plannerModel = (string)config["planner_model"];
                 double temperature = (double)config["planner_temperature"];
                 long thinkingEffort = (long)config["planner_thinking_effort"];
                 long plannerThinkingOutput = (long)config["planner_thinking_output"];
@@ -22,7 +26,7 @@ namespace PRReviewAgent
                 OpenAIClientOptions options = new OpenAIClientOptions();
                 options.Endpoint = new Uri((string)config["planner"]);
                 options.NetworkTimeout = TimeSpan.FromSeconds(plannerTimeout);
-                plannerChatClient_ = new OpenAI.Chat.ChatClient("gpt-4o-mini", new ApiKeyCredential("XXX"), options);
+                plannerChatClient_ = new OpenAI.Chat.ChatClient(plannerModel, new ApiKeyCredential(apiKey), options);
                 planner_ = plannerChatClient_.AsAIAgent(
                     options: new ChatClientAgentOptions()
                     {
@@ -43,6 +47,7 @@ namespace PRReviewAgent
             }
 
             {
+                string executorModel = (string)config["executor_model"];
                 double temperature = (double)config["executor_temperature"];
                 long thinkingEffort = (long)config["executor_thinking_effort"];
                 long plannerThinkingOutput = (long)config["executor_thinking_output"];
@@ -51,7 +56,7 @@ namespace PRReviewAgent
                 OpenAIClientOptions options = new OpenAIClientOptions();
                 options.Endpoint = new Uri((string)config["executor"]);
                 options.NetworkTimeout = TimeSpan.FromSeconds(executorTimeout);
-                executorChatClient_ = new OpenAI.Chat.ChatClient("gpt-4o-mini", new ApiKeyCredential("XXX"), options);
+                executorChatClient_ = new OpenAI.Chat.ChatClient(executorModel, new ApiKeyCredential(apiKey), options);
                 executor_ = executorChatClient_.AsAIAgent(
                     options: new ChatClientAgentOptions()
                     {
@@ -80,31 +85,53 @@ namespace PRReviewAgent
 
         public async Task<AgentResponse> RunPlannerAsync(string prompt, CancellationToken cancellationToken)
         {
-            AgentResponse response = await planner_.RunAsync(prompt, session_, runOptions_, cancellationToken);
-            return response;
+            try
+            {
+                AgentResponse response = await planner_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+                return response;
+            }
+            catch
+            {
+                return new AgentResponse();
+            }
         }
 
         public async Task<T> RunPlannerAsync<T>(string prompt, CancellationToken cancellationToken)
         {
-            runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
-            AgentResponse response = await planner_.RunAsync(prompt, session_, runOptions_, cancellationToken);
-            runOptions_.ResponseFormat = null;
-            return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
+            try
+            {
+                runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
+                AgentResponse response = await planner_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+                runOptions_.ResponseFormat = null;
+                return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
+            }
+            catch
+            {
+                return default;
+            }
         }
 
         public async Task<AgentResponse> RunExecutorAsync(string prompt, CancellationToken cancellationToken)
         {
-            AgentResponse response = await executor_.RunAsync(prompt);
-            return response;
+            try
+            {
+                AgentResponse response = await executor_.RunAsync(prompt);
+                return response;
+            }
+            catch(Exception e)
+            {
+                return new AgentResponse();
+            }
         }
 
         public async Task<T?> RunExecutorAsync<T>(string prompt, CancellationToken cancellationToken)
         {
-            try {
-            runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
-            AgentResponse response = await executor_.RunAsync(prompt, session_, runOptions_, cancellationToken);
-            runOptions_.ResponseFormat = null;
-            return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
+            try
+            {
+                runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
+                AgentResponse response = await executor_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+                runOptions_.ResponseFormat = null;
+                return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
             }
             catch
             {

@@ -5,11 +5,8 @@ namespace PRReviewAgent
         public const string SecretsFileName = "secrets.toml";
         public const string ConfigFileName = "config.toml";
 
-        public static Settings Instance { get; set; }
-
-        public static bool Initialize()
+        public bool Initialize()
         {
-            Settings settings = new Settings();
             string current = System.IO.Directory.GetCurrentDirectory();
             {
                 string secretsPath = System.IO.Path.Combine(current, SecretsFileName);
@@ -21,7 +18,7 @@ namespace PRReviewAgent
                 try
                 {
                     string text = System.IO.File.ReadAllText(secretsPath);
-                    settings.secrets_ = Tomlyn.Toml.ToModel(text);
+                    secrets_ = Tomlyn.Toml.ToModel(text);
                 }
                 catch(Exception ex)
                 {
@@ -40,12 +37,22 @@ namespace PRReviewAgent
                 try
                 {
                     string text = System.IO.File.ReadAllText(configPath);
-                    settings.config_ = Tomlyn.Toml.ToModel(text);
+                    config_ = Tomlyn.Toml.ToModel(text);
                 }
                 catch(Exception ex)
                 {
                     Console.WriteLine(ex.ToString());
                     return false;
+                }
+
+                {// parse target extensions
+                    Tomlyn.Model.TomlTable? reviewTable = (Tomlyn.Model.TomlTable)config_["review"];
+                    Tomlyn.Model.TomlArray? extensions = (Tomlyn.Model.TomlArray)reviewTable["target_extensions"];
+                    extensions_ = new string[extensions.Count];
+                    for (int i = 0; i < extensions.Count; i++)
+                    {
+                        extensions_[i] = (string)extensions[i];
+                    }
                 }
             }
 
@@ -58,7 +65,7 @@ namespace PRReviewAgent
                     try
                     {
                         string template = System.IO.File.ReadAllText(file);
-                        settings.reviewTemplates_.Add(key.ToString(), template);
+                        reviewTemplates_.Add(key.ToString(), template);
                     }
                     catch
                     {
@@ -72,15 +79,19 @@ namespace PRReviewAgent
                     try
                     {
                         string template = System.IO.File.ReadAllText(file);
-                        settings.organizeTemplates_.Add(key.ToString(), template);
+                        organizeTemplates_.Add(key.ToString(), template);
                     }
                     catch
                     {
                     }
                 }
             }
-            Instance = settings;
             return true;
+        }
+
+        public bool HasTemplate(string lang)
+        {
+            return reviewTemplates_.ContainsKey(lang) && organizeTemplates_.ContainsKey(lang);
         }
 
         public string? GetReviewTemplate(string lang)
@@ -90,11 +101,44 @@ namespace PRReviewAgent
             return template;
         }
 
+        public IEnumerable<string> GetReviewTemplates()
+        {
+            return reviewTemplates_.Values.AsEnumerable<string>();
+        }
+
         public string? GetOrganizeTemplate(string lang)
         {
             string? template = null;
             organizeTemplates_.TryGetValue(lang, out template);
             return template;
+        }
+
+        public IEnumerable<string> GetOrganizeTemplates()
+        {
+            return organizeTemplates_.Values.AsEnumerable<string>();
+        }
+
+        private static string GetExtension(string path)
+        {
+            int index = path.LastIndexOf('.');
+            if (index < 0)
+            {
+                return string.Empty;
+            }
+            return path.Substring(index+1);   
+        }
+
+        public bool IsTargetExtension(string path)
+        {
+            string ext = GetExtension(path);
+            foreach (string extension in extensions_)
+            {
+                if (ext == extension)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         public Tomlyn.Model.TomlTable? Secrets => secrets_;
@@ -104,5 +148,6 @@ namespace PRReviewAgent
         private Tomlyn.Model.TomlTable? config_;
         private Dictionary<string, string> reviewTemplates_ = new Dictionary<string, string>();
         private Dictionary<string, string> organizeTemplates_ = new Dictionary<string, string>();
+        private string[] extensions_ = new string[0];
     }
 }
