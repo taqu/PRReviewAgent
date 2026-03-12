@@ -1,67 +1,25 @@
-using NGitLab;
-using NGitLab.Models;
 using Octokit;
-using PRReviewAgent.Services.GitLabWebhook;
+using PRReviewAgent.Services.GitHubWebhook;
 using System.ComponentModel;
 using System.Text;
 
 namespace PRReviewAgent.Services
 {
-    public class  GitLabWebhookCommentPayload
+    public class GitHubWebhookCommentTask
     {
-        public string object_kind { get; set; }
-    }
-
-    public class GitLabWebhookCommentTask
-    {
-        public static string FindLanguage(string comment)
+        public GitHubWebhookCommentTask(PayloadIssueComment payloadIssueComment)
         {
-            ReadOnlySpan<char> line = comment.AsSpan().Trim();
-            int index = line.IndexOfAny("\n\r".AsSpan());
-            if (0 <= index)
-            {
-                line = line.Slice(0, index);
-            }
-            for(int i = 0; i < line.Length;)
-            {
-                if ('/' != line[i])
-                {
-                    ++i;
-                    continue;
-                }
-
-                if ((i + 3) <= line.Length)
-                {
-                    ReadOnlySpan<char> lang = line.Slice(i, 3);
-                    if (!char.IsAsciiLetter(lang[1])
-                        || !char.IsAsciiLetter(lang[2]))
-                    {
-                        i += 3;
-                        continue;
-                    }
-                    if ((i + 4) <= line.Length)
-                    {
-                        ReadOnlySpan<char> rest = line.Slice(i + 4);
-                        if (!char.IsWhiteSpace(rest[0]))
-                        {
-                            i += 4;
-                            continue;
-                        }
-                    }
-                    return lang.ToString();
-                }
-            }
-            return string.Empty;
-        }
-
-        public GitLabWebhookCommentTask(PayloadComment payloadComment)
-        {
-            payloadComment_ = payloadComment;
-            language_ = FindLanguage(payloadComment_.object_attributes.note);
+            payloadIssueComment_ = payloadIssueComment;
+            language_ = GitLabWebhookCommentTask.FindLanguage(payloadIssueComment_.comment.body);
             if (string.IsNullOrEmpty(language_) || !Context.Instance.Settings.HasTemplate(language_))
             {
                 Tomlyn.Model.TomlTable? commonTable = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["common"];
                 language_ = (string)commonTable["default_language"];
+            }
+            {
+                Uri uri = new Uri(payloadIssueComment_.issue.pull_request.url);
+                string number = uri.Segments[uri.Segments.Length - 1];
+                int.TryParse(number, out pullRequestNumber_);
             }
 #if false
             string json = Newtonsoft.Json.JsonConvert.SerializeObject(payload_, Newtonsoft.Json.Formatting.Indented);
@@ -69,10 +27,18 @@ namespace PRReviewAgent.Services
 #endif
         }
 
+        public class Assign
+        {
+            public int reviewer_number { get; set; }
+            public string[] paths { get; set; }
+        }
+        public record Assignments(
+            Assign[] assigns
+        );
+
         public class Target
         {
-            public NGitLab.Models.Diff Diff { get; set; }
-            public string Path { get; set; }
+            public PullRequestFile File { get; set; }
             public string Summary { get; set; }
         }
 
@@ -88,52 +54,6 @@ namespace PRReviewAgent.Services
             [Description("Changed file paths and summaries")]
             Change[] changes
         );
-
-        public class Assign
-        {
-            public int reviewer_number { get; set; }
-            public string[] paths { get; set; }
-        }
-        public record Assignments(
-            Assign[] assigns
-        );
-
-        public static Target? IsTarget(NGitLab.Models.Diff diff, Func<string, bool> isTarget)
-        {
-            if (diff.IsDeletedFile)
-            {
-                return null;
-            }
-            if (diff.IsRenamedFile)
-            {
-                return null;
-            }
-            if (string.IsNullOrEmpty(diff.Difference))
-            {
-                return null;
-            }
-            string path;
-            if (string.IsNullOrEmpty(diff.NewPath))
-            {
-                if (!string.IsNullOrEmpty(diff.OldPath))
-                {
-                    path = diff.OldPath;
-                }
-                else
-                {
-                    return null;
-                }
-            }
-            else
-            {
-                path = diff.NewPath;
-            }
-            if (!isTarget(path))
-            {
-                return null;
-            }
-            return new Target{ Diff = diff, Path = path, Summary = string.Empty };
-        }
 
         public string? GetReviewDiffs(string[] paths, List<Target> targets)
         {
@@ -151,9 +71,9 @@ namespace PRReviewAgent.Services
                 string diff = string.Empty;
                 foreach(Target target in targets)
                 {
-                    if(target.Path == path)
+                    if(target.File.FileName == path)
                     {
-                        diff = target.Diff.Difference;
+                        diff = target.File.Patch;
                         break;
                     }
                 }
@@ -167,32 +87,36 @@ namespace PRReviewAgent.Services
             return stringBuilder_.ToString();
         }
 
-        public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
+        //public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
+        public async Task RunAsync(Octokit.GitHubClient gitHubClient)
         {
-            ILogger<GitLabWebhookCommentTask>? logger = serviceProvider.GetService<ILogger<GitLabWebhookCommentTask>>();
+            //ILogger<GitHabWebhookCommentTask>? logger = serviceProvider.GetService<ILogger<GitHabWebhookCommentTask>>();
 
+            //Octokit.PullRequest pullRequest = await gitHubClient.PullRequest.Get(payloadIssueComment_.repository.id, pullRequestNumber_);
             Context context = Context.Instance;
 
-            NGitLab.GitLabClient gitLabClient = serviceProvider.GetService<GitLabClientService>().GitLabClient;
-
-            NGitLab.IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest(payloadComment_.project.id);
-            GitLabCollectionResponse<NGitLab.Models.Diff> response = mergeRequestClient.GetDiffsAsync(payloadComment_.merge_request.iid);
+            IReadOnlyList<PullRequestFile> files = await gitHubClient.PullRequest.Files(payloadIssueComment_.repository.id, pullRequestNumber_);
             List<Target> targets = new List<Target>();
-
-            await foreach (NGitLab.Models.Diff diff in response)
+            foreach (PullRequestFile file in files)
             {
-                Target? target = IsTarget(diff, context.Settings.IsTargetExtension);
-                if (null != target)
+                bool isDeleted = !string.IsNullOrEmpty(file.PreviousFileName) && string.IsNullOrEmpty(file.FileName);
+                bool isMoved = !string.IsNullOrEmpty(file.PreviousFileName) && !string.IsNullOrEmpty(file.FileName) && file.PreviousFileName!=file.FileName && string.IsNullOrEmpty(file.Patch);
+                if (isDeleted || isMoved)
                 {
-                    targets.Add(target);
+                    continue;
+                }
+                if (context.Settings.IsTargetExtension(file.FileName))
+                {
+                    targets.Add(new Target() { File = file, Summary = string.Empty });
                 }
             }
 
             foreach (Target target in targets)
             {
-                Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunPlannerAsync($"Summarize a next diff briefly in few lines.\n{target.Path}\n----\n{target.Diff.Difference}", context.CancellationToken);
+                Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunPlannerAsync($"Summarize a next diff briefly in few lines.\n{target.File.FileName}\n----\n{target.File.Patch}", context.CancellationToken);
                 target.Summary = agentResponse.Text;
             }
+
             List<string> reviews = new List<string>();
             {
                 List<Change> changes = new List<Change>(targets.Count);
@@ -202,7 +126,7 @@ namespace PRReviewAgent.Services
                     {
                         continue;
                     }
-                    changes.Add(new Change() { path = target.Path, summary = target.Summary });
+                    changes.Add(new Change() { path = target.File.FileName, summary = target.Summary });
                 }
 
                 string changeFilePaths = Newtonsoft.Json.JsonConvert.SerializeObject(new Changes(changes.ToArray()));
@@ -270,15 +194,13 @@ namespace PRReviewAgent.Services
 
             if (!string.IsNullOrEmpty(organizedReview))
             {
-                IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
-                MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
                 stringBuilder_.Clear();
-                stringBuilder_.Append($"{payloadComment_.object_attributes.note.Trim()}\n\n");
+                stringBuilder_.Append($"{payloadIssueComment_.comment.body.Trim()}\n\n");
                 stringBuilder_.Append(organizedReview);
-                mergeRequestCommentEdit.Body = stringBuilder_.ToString();
+                PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(stringBuilder_.ToString());
                 try
                 {
-                    mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+                    PullRequestReviewComment pullRequestReviewComment = await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
                 }
                 catch
                 {
@@ -286,15 +208,13 @@ namespace PRReviewAgent.Services
             }
             else
             {
-                IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
-                MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
                 stringBuilder_.Clear();
-                stringBuilder_.Append($"{payloadComment_.object_attributes.note.Trim()}\n\n");
+                stringBuilder_.Append($"{payloadIssueComment_.comment.body.Trim()}\n\n");
                 stringBuilder_.Append("no reviews are generated.");
-                mergeRequestCommentEdit.Body = stringBuilder_.ToString();
+                PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(stringBuilder_.ToString());
                 try
                 {
-                    mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+                    await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
                 }
                 catch
                 {
@@ -302,8 +222,9 @@ namespace PRReviewAgent.Services
             }
         }
 
-        private PayloadComment payloadComment_;
+        private PayloadIssueComment payloadIssueComment_;
         private string language_;
+        private int pullRequestNumber_;
         private StringBuilder stringBuilder_ = new StringBuilder();
     }
 }

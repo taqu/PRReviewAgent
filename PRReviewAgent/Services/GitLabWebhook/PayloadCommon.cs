@@ -4,7 +4,7 @@ namespace PRReviewAgent.Services.GitLabWebhook
 {
     public class PayloadUser
     {
-        public int id { get;set; }
+        public long id { get;set; }
         public string name { get; set; }
         public string username { get;set; }
         public string avatar_url { get; set; }
@@ -13,7 +13,7 @@ namespace PRReviewAgent.Services.GitLabWebhook
 
     public class PayloadProject
     {
-        public int id { get;set; }
+        public long id { get;set; }
         public string name { get; set; }
         public string description { get;set; }
         public string web_url { get; set; }
@@ -54,7 +54,7 @@ namespace PRReviewAgent.Services.GitLabWebhook
 
     public class PayloadObjectAttributes
     {
-        public int id { get;set; }
+        public long id { get;set; }
         [JsonProperty("internal")]
         public string Internal { get; set; }
         public string note { get;set; }
@@ -90,7 +90,7 @@ namespace PRReviewAgent.Services.GitLabWebhook
 
     public struct label
     {
-        public int id { get; set; }
+        public long id { get; set; }
         public string title { get; set; }
         public string color { get; set; }
         public string? project_id { get; set; }
@@ -139,12 +139,12 @@ namespace PRReviewAgent.Services.GitLabWebhook
 
     public class PayloadMergeRequest
     {
-        public int id { get;set; }
+        public long id { get;set; }
         public string target_branch { get; set; }
         public string source_branch { get; set; }
         public int source_project_id { get; set; }
-        public int author_id { get; set; }
-        public int assignee_id { get; set; }
+        public long author_id { get; set; }
+        public long assignee_id { get; set; }
 
         public string title { get; set; }
         public string created_at { get; set; }
@@ -153,7 +153,7 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string state { get; set; }
         public string merge_status { get; set; }
         public int target_project_id { get; set; }
-        public int iid { get; set; }
+        public long iid { get; set; }
         public string description { get; set; }
         public int position { get; set; }
         public label[] labels { get; set; }
@@ -168,7 +168,7 @@ namespace PRReviewAgent.Services.GitLabWebhook
 
     public class PayloadIssue
     {
-        public int id { get;set; }
+        public long id { get;set; }
         public string title { get; set; }
         public int[] assignee_ids { get; set; }
         public string? assignee_id { get; set; }
@@ -182,13 +182,13 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string description { get; set; }
         public int? milestone_id { get; set; }
         public string state { get; set; }
-        public int iid { get; set; }
+        public long iid { get; set; }
         public label[] labels { get; set; }
     }
 
     public class PayloadSnippet
     {
-        public int id { get;set; }
+        public long id { get;set; }
         public string title { get; set; }
         public string description { get; set; }
         public string content { get; set; }

@@ -28,6 +28,10 @@ namespace PRReviewAgent.Controllers
         {
             lock (Context.Instance)
             {
+                if(Context.Instance.GitProvider != "gitlab")
+                {
+                    return NotFound();
+                }
                 // Validate the token
                 Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["gitlab"];
                 StringValues token;
@@ -81,6 +85,26 @@ namespace PRReviewAgent.Controllers
             {
                 logger_.LogError(ex.ToString());
                 return BadRequest();
+            }
+            return NotFound();
+        }
+
+        [HttpPost("github")]
+        public async Task<IActionResult> ReceiveGitHubWebhook([FromBody] dynamic payload)
+        {
+            lock (Context.Instance)
+            {
+                if(Context.Instance.GitProvider != "github")
+                {
+                    return NotFound();
+                }
+                try
+                {
+                    System.IO.File.WriteAllText("github_payload.json", payload.ToString());
+                }
+                catch
+                {
+                }
             }
             return NotFound();
         }

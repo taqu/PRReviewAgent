@@ -1,3 +1,5 @@
+using Octokit.Webhooks.Events.Package;
+
 namespace PRReviewAgent
 {
     public class Context
@@ -12,6 +14,7 @@ namespace PRReviewAgent
 
         private static Context context_ = new Context();
 
+        public string GitProvider => (string)((Tomlyn.Model.TomlTable)settigs_.Config["common"])["git_provider"];
         public Settings Settings => settigs_;
         public Agents? Agents => agents_;
         public CancellationToken CancellationToken => CancellationTokenSource_.Token;

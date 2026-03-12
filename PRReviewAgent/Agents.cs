@@ -12,7 +12,7 @@ namespace PRReviewAgent
     {
         public Agents()
         {
-            Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["github"];
+            Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["openai"];
             string apiKey = (string)secrets["api_key"];
 
             Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["agent"];
@@ -39,8 +39,7 @@ namespace PRReviewAgent
                             {
                                 Effort = (ReasoningEffort)Math.Clamp(thinkingEffort, 0, 3),
                                 Output = (ReasoningOutput)Math.Clamp(plannerThinkingOutput, 0, 2),
-                            },
-                            Tools = [AIFunctionFactory.Create(gitLabChanges_.GetChangeFilePaths)]
+                            }
                         },
                     }
                 );
@@ -76,8 +75,6 @@ namespace PRReviewAgent
             }
         }
 
-        public Tools.GitLabChanges GitLabChanges => gitLabChanges_;
-
         public async Task BeginSessionAsync(string prompt, CancellationToken cancellationToken)
         {
             session_ = await planner_.CreateSessionAsync(cancellationToken);
@@ -90,8 +87,9 @@ namespace PRReviewAgent
                 AgentResponse response = await planner_.RunAsync(prompt, session_, runOptions_, cancellationToken);
                 return response;
             }
-            catch
+            catch(Exception e)
             {
+                System.Console.WriteLine(e.ToString()); 
                 return new AgentResponse();
             }
         }
@@ -144,7 +142,6 @@ namespace PRReviewAgent
         private OpenAI.Chat.ChatClient executorChatClient_;
         private AIAgent executor_;
         private AgentRunOptions runOptions_ = new AgentRunOptions();
-        private Tools.GitLabChanges gitLabChanges_ = new Tools.GitLabChanges();
         private AgentSession? session_;
     }
 }

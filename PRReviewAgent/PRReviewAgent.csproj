@@ -35,6 +35,8 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Certificate" Version="9.0.13" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="NGitLab" Version="11.4.0" />
+    <PackageReference Include="Octokit" Version="14.0.0" />
+    <PackageReference Include="Octokit.Webhooks.AspNetCore" Version="3.2.1" />
     <PackageReference Include="Tomlyn.Signed" Version="0.20.0" />
   </ItemGroup>
 

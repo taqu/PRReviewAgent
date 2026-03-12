@@ -1,3 +1,7 @@
+[common]
+default_language = "ja"
+git_provider = "github"
+
 [server]
 url = ""
 log_level = "Warning"
@@ -22,12 +26,13 @@ executor_thinking_effort = 1 # None:0 Low:1 Medium:2 High:3
 executor_thinking_output = 0 # None:0 Summary:1 Full:2
 executor_timeout = 7200
 
+[github]
+name = ""
+ssl_verify = true
+
 [gitlab]
 url = ""
 ssl_verify = false
-
-[common]
-default_language = "ja"
 
 [review]
 # file extensions to review

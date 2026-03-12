@@ -1,5 +1,6 @@
 
 using Microsoft.AspNetCore.Authentication.Certificate;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PRReviewAgent.Services;
 using System;
@@ -36,26 +37,38 @@ namespace PRReviewAgent
             // Add services to the container.
 
             builder.Services.AddControllers();
-            //builder.Services.AddOpenApi();
             builder.Services.AddSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>();
             builder.Services.AddHostedService<QueuedProcessorBackgroundService>();
             bool ssl_verify = false;
             try
             {
-                {
+                switch (Context.Instance.GitProvider) {
+                case "github":
+                        {
+                            Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["github"];
+                            Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["github"];
+                            GitHubClientService gitHubClientService = new GitHubClientService((string)config["name"], (string)secrets["personal_access_token"]);
+                            builder.Services.AddSingleton<GitHubClientService>(gitHubClientService);
+                            ssl_verify = (bool)config["ssl_verify"];
+                        }
+                        break;
+                case "gitlab":
+                        {
                     Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["gitlab"];
                     Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["gitlab"];
                     GitLabClientService gitLabClientService = new GitLabClientService((string)config["url"], (string)secrets["personal_access_token"]);
                     builder.Services.AddSingleton<GitLabClientService>(gitLabClientService);
-
                     ssl_verify = (bool)config["ssl_verify"];
-                    if (ssl_verify)
-                    {
-                        builder.Services.AddAuthentication(
-                            CertificateAuthenticationDefaults.AuthenticationScheme)
-                        .AddCertificate();
                     }
+                        break;
                 }
+                if (ssl_verify)
+                {
+                    builder.Services.AddAuthentication(
+                        CertificateAuthenticationDefaults.AuthenticationScheme)
+                    .AddCertificate();
+                }
+
             }
             catch (Exception ex)
             {

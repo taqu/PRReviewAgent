@@ -8,10 +8,18 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="TestData\github_payload.json" />
+    <None Remove="TestData\mergerequest.json" />
     <None Remove="TestData\payload_comment.json" />
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="TestData\github_payload.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="TestData\mergerequest.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="TestData\payload_comment.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
