@@ -5,6 +5,8 @@ git_provider = "github"
 [server]
 url = ""
 log_level = "Warning"
+trust_certificate = false # always trust certificate
+trusted_certificates = [""]
 
 [agent]
 planner = "https://api.openai.com/v1"

@@ -48,6 +48,7 @@ namespace PRReviewAgent.Services
                             continue;
                         }
                     }
+                    lang = lang.Slice(1);
                     return lang.ToString();
                 }
             }
@@ -273,7 +274,6 @@ namespace PRReviewAgent.Services
                 IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
                 MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
                 stringBuilder_.Clear();
-                stringBuilder_.Append($"{payloadComment_.object_attributes.note.Trim()}\n\n");
                 stringBuilder_.Append(organizedReview);
                 mergeRequestCommentEdit.Body = stringBuilder_.ToString();
                 try
@@ -289,7 +289,6 @@ namespace PRReviewAgent.Services
                 IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
                 MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
                 stringBuilder_.Clear();
-                stringBuilder_.Append($"{payloadComment_.object_attributes.note.Trim()}\n\n");
                 stringBuilder_.Append("no reviews are generated.");
                 mergeRequestCommentEdit.Body = stringBuilder_.ToString();
                 try

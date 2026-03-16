@@ -195,7 +195,6 @@ namespace PRReviewAgent.Services
             if (!string.IsNullOrEmpty(organizedReview))
             {
                 stringBuilder_.Clear();
-                stringBuilder_.Append($"{payloadIssueComment_.comment.body.Trim()}\n\n");
                 stringBuilder_.Append(organizedReview);
                 PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(stringBuilder_.ToString());
                 try
@@ -209,7 +208,6 @@ namespace PRReviewAgent.Services
             else
             {
                 stringBuilder_.Clear();
-                stringBuilder_.Append($"{payloadIssueComment_.comment.body.Trim()}\n\n");
                 stringBuilder_.Append("no reviews are generated.");
                 PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(stringBuilder_.ToString());
                 try

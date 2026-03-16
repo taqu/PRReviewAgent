@@ -4,17 +4,46 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PRReviewAgent.Services;
 using System;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
 
 namespace PRReviewAgent
 {
     public class Program
     {
+        private static bool RemoteCertificateValidationCallback(
+            Object sender,
+            X509Certificate certificate,
+            X509Chain chain,
+            SslPolicyErrors sslPolicyErrors)
+        {
+            if(SslPolicyErrors.None == sslPolicyErrors)
+            {
+                return true;
+            }
+            Tomlyn.Model.TomlTable config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["server"];
+            if ((bool)config["trust_certificate"])
+            {
+                return true;
+            }
+            string[] trusted_certificates = (string[])config["trusted_certificates"];
+            foreach (string cert in trusted_certificates)
+            {
+                if(cert == certificate.Subject)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         public static void Main(string[] args)
         {
             if (!Context.Initialize())
             {
                 return;
             }
+            System.Net.ServicePointManager.ServerCertificateValidationCallback += RemoteCertificateValidationCallback;
 
             WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
             builder.Logging.ClearProviders();
