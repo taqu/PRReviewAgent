@@ -87,12 +87,12 @@ namespace PRReviewAgent.Services
             return stringBuilder_.ToString();
         }
 
-        //public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
-        public async Task RunAsync(Octokit.GitHubClient gitHubClient)
+        public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
         {
-            //ILogger<GitHabWebhookCommentTask>? logger = serviceProvider.GetService<ILogger<GitHabWebhookCommentTask>>();
+            ILogger<GitHubWebhookCommentTask>? logger = serviceProvider.GetService<ILogger<GitHubWebhookCommentTask>>();
 
-            //Octokit.PullRequest pullRequest = await gitHubClient.PullRequest.Get(payloadIssueComment_.repository.id, pullRequestNumber_);
+            Octokit.GitHubClient gitHubClient = serviceProvider.GetService<GitHubClientService>().GitHubClient;
+
             Context context = Context.Instance;
 
             IReadOnlyList<PullRequestFile> files = await gitHubClient.PullRequest.Files(payloadIssueComment_.repository.id, pullRequestNumber_);
@@ -201,8 +201,9 @@ namespace PRReviewAgent.Services
                 {
                     PullRequestReviewComment pullRequestReviewComment = await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
                 }
-                catch
+                catch(Exception ex)
                 {
+                    logger.LogError(ex.Message);
                 }
             }
             else
@@ -214,8 +215,9 @@ namespace PRReviewAgent.Services
                 {
                     await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
                 }
-                catch
+                catch(Exception ex)
                 {
+                    logger.LogError(ex.Message);
                 }
             }
         }

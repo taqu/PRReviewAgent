@@ -1,7 +1,9 @@
+using NGitLab;
 using Octokit;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.GitHubWebhook;
 using PRReviewAgent.Services.GitLabWebhook;
+using System.Text;
 using System.Xml.Linq;
 
 namespace PRReviewAgent.Test;
@@ -41,8 +43,21 @@ public class TestOpenAI
             string json = System.IO.File.ReadAllText("TestData\\github_payload.json");
             issueComment = Newtonsoft.Json.JsonConvert.DeserializeObject<PayloadIssueComment>(json);
         }
+        {
+                try
+                {
+                    //PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit("comment test");
+                    //PullRequestReviewComment pullRequestReviewComment = await gitHubClient_.PullRequest.ReviewComment.Edit(issueComment.repository.owner.login, issueComment.repository.name, issueComment.comment.id, pullRequestReviewCommentEdit);
+PullRequestReviewCommentReplyCreate pullRequestReviewCommentReplyCreate = new PullRequestReviewCommentReplyCreate("comment test", issueComment.comment.id);
+                await gitHubClient_.PullRequest.ReviewComment.CreateReply(issueComment.repository.id, issueComment.issue.number, pullRequestReviewCommentReplyCreate);
+                }
+                catch(Exception ex)
+                {
+                System.Console.WriteLine(ex.Message);
+                }
+        }
 
-        GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(issueComment);
-        await gitHubWebhookCommentTask.RunAsync(gitHubClient_);
+        //GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(issueComment);
+        //await gitHubWebhookCommentTask.RunAsync(gitHubClient_);
     }
 }

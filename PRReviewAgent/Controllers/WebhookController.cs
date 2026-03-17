@@ -2,7 +2,6 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Primitives;
 using Newtonsoft.Json;
 using PRReviewAgent.Services;
-using PRReviewAgent.Services.GitLabWebhook;
 
 namespace PRReviewAgent.Controllers
 {
@@ -28,7 +27,7 @@ namespace PRReviewAgent.Controllers
         {
             lock (Context.Instance)
             {
-                if(Context.Instance.GitProvider != "gitlab")
+                if (Context.Instance.GitProvider != "gitlab")
                 {
                     return NotFound();
                 }
@@ -46,12 +45,12 @@ namespace PRReviewAgent.Controllers
                     return BadRequest();
                 }
             }
-            if(!HttpContext.Request.Headers.TryGetValue(GitlabEvent, out StringValues eventType))
+            if (!HttpContext.Request.Headers.TryGetValue(GitlabEvent, out StringValues eventType))
             {
                 return BadRequest();
             }
 
-            if(!HttpContext.Request.Headers.TryGetValue(GitlabEventUUIDKey, out StringValues eventUUID))
+            if (!HttpContext.Request.Headers.TryGetValue(GitlabEventUUIDKey, out StringValues eventUUID))
             {
                 return BadRequest();
             }
@@ -61,16 +60,16 @@ namespace PRReviewAgent.Controllers
                 {
                     case "Note Hook":
                         {
-                            PayloadComment payloadComment = JsonConvert.DeserializeObject<PayloadComment>(payload.ToString());
+                            Services.GitLabWebhook.PayloadComment payloadComment = JsonConvert.DeserializeObject<Services.GitLabWebhook.PayloadComment>(payload.ToString());
                             if (payloadComment.object_attributes.noteable_type == "MergeRequest" && null != payloadComment.merge_request)
                             {
                                 ReadOnlySpan<char> line = payloadComment.object_attributes.note.AsSpan().Trim();
                                 int index = line.IndexOfAny("\n\r".AsSpan());
-                                if(0<=index)
+                                if (0 <= index)
                                 {
                                     line = line.Slice(0, index);
                                 }
-                                if(line .Contains("/review", StringComparison.OrdinalIgnoreCase))
+                                if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
                                 {
                                     // Enqueue
                                     GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
@@ -81,7 +80,7 @@ namespace PRReviewAgent.Controllers
                         break;
                 }
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 logger_.LogError(ex.ToString());
                 return BadRequest();
@@ -94,16 +93,32 @@ namespace PRReviewAgent.Controllers
         {
             lock (Context.Instance)
             {
-                if(Context.Instance.GitProvider != "github")
+                if (Context.Instance.GitProvider != "github")
                 {
                     return NotFound();
                 }
                 try
                 {
-                    System.IO.File.WriteAllText("github_payload.json", payload.ToString());
+                    Services.GitHubWebhook.PayloadIssueComment payloadIssueComment = JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadIssueComment>(payload.ToString());
+                    ReadOnlySpan<char> line = payloadIssueComment.comment.body.AsSpan().Trim();
+                    int index = line.IndexOfAny("\n\r".AsSpan());
+                    if (0 <= index)
+                    {
+                        line = line.Slice(0, index);
+                    }
+                    if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Enqueue
+                        GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
+                        taskQueue_.QueueBackgroundWorkItem(gitHubWebhookCommentTask.RunAsync);
+                    }
+
+                    //System.IO.File.WriteAllText("github_payload.json", payload.ToString());
                 }
-                catch
+                catch (Exception ex)
                 {
+                    logger_.LogError(ex.ToString());
+                    return BadRequest();
                 }
             }
             return NotFound();

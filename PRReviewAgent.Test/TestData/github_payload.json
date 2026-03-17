@@ -37,9 +37,9 @@
         "locked": false,
         "assignees": [],
         "milestone": null,
-        "comments": 6,
+        "comments": 9,
         "created_at": "2026-03-12T14:34:28Z",
-        "updated_at": "2026-03-12T15:03:38Z",
+        "updated_at": "2026-03-17T21:00:56Z",
         "closed_at": null,
         "assignee": null,
         "author_association": "OWNER",
@@ -70,11 +70,11 @@
         "state_reason": null
     },
     "comment": {
-        "url": "https://api.github.com/repos/taqu/pathtrace/issues/comments/4047470667",
-        "html_url": "https://github.com/taqu/pathtrace/pull/1#issuecomment-4047470667",
+        "url": "https://api.github.com/repos/taqu/pathtrace/issues/comments/4077983252",
+        "html_url": "https://github.com/taqu/pathtrace/pull/1#issuecomment-4077983252",
         "issue_url": "https://api.github.com/repos/taqu/pathtrace/issues/1",
-        "id": 4047470667,
-        "node_id": "IC_kwDORlPEWM7xP4BL",
+        "id": 4077983252,
+        "node_id": "IC_kwDORlPEWM7zERYU",
         "user": {
             "login": "taqu",
             "id": 362423,
@@ -96,12 +96,12 @@
             "user_view_type": "public",
             "site_admin": false
         },
-        "created_at": "2026-03-12T15:03:38Z",
-        "updated_at": "2026-03-12T15:03:38Z",
+        "created_at": "2026-03-17T21:00:56Z",
+        "updated_at": "2026-03-17T21:00:56Z",
         "body": "/review",
         "author_association": "OWNER",
         "reactions": {
-            "url": "https://api.github.com/repos/taqu/pathtrace/issues/comments/4047470667/reactions",
+            "url": "https://api.github.com/repos/taqu/pathtrace/issues/comments/4077983252/reactions",
             "total_count": 0,
             "+1": 0,
             "-1": 0,
