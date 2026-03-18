@@ -74,6 +74,7 @@ namespace PRReviewAgent.Controllers
                                     // Enqueue
                                     GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
                                     taskQueue_.QueueBackgroundWorkItem(gitLabWebhookTask.RunAsync);
+                                    return Ok();
                                 }
                             }
                         }
@@ -111,9 +112,8 @@ namespace PRReviewAgent.Controllers
                         // Enqueue
                         GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
                         taskQueue_.QueueBackgroundWorkItem(gitHubWebhookCommentTask.RunAsync);
+                        return Ok();
                     }
-
-                    //System.IO.File.WriteAllText("github_payload.json", payload.ToString());
                 }
                 catch (Exception ex)
                 {

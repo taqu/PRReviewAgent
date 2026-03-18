@@ -1,2 +1,2 @@
-Organize the following reviews:
+Organize the following reviews without greetings:
 

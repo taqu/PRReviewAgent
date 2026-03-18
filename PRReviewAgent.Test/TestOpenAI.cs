@@ -44,17 +44,17 @@ public class TestOpenAI
             issueComment = Newtonsoft.Json.JsonConvert.DeserializeObject<PayloadIssueComment>(json);
         }
         {
-                try
-                {
-                    //PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit("comment test");
-                    //PullRequestReviewComment pullRequestReviewComment = await gitHubClient_.PullRequest.ReviewComment.Edit(issueComment.repository.owner.login, issueComment.repository.name, issueComment.comment.id, pullRequestReviewCommentEdit);
-PullRequestReviewCommentReplyCreate pullRequestReviewCommentReplyCreate = new PullRequestReviewCommentReplyCreate("comment test", issueComment.comment.id);
+            try
+            {
+                //PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit("comment test");
+                //PullRequestReviewComment pullRequestReviewComment = await gitHubClient_.PullRequest.ReviewComment.Edit(issueComment.repository.owner.login, issueComment.repository.name, issueComment.comment.id, pullRequestReviewCommentEdit);
+                PullRequestReviewCommentReplyCreate pullRequestReviewCommentReplyCreate = new PullRequestReviewCommentReplyCreate("comment test", issueComment.comment.id);
                 await gitHubClient_.PullRequest.ReviewComment.CreateReply(issueComment.repository.id, issueComment.issue.number, pullRequestReviewCommentReplyCreate);
-                }
-                catch(Exception ex)
-                {
+            }
+            catch (Exception ex)
+            {
                 System.Console.WriteLine(ex.Message);
-                }
+            }
         }
 
         //GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(issueComment);

@@ -3,10 +3,13 @@ Please review the pull request in **English**, following the guidelines below.
 # Code Review Guidelines
 
 ## 1. Introduction
+### 1.0 Code Review Writing
+* No greetings or praise are necessary.
+* Polite phrasing is not required.
+* Refer only to facts in the code; do not include speculation.
 
 ### 1.1 Purpose of Code Review
 Code review is an important process for maintaining and improving the quality of both the code and the product. The main purposes are as follows:
-
 * **Maintain and improve the health of the codebase:** Gradually improve the overall quality of the codebase over time.
 * **Early detection of bugs:** Identify mistakes and potential issues during the implementation stage.
 * **Knowledge sharing and learning:** Promote knowledge sharing among team members and improve developers' skills.
@@ -21,7 +24,6 @@ Code review is an important process for maintaining and improving the quality of
 * **Distinguish between “preference” and “good vs. bad”:** Clearly indicate whether feedback is an objective improvement suggestion (good vs. bad) or a subjective preference, and explain the reasoning.
 
 # 2. Design
-
 ## 2.1 Responsibility, Cohesion, and Coupling
 * **Single Responsibility Principle (SRP):** A class or method should have one clear responsibility. Avoid combining multiple unrelated tasks in a single unit.
 * **High cohesion and loose coupling:** Keep closely related code together (high cohesion) while minimizing dependencies between modules (loose coupling). This reduces the impact of changes.

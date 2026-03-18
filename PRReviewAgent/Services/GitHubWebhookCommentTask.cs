@@ -181,6 +181,7 @@ namespace PRReviewAgent.Services
                 }
                 try
                 {
+                    System.IO.File.WriteAllText("github_result.txt", stringBuilder_.ToString());
                     Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync(stringBuilder_.ToString(), context.CancellationToken);
                     if (!string.IsNullOrEmpty(agentResponse.Text))
                     {
