@@ -60,31 +60,16 @@ namespace PRReviewAgent
 
         public async Task<AgentResponse> RunAsync(Type type, string prompt, CancellationToken cancellationToken)
         {
-            try
-            {
-                AgentResponse response = await agents_[(int)type].aiAgent_.RunAsync(prompt, session_, runOptions_, cancellationToken);
-                return response;
-            }
-            catch(Exception e)
-            {
-                System.Console.WriteLine(e.ToString()); 
-                return new AgentResponse();
-            }
+            AgentResponse response = await agents_[(int)type].aiAgent_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+            return response;
         }
 
         public async Task<T> RunAsync<T>(Type type, string prompt, CancellationToken cancellationToken)
         {
-            try
-            {
-                runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
-                AgentResponse response = await agents_[(int)type].aiAgent_.RunAsync(prompt, session_, runOptions_, cancellationToken);
-                runOptions_.ResponseFormat = null;
-                return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
-            }
-            catch
-            {
-                return default;
-            }
+            runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
+            AgentResponse response = await agents_[(int)type].aiAgent_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+            runOptions_.ResponseFormat = null;
+            return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
         }
 
         private struct Agent

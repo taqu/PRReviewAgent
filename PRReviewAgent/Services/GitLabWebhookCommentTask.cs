@@ -191,8 +191,15 @@ namespace PRReviewAgent.Services
 
             foreach (Target target in targets)
             {
-                Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Summarize a next diff briefly in few lines.\n{target.Path}\n----\n{target.Diff.Difference}", context.CancellationToken);
-                target.Summary = agentResponse.Text;
+                try
+                {
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Summarize a next diff briefly in few lines.\n{target.Path}\n----\n{target.Diff.Difference}", context.CancellationToken);
+                    target.Summary = agentResponse.Text;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex.ToString());
+                }
             }
             List<string> reviews = new List<string>();
             {
@@ -207,9 +214,14 @@ namespace PRReviewAgent.Services
                 }
 
                 string changeFilePaths = Newtonsoft.Json.JsonConvert.SerializeObject(new Changes(changes.ToArray()));
-                Assignments? assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
-                if (null == assignments)
+                Assignments? assignments = null;
+                try
                 {
+                    assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex.ToString());
                     return;
                 }
                 foreach (Assign assign in assignments.assigns)
@@ -228,8 +240,9 @@ namespace PRReviewAgent.Services
                         }
                         reviews.Add(agentResponse.Text);
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        logger.LogError(ex.ToString());
                         continue;
                     }
                 }
@@ -278,10 +291,11 @@ namespace PRReviewAgent.Services
                 mergeRequestCommentEdit.Body = stringBuilder_.ToString();
                 try
                 {
-                    mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+                    MergeRequestComment _ = mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
                 }
-                catch
+                catch(Exception ex)
                 {
+                    logger.LogError(ex.Message);
                 }
             }
             else
@@ -293,10 +307,11 @@ namespace PRReviewAgent.Services
                 mergeRequestCommentEdit.Body = stringBuilder_.ToString();
                 try
                 {
-                    mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+                    MergeRequestComment _ = mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
                 }
-                catch
+                catch(Exception ex)
                 {
+                    logger.LogError(ex.Message);
                 }
             }
         }

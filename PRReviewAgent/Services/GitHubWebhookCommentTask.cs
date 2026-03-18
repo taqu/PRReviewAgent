@@ -113,8 +113,15 @@ namespace PRReviewAgent.Services
 
             foreach (Target target in targets)
             {
-                Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Summarize a next diff briefly in few lines.\n{target.File.FileName}\n----\n{target.File.Patch}", context.CancellationToken);
-                target.Summary = agentResponse.Text;
+                try
+                {
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Summarize a next diff briefly in few lines.\n{target.File.FileName}\n----\n{target.File.Patch}", context.CancellationToken);
+                    target.Summary = agentResponse.Text;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex.ToString());
+                }
             }
 
             List<string> reviews = new List<string>();
@@ -130,9 +137,14 @@ namespace PRReviewAgent.Services
                 }
 
                 string changeFilePaths = Newtonsoft.Json.JsonConvert.SerializeObject(new Changes(changes.ToArray()));
-                Assignments? assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
-                if (null == assignments)
+                Assignments? assignments = null;
+                try
                 {
+                    assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex.ToString());
                     return;
                 }
                 foreach (Assign assign in assignments.assigns)
@@ -151,8 +163,9 @@ namespace PRReviewAgent.Services
                         }
                         reviews.Add(agentResponse.Text);
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        logger.LogError(ex.ToString());
                         continue;
                     }
                 }
@@ -187,8 +200,9 @@ namespace PRReviewAgent.Services
                         organizedReview = agentResponse.Text;
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    logger.LogError(ex.ToString());
                 }
             }
 
@@ -199,7 +213,7 @@ namespace PRReviewAgent.Services
                 PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(stringBuilder_.ToString());
                 try
                 {
-                    PullRequestReviewComment pullRequestReviewComment = await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
+                    PullRequestReviewComment _ = await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
                 }
                 catch(Exception ex)
                 {

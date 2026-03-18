@@ -7,6 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="config.toml" />
+    <None Remove="secrets.toml" />
     <None Remove="Templates\organize.en.md" />
     <None Remove="Templates\organize.ja.md" />
     <None Remove="Templates\review.en.md" />
@@ -15,6 +17,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="config.toml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="secrets.toml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Templates\organize.en.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -38,15 +46,6 @@
     <PackageReference Include="Octokit" Version="14.0.0" />
     <PackageReference Include="Octokit.Webhooks.AspNetCore" Version="3.2.1" />
     <PackageReference Include="Tomlyn.Signed" Version="0.20.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Update="config.toml">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="secrets.toml">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
   </ItemGroup>
 
 </Project>
