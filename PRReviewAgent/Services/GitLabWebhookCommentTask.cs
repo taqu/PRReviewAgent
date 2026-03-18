@@ -285,10 +285,10 @@ namespace PRReviewAgent.Services
             if (!string.IsNullOrEmpty(organizedReview))
             {
                 IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
-                MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
-                stringBuilder_.Clear();
-                stringBuilder_.Append(organizedReview);
-                mergeRequestCommentEdit.Body = stringBuilder_.ToString();
+                MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit()
+                {
+                    Body = organizedReview
+                };
                 try
                 {
                     MergeRequestComment _ = mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);

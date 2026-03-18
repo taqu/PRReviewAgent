@@ -208,9 +208,7 @@ namespace PRReviewAgent.Services
 
             if (!string.IsNullOrEmpty(organizedReview))
             {
-                stringBuilder_.Clear();
-                stringBuilder_.Append(organizedReview);
-                PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(stringBuilder_.ToString());
+                PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(organizedReview);
                 try
                 {
                     PullRequestReviewComment _ = await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);

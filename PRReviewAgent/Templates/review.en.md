@@ -6,7 +6,6 @@ Please review the pull request in **English**, following the guidelines below.
 ### 1.0 Code Review Writing
 * No greetings or praise are necessary.
 * Polite phrasing is not required.
-* Refer only to facts in the code; do not include speculation.
 
 ### 1.1 Purpose of Code Review
 Code review is an important process for maintaining and improving the quality of both the code and the product. The main purposes are as follows:
