@@ -1,5 +1,6 @@
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Octokit.Webhooks.Models.PageBuildEvent;
 using OpenAI;
 using OpenAI.Chat;
 using System;
@@ -10,81 +11,58 @@ namespace PRReviewAgent
 {
     public class Agents
     {
-        public Agents()
+        public enum Type
+        {
+            Assistant = 0,
+            Planner = 1,
+            Executor = 2,
+        }
+        private static void Build(out OpenAI.Chat.ChatClient chatClient, out AIAgent aIAgent, string name)
         {
             Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["openai"];
             string apiKey = (string)secrets["api_key"];
 
             Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["agent"];
-            {
-                string plannerModel = (string)config["planner_model"];
-                double temperature = (double)config["planner_temperature"];
-                long thinkingEffort = (long)config["planner_thinking_effort"];
-                long plannerThinkingOutput = (long)config["planner_thinking_output"];
-                long plannerTimeout = (long)config["planner_timeout"];
+            string model = (string)config[$"{name}_model"];
+            double temperature = (double)config[$"{name}_temperature"];
+            long thinkingEffort = (long)config[$"{name}_thinking_effort"];
+            long thinkingOutput = (long)config[$"{name}_thinking_output"];
+            long timeout = (long)config[$"{name}_timeout"];
 
-                OpenAIClientOptions options = new OpenAIClientOptions();
-                options.Endpoint = new Uri((string)config["planner"]);
-                options.NetworkTimeout = TimeSpan.FromSeconds(plannerTimeout);
-                plannerChatClient_ = new OpenAI.Chat.ChatClient(plannerModel, new ApiKeyCredential(apiKey), options);
-                planner_ = plannerChatClient_.AsAIAgent(
-                    options: new ChatClientAgentOptions()
+            OpenAIClientOptions options = new OpenAIClientOptions();
+            options.Endpoint = new Uri((string)config[$"{name}"]);
+            options.NetworkTimeout = TimeSpan.FromSeconds(timeout);
+            chatClient = new OpenAI.Chat.ChatClient(model, new ApiKeyCredential(apiKey), options);
+            aIAgent = chatClient.AsAIAgent(
+                options: new ChatClientAgentOptions()
+                {
+                    Name = (string)config[$"{name}_name"],
+                    ChatOptions = new()
                     {
-                        Name = (string)config["planner_name"],
-                        ChatOptions = new()
+                        Temperature = (float)temperature,
+                        Instructions = (string)config[$"{name}_instructions"],
+                        Reasoning = new ReasoningOptions
                         {
-                            Temperature = (float)temperature,
-                            Instructions = (string)config["planner_instructions"],
-                            Reasoning = new ReasoningOptions
-                            {
-                                Effort = (ReasoningEffort)Math.Clamp(thinkingEffort, 0, 3),
-                                Output = (ReasoningOutput)Math.Clamp(plannerThinkingOutput, 0, 2),
-                            }
-                        },
-                    }
-                );
-            }
-
-            {
-                string executorModel = (string)config["executor_model"];
-                double temperature = (double)config["executor_temperature"];
-                long thinkingEffort = (long)config["executor_thinking_effort"];
-                long plannerThinkingOutput = (long)config["executor_thinking_output"];
-                long executorTimeout = (long)config["executor_timeout"];
-
-                OpenAIClientOptions options = new OpenAIClientOptions();
-                options.Endpoint = new Uri((string)config["executor"]);
-                options.NetworkTimeout = TimeSpan.FromSeconds(executorTimeout);
-                executorChatClient_ = new OpenAI.Chat.ChatClient(executorModel, new ApiKeyCredential(apiKey), options);
-                executor_ = executorChatClient_.AsAIAgent(
-                    options: new ChatClientAgentOptions()
-                    {
-                        Name = (string)config["executor_name"],
-                        ChatOptions = new()
-                        {
-                            Temperature = (float)temperature,
-                            Instructions = (string)config["executor_instructions"],
-                            Reasoning = new ReasoningOptions
-                            {
-                                Effort = (ReasoningEffort)Math.Clamp(thinkingEffort, 0, 3),
-                                Output = (ReasoningOutput)Math.Clamp(plannerThinkingOutput, 0, 2),
-                            }
-                        },
-                    }
-                );
-            }
+                            Effort = (ReasoningEffort)Math.Clamp(thinkingEffort, 0, 3),
+                            Output = (ReasoningOutput)Math.Clamp(thinkingOutput, 0, 2),
+                        }
+                    },
+                }
+            );
         }
 
-        public async Task BeginSessionAsync(string prompt, CancellationToken cancellationToken)
+        public Agents()
         {
-            session_ = await planner_.CreateSessionAsync(cancellationToken);
+            Build(out agents_[0].chatClient_, out agents_[0].aiAgent_, "assistant");
+            Build(out agents_[1].chatClient_, out agents_[1].aiAgent_, "planner");
+            Build(out agents_[2].chatClient_, out agents_[2].aiAgent_, "executor");
         }
 
-        public async Task<AgentResponse> RunPlannerAsync(string prompt, CancellationToken cancellationToken)
+        public async Task<AgentResponse> RunAsync(Type type, string prompt, CancellationToken cancellationToken)
         {
             try
             {
-                AgentResponse response = await planner_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+                AgentResponse response = await agents_[(int)type].aiAgent_.RunAsync(prompt, session_, runOptions_, cancellationToken);
                 return response;
             }
             catch(Exception e)
@@ -94,12 +72,12 @@ namespace PRReviewAgent
             }
         }
 
-        public async Task<T> RunPlannerAsync<T>(string prompt, CancellationToken cancellationToken)
+        public async Task<T> RunAsync<T>(Type type, string prompt, CancellationToken cancellationToken)
         {
             try
             {
                 runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
-                AgentResponse response = await planner_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+                AgentResponse response = await agents_[(int)type].aiAgent_.RunAsync(prompt, session_, runOptions_, cancellationToken);
                 runOptions_.ResponseFormat = null;
                 return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
             }
@@ -109,38 +87,12 @@ namespace PRReviewAgent
             }
         }
 
-        public async Task<AgentResponse> RunExecutorAsync(string prompt, CancellationToken cancellationToken)
+        private struct Agent
         {
-            try
-            {
-                AgentResponse response = await executor_.RunAsync(prompt);
-                return response;
-            }
-            catch(Exception e)
-            {
-                return new AgentResponse();
-            }
+            public OpenAI.Chat.ChatClient chatClient_;
+            public AIAgent aiAgent_;
         }
-
-        public async Task<T?> RunExecutorAsync<T>(string prompt, CancellationToken cancellationToken)
-        {
-            try
-            {
-                runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
-                AgentResponse response = await executor_.RunAsync(prompt, session_, runOptions_, cancellationToken);
-                runOptions_.ResponseFormat = null;
-                return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
-            }
-            catch
-            {
-                return default;
-            }
-        }
-
-        private OpenAI.Chat.ChatClient plannerChatClient_;
-        private AIAgent planner_;
-        private OpenAI.Chat.ChatClient executorChatClient_;
-        private AIAgent executor_;
+        private Agent[] agents_ = new Agent[3];
         private AgentRunOptions runOptions_ = new AgentRunOptions();
         private AgentSession? session_;
     }

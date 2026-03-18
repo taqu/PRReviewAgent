@@ -181,7 +181,12 @@ namespace PRReviewAgent.Services
                 }
                 try
                 {
+<<<<<<< HEAD
+                    System.IO.File.WriteAllText("github_result.txt", stringBuilder_.ToString());
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync(stringBuilder_.ToString(), context.CancellationToken);
+=======
                     Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, stringBuilder_.ToString(), context.CancellationToken);
+>>>>>>> 771ca259f0d5a5c782b8254b5ffb4f010ba8cdee
                     if (!string.IsNullOrEmpty(agentResponse.Text))
                     {
                         organizedReview = agentResponse.Text;

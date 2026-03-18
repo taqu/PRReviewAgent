@@ -27,11 +27,11 @@ namespace PRReviewAgent
         {
             foreach(string template in settigs_.GetReviewTemplates())
             {
-                await agents_.RunExecutorAsync(template, CancellationToken);
+                await agents_.RunAsync(Agents.Type.Executor, template, CancellationToken);
             }
             foreach(string template in settigs_.GetOrganizeTemplates())
             {
-                await agents_.RunExecutorAsync(template, CancellationToken);
+                await agents_.RunAsync(Agents.Type.Executor, template, CancellationToken);
             }
         }
 

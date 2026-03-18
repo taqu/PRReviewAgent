@@ -191,7 +191,7 @@ namespace PRReviewAgent.Services
 
             foreach (Target target in targets)
             {
-                Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunPlannerAsync($"Summarize a next diff briefly in few lines.\n{target.Path}\n----\n{target.Diff.Difference}", context.CancellationToken);
+                Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Summarize a next diff briefly in few lines.\n{target.Path}\n----\n{target.Diff.Difference}", context.CancellationToken);
                 target.Summary = agentResponse.Text;
             }
             List<string> reviews = new List<string>();
@@ -207,7 +207,7 @@ namespace PRReviewAgent.Services
                 }
 
                 string changeFilePaths = Newtonsoft.Json.JsonConvert.SerializeObject(new Changes(changes.ToArray()));
-                Assignments? assignments = await context.Agents.RunPlannerAsync<Assignments>($"Group next diffs in the pull request by relevance and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
+                Assignments? assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
                 if (null == assignments)
                 {
                     return;
@@ -221,7 +221,7 @@ namespace PRReviewAgent.Services
                     }
                     try
                     {
-                        Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync(reviewText, context.CancellationToken);
+                        Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, reviewText, context.CancellationToken);
                         if (string.IsNullOrEmpty(agentResponse.Text))
                         {
                             continue;
@@ -258,7 +258,7 @@ namespace PRReviewAgent.Services
                 }
                 try
                 {
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunExecutorAsync(stringBuilder_.ToString(), context.CancellationToken);
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, stringBuilder_.ToString(), context.CancellationToken);
                     if (!string.IsNullOrEmpty(agentResponse.Text))
                     {
                         organizedReview = agentResponse.Text;

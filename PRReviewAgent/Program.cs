@@ -103,6 +103,10 @@ namespace PRReviewAgent
             {
                 return;
             }
+            if ((bool)((Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["common"])["warm_up"])
+            {
+                builder.Services.AddHostedService<WarmUpTask>();
+            }
             WebApplication app = builder.Build();
             if (ssl_verify)
             {
@@ -110,7 +114,6 @@ namespace PRReviewAgent
             }
 
             app.MapControllers();
-
             app.Run();
         }
     }
