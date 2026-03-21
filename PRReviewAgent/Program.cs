@@ -9,23 +9,37 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace PRReviewAgent
 {
+    /// <summary>
+    /// The main entry point for the PRReviewAgent application.
+    /// </summary>
     public class Program
     {
+        /// <summary>
+        /// Validates the remote SSL certificate based on the application configuration.
+        /// </summary>
+        /// <param name="sender">An object that contains state information for this validation.</param>
+        /// <param name="certificate">The certificate used to authenticate the remote party.</param>
+        /// <param name="chain">The chain of certificate authorities associated with the remote certificate.</param>
+        /// <param name="sslPolicyErrors">One or more errors associated with the remote certificate.</param>
+        /// <returns><c>true</c> if the certificate is valid; otherwise, <c>false</c>.</returns>
         private static bool RemoteCertificateValidationCallback(
             Object sender,
             X509Certificate certificate,
             X509Chain chain,
             SslPolicyErrors sslPolicyErrors)
         {
+            // If there are no SSL policy errors, the certificate is valid
             if(SslPolicyErrors.None == sslPolicyErrors)
             {
                 return true;
             }
             Tomlyn.Model.TomlTable config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["server"];
+            // Trust the certificate if explicitly configured in settings
             if ((bool)config["trust_certificate"])
             {
                 return true;
             }
+            // Check if the certificate subject matches any of the trusted certificates in the configuration
             string[] trusted_certificates = (string[])config["trusted_certificates"];
             foreach (string cert in trusted_certificates)
             {
@@ -34,9 +48,14 @@ namespace PRReviewAgent
                     return true;
                 }
             }
+            // Certificate is not trusted
             return false;
         }
 
+        /// <summary>
+        /// The main entry point of the application.
+        /// </summary>
+        /// <param name="args">The command-line arguments.</param>
         public static void Main(string[] args)
         {
             if (!Context.Initialize())

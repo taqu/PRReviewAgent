@@ -2,6 +2,9 @@ using Newtonsoft.Json;
 
 namespace PRReviewAgent.Services.GitLabWebhook
 {
+    /// <summary>
+    /// Represents a user in the GitLab webhook payload.
+    /// </summary>
     public class PayloadUser
     {
         public long id { get;set; }
@@ -11,6 +14,10 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string email { get;set; }
     }
 
+    /// <summary>
+    /// Represents a project in the GitLab webhook payload.
+    /// Contains project identification, URLs, and visibility details.
+    /// </summary>
     public class PayloadProject
     {
         public long id { get;set; }
@@ -32,6 +39,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string http_url { get;set; }
     }
 
+    /// <summary>
+    /// Represents a repository in the GitLab webhook payload.
+    /// </summary>
     public class PayloadRepository
     {
         public string name { get; set; }
@@ -40,6 +50,10 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string homepage { get;set; }
     }
 
+    /// <summary>
+    /// Represents a diff in the GitLab webhook payload.
+    /// Provides details about file changes, including paths and modes.
+    /// </summary>
     public class st_diff
     {
         public string diff { get; set; }
@@ -52,6 +66,10 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public bool deleted_file { get;set; }
     }
 
+    /// <summary>
+    /// Represents object attributes in the GitLab webhook payload.
+    /// Contains the core details of the event (e.g., the note content and metadata).
+    /// </summary>
     public class PayloadObjectAttributes
     {
         public long id { get;set; }
@@ -73,12 +91,18 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string url { get;set; }
     }
 
+    /// <summary>
+    /// Represents an author in the GitLab webhook payload.
+    /// </summary>
     public class author
     {
         public string name { get; set; }
         public string email { get; set; }
     }
 
+    /// <summary>
+    /// Represents a commit in the GitLab webhook payload.
+    /// </summary>
     public class PayloadCommit
     {
         public string id { get;set; }
@@ -88,6 +112,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public author author { get; set; }
     }
 
+    /// <summary>
+    /// Represents a label in the GitLab webhook payload.
+    /// </summary>
     public struct label
     {
         public long id { get; set; }
@@ -102,6 +129,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string group_id { get; set; }
     }
 
+    /// <summary>
+    /// Represents a source or target in the GitLab webhook payload.
+    /// </summary>
     public struct source_target
     {
         public string name { get; set; }
@@ -121,6 +151,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string http_url { get; set; }
     }
 
+    /// <summary>
+    /// Represents the last commit in the GitLab webhook payload.
+    /// </summary>
     public struct last_commit
     {
         public string id { get; set; }
@@ -130,6 +163,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public author author { get; set; }
     }
 
+    /// <summary>
+    /// Represents an assignee in the GitLab webhook payload.
+    /// </summary>
     public struct assignee
     {
         public string name { get; set; }
@@ -137,6 +173,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string avatar_url { get; set; }
     }
 
+    /// <summary>
+    /// Represents a merge request in the GitLab webhook payload.
+    /// </summary>
     public class PayloadMergeRequest
     {
         public long id { get;set; }
@@ -166,6 +205,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string detailed_merge_status { get;set; }
     }
 
+    /// <summary>
+    /// Represents an issue in the GitLab webhook payload.
+    /// </summary>
     public class PayloadIssue
     {
         public long id { get;set; }
@@ -186,6 +228,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public label[] labels { get; set; }
     }
 
+    /// <summary>
+    /// Represents a snippet in the GitLab webhook payload.
+    /// </summary>
     public class PayloadSnippet
     {
         public long id { get;set; }
@@ -202,6 +247,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         public string url { get; set; }
     }
 
+    /// <summary>
+    /// Represents the overall comment payload for a GitLab webhook.
+    /// </summary>
     public class PayloadComment
     {
         public string object_kind { get;set; }

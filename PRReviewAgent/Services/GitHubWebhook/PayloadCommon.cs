@@ -3,6 +3,10 @@ using PRReviewAgent.Services.GitLabWebhook;
 
 namespace PRReviewAgent.Services.GitHubWebhook
 {
+    /// <summary>
+    /// Represents a user in the GitHub webhook payload.
+    /// Contains details about the user's account, profile, and URLs.
+    /// </summary>
     public class PayloadUser
     {
         public string login { get; set; }
@@ -26,6 +30,10 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public bool site_admin { get; set; }
     }
 
+    /// <summary>
+    /// Represents pull request information in the GitHub webhook payload.
+    /// Provides links to the pull request's diff and patch views.
+    /// </summary>
     public class PayloadPullRequest
     {
         public string url { get; set; }
@@ -35,6 +43,10 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public string merged_at { get; set; }
     }
 
+    /// <summary>
+    /// Represents reactions to a comment or issue in the GitHub webhook payload.
+    /// Maps the various reaction types (thumbs up/down, etc.) to count properties.
+    /// </summary>
     public class PayloadReactions
     {
         public string url { get; set; }
@@ -51,6 +63,10 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public int eyes { get; set; }
     }
 
+    /// <summary>
+    /// Represents an issue in the GitHub webhook payload.
+    /// Note: GitHub treats Pull Requests as Issues for many operations like comments.
+    /// </summary>
     public class PayloadIssue
     {
         public string url { get; set; }
@@ -85,6 +101,9 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public string state_reason { get; set; }
     }
 
+    /// <summary>
+    /// Represents a comment in the GitHub webhook payload.
+    /// </summary>
     public class PayloadComment
     {
         public string url { get; set; }
@@ -101,6 +120,9 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public string performed_via_github_app { get; set; }
     }
 
+    /// <summary>
+    /// Represents the owner of a repository in the GitHub webhook payload.
+    /// </summary>
     public class PayloadOwner
     {
         public string login { get; set; }
@@ -124,6 +146,9 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public bool site_admin { get; set; }
     }
 
+    /// <summary>
+    /// Represents a repository in the GitHub webhook payload.
+    /// </summary>
     public class PayloadRepository
     {
         public long id { get; set; }
@@ -210,6 +235,9 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public string default_branch { get; set; }
     }
 
+    /// <summary>
+    /// Represents the license information for a repository in the GitHub webhook payload.
+    /// </summary>
     public class PayloadLicense
     {
         public string key { get; set; }
@@ -219,6 +247,9 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public string node_id { get; set; }
     }
 
+    /// <summary>
+    /// Represents the sender of the webhook event in the GitHub webhook payload.
+    /// </summary>
     public class PayloadSender
     {
         public string login { get; set; }
@@ -242,6 +273,9 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public bool site_admin { get; set; }
     }
 
+    /// <summary>
+    /// Represents the top-level payload for an issue comment event in the GitHub webhook.
+    /// </summary>
     public class PayloadIssueComment
     {
         public string action { get; set; }

@@ -1,80 +1,107 @@
 # PRReviewAgent
-Pull request review agent by LLM.
+An AI-powered Pull Request review agent leveraging Large Language Models (LLMs) to provide automated code reviews and insights.
 
 # Features
+- AI-Driven Analysis: Uses OpenAI or OpenAI-compatible APIs for code analysis.
+- Language Support: Supports multiple languages for review comments (e.g., English, Japanese) via templates.
+- Customizable: Configurable review rules, target file extensions, and AI model parameters.
 
-| Git Provider | GitLab |
+| Git Provider | Support |
 | :--- | :--- |
-| review | :white_check_mark: |
+| GitHub | :white_check_mark: |
+| GitLab | :white_check_mark: |
 
-| AI Provider | |
+| AI Provider | Support |
 | :--- | :--- |
 | OpenAI | :white_check_mark: |
 | OpenAI Compatible | :white_check_mark: |
 
 # Getting Started
 ## Setup
-Rename `secrets.template.toml` to `secrets.toml`.
-Rename `config.template.toml` to `config.toml`.
-Fill `secrets.toml` and `config.toml`.
+1. Copy `PRReviewAgent/secrets.template.toml` to `PRReviewAgent/secrets.toml`.
+2. Copy `PRReviewAgent/config.template.toml` to `PRReviewAgent/config.toml`.
+3. Fill in the required fields in both files.
 
-### Config
-Set the agent server bindings in `cofing.toml`.
-```
+### Configuration (`config.toml`)
+#### Common & Server
+Set the default language and server bindings.
+```toml
+[common]
+default_language = "en"
+git_provider = "github" # or "gitlab"
+warm_up = true
+
 [server]
-url = "http://localhost"
+url = "http://localhost:5000"
 log_level = "Warning"
-trust_certificate = false # always trust certificate
-trusted_certificates = [""]
+trust_certificate = false
 ```
 
-Set llm providers,
-```
+#### AI Agents
+The system uses three specialized agents. Configure their endpoints and model parameters:
+- Assistant: Summarizes diffs and handles simple tasks.
+- Planner: Plans reviews and handles logical reasoning.
+- Executor: Performs the detailed reviews and organizes the final output.
+
+```toml
 [agent]
-# Used for summarize diffs, simple task.
 assistant = "https://api.openai.com/v1"
-# Used for planning reviews, slightly complicated logical reasoning task.
+assistant_model = "gpt-4o-mini"
+assistant_temperature = 0.1
+
 planner = "https://api.openai.com/v1"
-# Used for each review and organizing reviews, needs long context and understanding long sentences.
-executor = "https://api.openai.com/v1
+planner_model = "gpt-4o-mini"
+planner_temperature = 0.1
+
+executor = "https://api.openai.com/v1"
+executor_model = "gpt-4o"
+executor_temperature = 0.1
 ```
 
-For OpenAI in `secrets.toml`,
+#### Git Providers
+**GitHub:**
+```toml
+[github]
+name = "your-github-username"
+ssl_verify = true
 ```
+
+**GitLab:**
+```toml
+[gitlab]
+url = "https://gitlab.com"
+ssl_verify = true
+```
+
+### Secrets (`secrets.toml`)
+**OpenAI:**
+```toml
 [openai]
-api_key = ""
+api_key = "your-openai-api-key"
 ```
 
-### GitLab
-In `config.toml`,
-```
-[gitlab]
-url = "http://localhost"
-ssl_verify = false
-```
-
-In `secrets.toml`,
-```
-[gitlab]
-personal_access_token = "" # Gitlab personal access token
-shared_secret = ""  # webhook secret
-```
-
-### GitHub
-In `config.toml`,
-```
+**GitHub/GitLab:**
+```toml
 [github]
-name = "" # repository username
-ssl_verify = false
+personal_access_token = "your-token"
+shared_secret = "your-webhook-secret"
+
+[gitlab]
+personal_access_token = "your-token"
+shared_secret = "your-webhook-secret"
 ```
 
-In `secrets.toml`,
-```
-[github]
-personal_access_token = "" # GitHub personal access token
-shared_secret = ""  # webhook secret
-```
+## Usage
+### Triggering a Review
+Comment `/review` on a Pull Request or Merge Request to trigger the agent.
+You can specify a language by adding a language code:
+- `/review` (uses `default_language` from config)
+- `/review /en` (English)
+- `/review /ja` (Japanese)
 
-## Review
-Comment "/review" on pull request's comments.
-Optionally, you may put a language code like "/en".
+### Target Extensions
+You can configure which file types the agent should review in `config.toml`:
+```toml
+[review]
+target_extensions = ["cs", "py", "js", "ts", "rs", "cpp"]
+```
