@@ -60,6 +60,7 @@ namespace PRReviewAgent
         {
             if (!Context.Initialize())
             {
+                System.Console.WriteLine("Failed to initialize context");
                 return;
             }
             System.Net.ServicePointManager.ServerCertificateValidationCallback += RemoteCertificateValidationCallback;
@@ -120,6 +121,7 @@ namespace PRReviewAgent
             }
             catch (Exception ex)
             {
+                System.Console.WriteLine(ex.Message);
                 return;
             }
             if ((bool)((Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["common"])["warm_up"])

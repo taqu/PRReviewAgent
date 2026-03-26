@@ -1,5 +1,9 @@
+using NGitLab;
+using NGitLab.Impl;
+using NGitLab.Models;
 using Octokit;
 using PRReviewAgent.Services.GitHubWebhook;
+using PRReviewAgent.Services.GitLabWebhook;
 using System.ComponentModel;
 using System.Text;
 
@@ -160,6 +164,11 @@ namespace PRReviewAgent.Services
                     targets.Add(new Target() { File = file, Summary = string.Empty });
                 }
             }
+            if (targets.Count <= 0)
+            {
+                await PostCommentAsync("No reviews are generated. There are no diffs to review.", gitHubClient, logger);
+                return;
+            }
 
             // Step 3: Summarize each file's diff using an AI assistant to prepare for grouping.
             foreach (Target target in targets)
@@ -198,6 +207,7 @@ namespace PRReviewAgent.Services
                 catch (Exception ex)
                 {
                     logger.LogError(ex.ToString());
+                    await PostCommentAsync($"No reviews are generated. Fail in assigning the files to reviewers.\n{ex.Message}", gitHubClient, logger);
                     return;
                 }
 
@@ -259,37 +269,40 @@ namespace PRReviewAgent.Services
                 }
                 catch (Exception ex)
                 {
+                    await PostCommentAsync($"No reviews are generated. Fail in organizing the reviews.\n{ex.Message}", gitHubClient, logger);
                     logger.LogError(ex.ToString());
                 }
+            }
+            else
+            {
+                await PostCommentAsync("No reviews are generated. Fail in assigning the files to reviewers.", gitHubClient, logger);
             }
 
             // Step 8: Post the final review by editing the original comment that triggered the review.
             if (!string.IsNullOrEmpty(organizedReview))
             {
-                PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(organizedReview);
-                try
-                {
-                    PullRequestReviewComment _ = await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
-                }
-                catch(Exception ex)
-                {
-                    logger.LogError(ex.Message);
-                }
+                await PostCommentAsync(organizedReview, gitHubClient, logger);
             }
             else
             {
                 // Inform the user if no reviews could be generated.
                 stringBuilder_.Clear();
                 stringBuilder_.Append("no reviews are generated.");
-                PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(stringBuilder_.ToString());
-                try
-                {
-                    await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
-                }
-                catch(Exception ex)
-                {
-                    logger.LogError(ex.Message);
-                }
+                await PostCommentAsync(stringBuilder_.ToString(), gitHubClient, logger);
+            }
+        }
+
+        private async Task PostCommentAsync(string comment, Octokit.GitHubClient gitHubClient, ILogger<GitHubWebhookCommentTask>? logger)
+        {
+            PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(comment);
+            try
+            {
+                await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
+
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex.Message);
             }
         }
 

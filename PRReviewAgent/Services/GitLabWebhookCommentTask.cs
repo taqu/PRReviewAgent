@@ -1,4 +1,6 @@
+using Microsoft.Extensions.Logging;
 using NGitLab;
+using NGitLab.Impl;
 using NGitLab.Models;
 using Octokit;
 using PRReviewAgent.Services.GitLabWebhook;
@@ -257,6 +259,11 @@ namespace PRReviewAgent.Services
                     targets.Add(target);
                 }
             }
+            if (targets.Count <= 0)
+            {
+                PostComment("No reviews are generated. There are no diffs to review.", mergeRequestClient, logger);
+                return;
+            }
 
             // Step 3: Summarize each identified diff using an AI assistant.
             foreach (Target target in targets)
@@ -294,6 +301,7 @@ namespace PRReviewAgent.Services
                 catch (Exception ex)
                 {
                     logger.LogError(ex.ToString());
+                    PostComment($"No reviews are generated. Fail in assigning the files to reviewers.\n{ex.Message}", mergeRequestClient, logger);
                     return;
                 }
 
@@ -354,44 +362,43 @@ namespace PRReviewAgent.Services
                         organizedReview = agentResponse.Text;
                     }
                 }
-                catch
+                catch(Exception ex)
                 {
+                    PostComment($"No reviews are generated. Fail in organizing the reviews.\n{ex.Message}", mergeRequestClient, logger);
+                    logger.LogError(ex.ToString());
                 }
+            }
+            else
+            {
+                PostComment("No reviews are generated. Fail in assigning the files to reviewers.", mergeRequestClient, logger);
             }
 
             // Step 8: Update the original comment on GitLab with the final review results.
             if (!string.IsNullOrEmpty(organizedReview))
             {
-                IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
-                MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit()
-                {
-                    Body = organizedReview
-                };
-                try
-                {
-                    MergeRequestComment _ = mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
-                }
-                catch(Exception ex)
-                {
-                    logger.LogError(ex.Message);
-                }
+                PostComment(organizedReview, mergeRequestClient, logger);
             }
             else
             {
                 // Fallback message if no review content was generated.
-                IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
-                MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
                 stringBuilder_.Clear();
-                stringBuilder_.Append("no reviews are generated.");
-                mergeRequestCommentEdit.Body = stringBuilder_.ToString();
-                try
-                {
-                    MergeRequestComment _ = mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
-                }
-                catch(Exception ex)
-                {
-                    logger.LogError(ex.Message);
-                }
+                stringBuilder_.Append("No reviews are generated.");
+                PostComment(stringBuilder_.ToString(), mergeRequestClient, logger);
+            }
+        }
+
+        private void PostComment(string comment, NGitLab.IMergeRequestClient mergeRequestClient, ILogger<GitLabWebhookCommentTask>? logger)
+        {
+            IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
+            MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
+            mergeRequestCommentEdit.Body = comment;
+            try
+            {
+                MergeRequestComment _ = mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex.Message);
             }
         }
 

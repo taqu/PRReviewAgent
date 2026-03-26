@@ -10,6 +10,7 @@ namespace PRReviewAgent.Services
     public class BackgroundTaskQueue : IBackgroundTaskQueue
     {
         private const int MaxRetryCount = 3;
+        private const int TimeOutMilliSeconds = 3000;
         private readonly SemaphoreSlim signal_ = new(0);
         private readonly ConcurrentQueue<Func<IServiceProvider, CancellationToken, Task>> workItems_ = new();
 
@@ -21,7 +22,7 @@ namespace PRReviewAgent.Services
         public async Task<Func<IServiceProvider, CancellationToken, Task>> DequeueAsync(CancellationToken cancellationToken)
         {
             // Attempt to retrieve the next work item from the concurrent queue.
-            TimeSpan timeout = new TimeSpan(0, 0, 0, 0, 100);
+            TimeSpan timeout = new TimeSpan(0, 0, 0, 0, TimeOutMilliSeconds);
             for(int i=0; i<MaxRetryCount; ++i) {
                 bool success = await signal_.WaitAsync(timeout, cancellationToken);
                 if (!success)

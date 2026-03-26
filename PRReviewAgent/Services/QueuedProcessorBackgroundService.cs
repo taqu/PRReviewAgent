@@ -39,6 +39,10 @@ namespace PRReviewAgent.Services
             {
                 // Wait for the next work item to be available in the queue.
                 Func<IServiceProvider, CancellationToken, Task> workItem = await taskQueue_.DequeueAsync(cancellationToken);
+                if(null == workItem)
+                {
+                    continue;
+                }
                 try
                 {
                     // Execute the work item using the provided service provider and cancellation token.

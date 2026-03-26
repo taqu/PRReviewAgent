@@ -1,0 +1,58 @@
+name: Build and Release .NET App
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare config files
+        run: |
+          cp -f PRReviewAgent/config.template.toml PRReviewAgent/config.toml
+          cp -f PRReviewAgent/secrets.template.toml PRReviewAgent/secrets.toml
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Publish linux-x64
+        run: |
+          dotnet publish PRReviewAgent/PRReviewAgent.csproj -c Release -r linux-x64 -o ./publish/linux-x64
+      - name: Publish win-x64
+        run: |
+          dotnet publish PRReviewAgent/PRReviewAgent.csproj -c Release -r win-x64 -o ./publish/win-x64
+
+      - name: Create Artifacts linux-x64
+        run: |
+          cd ./publish/linux-x64 && tar -czf ../../PRReviewAgent-linux-x64.tar.gz . && cd ../..
+      - name: Create Artifacts win-x64
+        run: |
+          cd ./publish/win-x64 && zip -r ../../PRReviewAgent-win-x64.zip . && cd ../..
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            PRReviewAgent-linux-x64.tar.gz
+            PRReviewAgent-win-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

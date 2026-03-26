@@ -42,7 +42,7 @@ executor_thinking_output = 0 # None:0 Summary:1 Full:2
 executor_timeout = 1200
 
 [github]
-name = "" # repository username
+name = "XXX" # repository username
 ssl_verify = true
 
 [gitlab]

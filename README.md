@@ -17,10 +17,11 @@ An AI-powered Pull Request review agent leveraging Large Language Models (LLMs) 
 | OpenAI Compatible | :white_check_mark: |
 
 # Getting Started
+## Requirements
+- .Net 9.x
+
 ## Setup
-1. Copy `PRReviewAgent/secrets.template.toml` to `PRReviewAgent/secrets.toml`.
-2. Copy `PRReviewAgent/config.template.toml` to `PRReviewAgent/config.toml`.
-3. Fill in the required fields in both files.
+1. Fill in the required fields in both `secrets.toml` and `config.toml`.
 
 ### Configuration (`config.toml`)
 #### Common & Server
