@@ -92,6 +92,11 @@ personal_access_token = "your-token"
 shared_secret = "your-webhook-secret"
 ```
 
+## Run
+```bash
+$ ./PRReviewAgent
+```
+
 ## Usage
 ### Triggering a Review
 Comment `/review` on a Pull Request or Merge Request to trigger the agent.

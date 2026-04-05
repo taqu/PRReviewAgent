@@ -1,3 +1,5 @@
+using System.Threading;
+
 namespace PRReviewAgent.Services
 {
     /// <summary>
@@ -38,7 +40,7 @@ namespace PRReviewAgent.Services
             while (!cancellationToken.IsCancellationRequested)
             {
                 // Wait for the next work item to be available in the queue.
-                Func<IServiceProvider, CancellationToken, Task> workItem = await taskQueue_.DequeueAsync(cancellationToken);
+                Func<IServiceProvider, CancellationToken, Task>? workItem = await taskQueue_.DequeueAsync();
                 if(null == workItem)
                 {
                     continue;

@@ -1,6 +1,8 @@
 
+using PRReviewAgent.Controllers;
 using System.Collections.Concurrent;
 using System.Security.Cryptography.Xml;
+using System.Threading.Channels;
 
 namespace PRReviewAgent.Services
 {
@@ -9,34 +11,39 @@ namespace PRReviewAgent.Services
     /// </summary>
     public class BackgroundTaskQueue : IBackgroundTaskQueue
     {
-        private const int MaxRetryCount = 3;
         private const int TimeOutMilliSeconds = 3000;
-        private readonly SemaphoreSlim signal_ = new(0);
-        private readonly ConcurrentQueue<Func<IServiceProvider, CancellationToken, Task>> workItems_ = new();
+
+        private readonly Channel<Func<IServiceProvider, CancellationToken, Task>> workItems_;
+        private ILogger<BackgroundTaskQueue> logger_;
+
+        public BackgroundTaskQueue(ILogger<BackgroundTaskQueue> logger)
+        {
+            workItems_ = Channel.CreateUnbounded<Func<IServiceProvider, CancellationToken, Task>>();
+            logger_ = logger;
+        }
 
         /// <summary>
         /// Dequeues a work item from the queue asynchronously.
         /// </summary>
-        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
         /// <returns>A task that represents the asynchronous dequeue operation. The task result contains the work item.</returns>
-        public async Task<Func<IServiceProvider, CancellationToken, Task>> DequeueAsync(CancellationToken cancellationToken)
+        public async Task<Func<IServiceProvider, CancellationToken, Task>>? DequeueAsync()
         {
             // Attempt to retrieve the next work item from the concurrent queue.
-            TimeSpan timeout = new TimeSpan(0, 0, 0, 0, TimeOutMilliSeconds);
-            for(int i=0; i<MaxRetryCount; ++i) {
-                bool success = await signal_.WaitAsync(timeout, cancellationToken);
-                if (!success)
-                {
-                    return null;
-                }
-            }
-
-            if(!workItems_.TryDequeue(out var workItem))
+            try
             {
+                Func<IServiceProvider, CancellationToken, Task>? workItem = await workItems_.Reader.ReadAsync();
+                return workItem;
+            }
+            catch (OperationCanceledException ex)
+            {
+                logger_.LogInformation("Failed to dequeue work item: " + ex.Message);
                 return null;
             }
-
-            return workItem!;
+            catch (Exception ex)
+            {
+                logger_.LogWarning("Failed to dequeue work item: " + ex.Message);
+                return null;
+            }
         }
 
         /// <summary>
@@ -44,16 +51,10 @@ namespace PRReviewAgent.Services
         /// </summary>
         /// <param name="workItem">The work item to enqueue.</param>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="workItem"/> is null.</exception>
-        public void QueueBackgroundWorkItem(Func<IServiceProvider, CancellationToken, Task> workItem)
+        public async Task QueueBackgroundWorkItemAsync(Func<IServiceProvider, CancellationToken, Task> workItem)
         {
-            if (workItem == null)
-            {
-                throw new ArgumentNullException(nameof(workItem));
-            }
-
-            workItems_.Enqueue(workItem);
-
-            signal_.Release();
+            ArgumentNullException.ThrowIfNull(workItem);
+            await workItems_.Writer.WriteAsync(workItem);
         }
     }
 }
