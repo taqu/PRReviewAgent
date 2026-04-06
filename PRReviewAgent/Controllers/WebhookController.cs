@@ -38,11 +38,13 @@ namespace PRReviewAgent.Controllers
         [HttpPost("gitlab")]
         public async Task<IActionResult> ReceiveGitLabWebhook([FromBody] dynamic payload)
         {
+            logger_.LogInformation($"Received GitLab webhook {HttpContext.Connection.RemoteIpAddress}");
             lock (Context.Instance)
             {
                 // Ensure the application is configured to handle GitLab webhooks
                 if (Context.Instance.GitProvider != "gitlab")
                 {
+                    logger_.LogError("Not configured to handle GitLab webhooks");
                     return NotFound();
                 }
                 // Validate the GitLab shared secret token from the request headers
@@ -63,12 +65,14 @@ namespace PRReviewAgent.Controllers
             // Get the GitLab event type from the header
             if (!HttpContext.Request.Headers.TryGetValue(GitlabEvent, out StringValues eventType))
             {
+                logger_.LogError($"Missing {GitlabEvent}");
                 return BadRequest();
             }
 
             // Get the GitLab event UUID from the header
             if (!HttpContext.Request.Headers.TryGetValue(GitlabEventUUIDKey, out StringValues eventUUID))
             {
+                logger_.LogError($"Missing {GitlabEventUUIDKey}");
                 return BadRequest();
             }
             try
@@ -119,11 +123,13 @@ namespace PRReviewAgent.Controllers
         [HttpPost("github")]
         public async Task<IActionResult> ReceiveGitHubWebhook([FromBody] dynamic payload)
         {
+            logger_.LogInformation($"Received GitHub webhook {HttpContext.Connection.RemoteIpAddress}");
             lock (Context.Instance)
             {
                 // Ensure the application is configured to handle GitHub webhooks
                 if (Context.Instance.GitProvider != "github")
                 {
+                    logger_.LogError("Not configured to handle GitHub webhooks");
                     return NotFound();
                 }
             }

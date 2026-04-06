@@ -4,6 +4,7 @@ using NGitLab.Models;
 using Octokit;
 using PRReviewAgent.Services.GitHubWebhook;
 using PRReviewAgent.Services.GitLabWebhook;
+using System;
 using System.ComponentModel;
 using System.Text;
 
@@ -141,6 +142,7 @@ namespace PRReviewAgent.Services
         public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
         {
             ILogger<GitHubWebhookCommentTask>? logger = serviceProvider.GetService<ILogger<GitHubWebhookCommentTask>>();
+            logger.LogInformation($"Processing comment: {payloadIssueComment_.comment.id}");
 
             Octokit.GitHubClient gitHubClient = serviceProvider.GetService<GitHubClientService>().GitHubClient;
 
@@ -171,6 +173,7 @@ namespace PRReviewAgent.Services
             }
 
             // Step 3: Summarize each file's diff using an AI assistant to prepare for grouping.
+            logger.LogInformation($"Summarizing {targets.Count} diffs.");
             foreach (Target target in targets)
             {
                 try
@@ -198,6 +201,7 @@ namespace PRReviewAgent.Services
                 }
 
                 // Step 5: Ask the AI planner to group related files and assign them to reviewers.
+                logger.LogInformation($"Assigning {changes.Count} changes to reviewers.");
                 string changeFilePaths = Newtonsoft.Json.JsonConvert.SerializeObject(new Changes(changes.ToArray()));
                 Assignments? assignments = null;
                 try
@@ -212,6 +216,7 @@ namespace PRReviewAgent.Services
                 }
 
                 // Step 6: Generate a code review for each assigned group of files.
+                logger.LogInformation($"Generating reviews for {assignments.assigns.Length} assignments.");
                 foreach (Assign assign in assignments.assigns)
                 {
                     string? reviewText = GetReviewDiffs(assign.paths, targets);
@@ -237,6 +242,7 @@ namespace PRReviewAgent.Services
             }
 
             // Step 7: Consolidate multiple reviews into a single organized response.
+            logger.LogInformation($"Organizing {reviews.Count} reviews.");
             stringBuilder_.Clear();
             string organizedReview = string.Empty;
             if (reviews.Count == 1)
@@ -292,13 +298,28 @@ namespace PRReviewAgent.Services
             }
         }
 
+        private const int MaxLogLength = 128;
+
         private async Task PostCommentAsync(string comment, Octokit.GitHubClient gitHubClient, ILogger<GitHubWebhookCommentTask>? logger)
         {
             PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(comment);
             try
             {
                 await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
-
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    ReadOnlySpan<char> span = comment.AsSpan();
+                    int length;
+                    for (length = 0; length < span.Length && length < MaxLogLength; ++length)
+                    {
+                        if (span[length] == '\n' || span[length] == '\r')
+                        {
+                            break;
+                        }
+                    }
+                    span = span.Slice(0, length);
+                    logger.LogInformation($"Comment is updated. {span}");
+                }
             }
             catch (Exception ex)
             {

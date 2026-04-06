@@ -240,6 +240,7 @@ namespace PRReviewAgent.Services
         public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
         {
             ILogger<GitLabWebhookCommentTask>? logger = serviceProvider.GetService<ILogger<GitLabWebhookCommentTask>>();
+            logger.LogInformation($"Processing comment: {payloadComment_.object_attributes.id}");
 
             Context context = Context.Instance;
 
@@ -266,6 +267,7 @@ namespace PRReviewAgent.Services
             }
 
             // Step 3: Summarize each identified diff using an AI assistant.
+            logger.LogInformation($"Summarizing {targets.Count} diffs.");
             foreach (Target target in targets)
             {
                 try
@@ -292,6 +294,7 @@ namespace PRReviewAgent.Services
                 }
 
                 // Step 5: Ask the AI planner to group the files and assign them for review.
+                logger.LogInformation($"Assigning {changes.Count} changes to reviewers.");
                 string changeFilePaths = Newtonsoft.Json.JsonConvert.SerializeObject(new Changes(changes.ToArray()));
                 Assignments? assignments = null;
                 try
@@ -306,6 +309,7 @@ namespace PRReviewAgent.Services
                 }
 
                 // Step 6: Generate detailed reviews for each assigned group of files.
+                logger.LogInformation($"Generating reviews for {assignments.assigns.Length} assignments.");
                 foreach (Assign assign in assignments.assigns)
                 {
                     string? reviewText = GetReviewDiffs(assign.paths, targets);
@@ -331,6 +335,7 @@ namespace PRReviewAgent.Services
             }
 
             // Step 7: Consolidate the reviews into a final organized message.
+            logger.LogInformation($"Organizing {reviews.Count} reviews.");
             stringBuilder_.Clear();
             string organizedReview = string.Empty;
             if (reviews.Count == 1)
@@ -387,6 +392,7 @@ namespace PRReviewAgent.Services
             }
         }
 
+        private const int MaxLogLength = 128;
         private void PostComment(string comment, NGitLab.IMergeRequestClient mergeRequestClient, ILogger<GitLabWebhookCommentTask>? logger)
         {
             IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
@@ -395,6 +401,20 @@ namespace PRReviewAgent.Services
             try
             {
                 MergeRequestComment _ = mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    ReadOnlySpan<char> span = comment.AsSpan();
+                    int length;
+                    for (length = 0; length < span.Length && length < MaxLogLength; ++length)
+                    {
+                        if (span[length] == '\n' || span[length] == '\r')
+                        {
+                            break;
+                        }
+                    }
+                    span = span.Slice(0, length);
+                    logger.LogInformation($"Comment is updated. {span}");
+                }
             }
             catch (Exception ex)
             {
