@@ -1,3 +1,5 @@
+using Microsoft.Agents.AI;
+using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.Extensions.Logging;
 using NGitLab;
 using NGitLab.Impl;
@@ -5,6 +7,7 @@ using NGitLab.Models;
 using Octokit;
 using PRReviewAgent.Services.GitLabWebhook;
 using System.ComponentModel;
+using System.Formats.Tar;
 using System.Text;
 
 namespace PRReviewAgent.Services
@@ -104,16 +107,6 @@ namespace PRReviewAgent.Services
         }
 
         /// <summary>
-        /// Represents a target for review, including its diff, path, and summary.
-        /// </summary>
-        public class Target
-        {
-            public NGitLab.Models.Diff Diff { get; set; }
-            public string Path { get; set; }
-            public string Summary { get; set; }
-        }
-
-        /// <summary>
         /// Represents a change in a file, including its path and summary.
         /// </summary>
         public class Change
@@ -139,6 +132,7 @@ namespace PRReviewAgent.Services
         public class Assign
         {
             public int reviewer_number { get; set; }
+            public string topic { get; set; }
             public string[] paths { get; set; }
         }
 
@@ -156,7 +150,7 @@ namespace PRReviewAgent.Services
         /// <param name="diff">The diff to check.</param>
         /// <param name="isTarget">A function to check if a path is a target.</param>
         /// <returns>A <see cref="Target"/> object if the diff is a target; otherwise, null.</returns>
-        public static Target? IsTarget(NGitLab.Models.Diff diff, Func<string, bool> isTarget)
+        public static ReviewContext? IsTarget(NGitLab.Models.Diff diff, Func<string, bool> isTarget)
         {
             if (diff.IsDeletedFile)
             {
@@ -190,7 +184,18 @@ namespace PRReviewAgent.Services
             {
                 return null;
             }
-            return new Target{ Diff = diff, Path = path, Summary = string.Empty };
+            return new ReviewContext
+            {
+                Path = path,
+
+                Diff = diff.Difference,
+
+                ChangedFile = string.Empty,
+
+                PairFile = string.Empty,
+
+                PairPath = string.Empty,
+            };
         }
 
         /// <summary>
@@ -199,36 +204,33 @@ namespace PRReviewAgent.Services
         /// <param name="paths">The paths of the files to include in the review.</param>
         /// <param name="targets">The list of target files and their summaries.</param>
         /// <returns>A formatted string containing the review diffs, or null if no template is found.</returns>
-        public string? GetReviewDiffs(string[] paths, List<Target> targets)
+        public FileGroup? GetReviewFiles(Assign assign, List<ReviewContext> contexts)
         {
             string? template = Context.Instance.Settings.GetReviewTemplate(language_);
             if(null == template)
             {
                 return null;
             }
-            stringBuilder_.Clear();
-            stringBuilder_.Append(template);
-            stringBuilder_.Append("\n\n");
-                
-            foreach (string path in paths)
+            FileGroup files = new FileGroup();
+            files.Topic = assign.topic;
+            foreach (string path in assign.paths)
             {
-                string diff = string.Empty;
-                foreach(Target target in targets)
+                ReviewContext? reviewContext = null;
+                foreach(ReviewContext context in contexts)
                 {
-                    if(target.Path == path)
+                    if(context.Path == path)
                     {
-                        diff = target.Diff.Difference;
+                        reviewContext = context;
                         break;
                     }
                 }
-                if(string.IsNullOrEmpty(diff))
+                if(null == reviewContext)
                 {
                     continue;
                 }
-                stringBuilder_.Append("# ").Append(path).Append("\n");
-                stringBuilder_.Append(diff).Append("\n");
+                files.ReviewContexts.Add(reviewContext);
             }
-            return stringBuilder_.ToString();
+            return files;
         }
 
         /// <summary>
@@ -249,48 +251,50 @@ namespace PRReviewAgent.Services
             // Step 1: Fetch all diffs associated with the merge request.
             NGitLab.IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest(payloadComment_.project.id);
             GitLabCollectionResponse<NGitLab.Models.Diff> response = mergeRequestClient.GetDiffsAsync(payloadComment_.merge_request.iid);
-            List<Target> targets = new List<Target>();
+            List<ReviewContext> reviewContexts = new List<ReviewContext>();
 
             // Step 2: Filter the diffs to identify files that should be reviewed.
             await foreach (NGitLab.Models.Diff diff in response)
             {
-                Target? target = IsTarget(diff, context.Settings.IsTargetExtension);
-                if (null != target)
+                ReviewContext? reviewContext = IsTarget(diff, context.Settings.IsTargetExtension);
+                if (null != reviewContext)
                 {
-                    targets.Add(target);
+                    reviewContexts.Add(reviewContext);
                 }
             }
-            if (targets.Count <= 0)
+            if (reviewContexts.Count <= 0)
             {
                 PostComment("No reviews are generated. There are no diffs to review.", mergeRequestClient, logger);
                 return;
             }
 
-            // Step 3: Summarize each identified diff using an AI assistant.
-            logger.LogInformation($"Summarizing {targets.Count} diffs.");
-            foreach (Target target in targets)
+            // Step 3: Analyze each identified diff using an AI assistant.
+            logger.LogInformation($"Summarizing {reviewContexts.Count} diffs.");
+            foreach (ReviewContext reviewContext in reviewContexts)
             {
                 try
                 {
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Summarize a next diff briefly in few lines.\n{target.Path}\n----\n{target.Diff.Difference}", context.CancellationToken);
-                    target.Summary = agentResponse.Text;
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Analyze this diff.\\nReturn:\\n\\n- What is modified?\\n- Why might it be modified?\\n- What APIs/classes/functions are involved?\\n- Which identifiers look important?\\n- What assumptions does this change make?\\n\\nKeep under 200 words.\n{reviewContext.Path}\n----\n{reviewContext.Diff}", context.CancellationToken);
+                    reviewContext.Summary = agentResponse.Text;
                 }
                 catch (Exception ex)
                 {
                     logger.LogError(ex.ToString());
                 }
             }
+            await ContextCollector.CollectAsync(gitLabClient, payloadComment_.merge_request, reviewContexts);
+
             List<string> reviews = new List<string>();
             {
                 // Step 4: Prepare the list of summarized changes for the AI planner.
-                List<Change> changes = new List<Change>(targets.Count);
-                foreach (Target target in targets)
+                List<Change> changes = new List<Change>(reviewContexts.Count);
+                foreach (ReviewContext reviewContext in reviewContexts)
                 {
-                    if (string.IsNullOrEmpty(target.Summary))
+                    if (string.IsNullOrEmpty(reviewContext.Summary))
                     {
                         continue;
                     }
-                    changes.Add(new Change() { path = target.Path, summary = target.Summary });
+                    changes.Add(new Change() { path = reviewContext.Path, summary = reviewContext.Summary });
                 }
 
                 // Step 5: Ask the AI planner to group the files and assign them for review.
@@ -299,7 +303,7 @@ namespace PRReviewAgent.Services
                 Assignments? assignments = null;
                 try
                 {
-                    assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
+                    assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance or topic, and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -308,23 +312,47 @@ namespace PRReviewAgent.Services
                     return;
                 }
 
-                // Step 6: Generate detailed reviews for each assigned group of files.
+                ReviewRequest reviewRequest = new ReviewRequest();
+                reviewRequest.ReviewRules = Context.Instance.Settings.GetReviewTemplate(language_);
+
+                // Step 6: Generate review request for each assigned group of files.
                 logger.LogInformation($"Generating reviews for {assignments.assigns.Length} assignments.");
                 foreach (Assign assign in assignments.assigns)
                 {
-                    string? reviewText = GetReviewDiffs(assign.paths, targets);
-                    if (string.IsNullOrEmpty(reviewText))
+                    FileGroup? files = GetReviewFiles(assign, reviewContexts);
+                    if (null == files || files.ReviewContexts.Count<=0)
+                    {
+                        logger.LogInformation($"No assignment is generated for {assign.paths.Length} files.");
+                        continue;
+                    }
+                    reviewRequest.FileGroups.Add(files);
+                }
+
+                // Step 7: Generate detailed reviews for each assigned group of files.
+                PromptBuilder.Build(reviewRequest, stringBuilder_);
+                logger.LogInformation($"Generating reviews for {assignments.assigns.Length} assignments.");
+                foreach (FileGroup fileGroup in reviewRequest.FileGroups)
+                {
+                    if (string.IsNullOrEmpty(fileGroup.Prompt))
                     {
                         continue;
                     }
                     try
                     {
-                        Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, reviewText, context.CancellationToken);
+                        Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, fileGroup.Prompt, context.CancellationToken);
                         if (string.IsNullOrEmpty(agentResponse.Text))
                         {
+                            logger.LogInformation($"No review is generated for {fileGroup.ReviewContexts.Count} files.");
                             continue;
                         }
-                        reviews.Add(agentResponse.Text);
+                        stringBuilder_.Clear();
+                        if (!string.IsNullOrEmpty(fileGroup.Topic))
+                        {
+                            stringBuilder_.Append($"Topic: {fileGroup.Topic}\n------------------------------------\n");
+                        }
+                        stringBuilder_.Append(agentResponse.Text);
+                        reviews.Add(stringBuilder_.ToString());
+                        logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.\n{agentResponse.Text}");
                     }
                     catch (Exception ex)
                     {
@@ -334,44 +362,18 @@ namespace PRReviewAgent.Services
                 }
             }
 
-            // Step 7: Consolidate the reviews into a final organized message.
+            // Step 8: Consolidate the reviews into a final organized message.
             logger.LogInformation($"Organizing {reviews.Count} reviews.");
             stringBuilder_.Clear();
             string organizedReview = string.Empty;
-            if (reviews.Count == 1)
-            {
-                organizedReview = reviews[0];
-            }
-            else if(1<reviews.Count)
+            if(1<=reviews.Count)
             {
                 // Use a template to organize the combined review if available.
-                string? organizeTemplate = Context.Instance.Settings.GetOrganizeTemplate(language_);
-                if (null != organizeTemplate)
-                {
-                    stringBuilder_.Append(organizeTemplate);
-                }
-                else
-                {
-                    stringBuilder_.Append("Organize the following reviews:\n");
-                }
                 foreach (string review in reviews)
                 {
                     stringBuilder_.Append(review).Append("\n\n");
                 }
-                try
-                {
-                    // Use the AI executor to create the final organized review text.
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, stringBuilder_.ToString(), context.CancellationToken);
-                    if (!string.IsNullOrEmpty(agentResponse.Text))
-                    {
-                        organizedReview = agentResponse.Text;
-                    }
-                }
-                catch(Exception ex)
-                {
-                    PostComment($"No reviews are generated. Fail in organizing the reviews.\n{ex.Message}", mergeRequestClient, logger);
-                    logger.LogError(ex.ToString());
-                }
+                organizedReview = stringBuilder_.ToString();
             }
             else
             {
@@ -382,6 +384,7 @@ namespace PRReviewAgent.Services
             if (!string.IsNullOrEmpty(organizedReview))
             {
                 PostComment(organizedReview, mergeRequestClient, logger);
+                logger.LogInformation($"Final review:\n{organizedReview}");
             }
             else
             {
