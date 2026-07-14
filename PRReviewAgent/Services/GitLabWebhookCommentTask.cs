@@ -1,13 +1,9 @@
-using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.Extensions.Logging;
 using NGitLab;
-using NGitLab.Impl;
 using NGitLab.Models;
-using Octokit;
 using PRReviewAgent.Services.GitLabWebhook;
-using System.ComponentModel;
-using System.Formats.Tar;
+using PRReviewAget.Prompt;
 using System.Text;
 
 namespace PRReviewAgent.Services
@@ -15,28 +11,21 @@ namespace PRReviewAgent.Services
     /// <summary>
     /// Represents the payload for a GitLab webhook comment.
     /// </summary>
-    public class  GitLabWebhookCommentPayload
+    public class GitLabWebhookCommentPayload
     {
-        /// <summary>
-        /// Gets or sets the object kind.
-        /// </summary>
         public string object_kind { get; set; }
     }
 
     /// <summary>
-    /// Represents a task that processes a GitLab webhook comment, performs a code review, and updates the comment with the review results.
+    /// Processes a GitLab webhook comment, performs a code review using AST context, and posts the result.
     /// </summary>
     public class GitLabWebhookCommentTask
     {
         /// <summary>
-        /// Finds the language code in the given comment.
-        /// Searches for a pattern like '/en' or '/ja' at the beginning of the comment.
+        /// Finds the language code (e.g. 'en', 'ja') from the first line of a comment.
         /// </summary>
-        /// <param name="comment">The comment text to search.</param>
-        /// <returns>The language code if found; otherwise, an empty string.</returns>
         public static string FindLanguage(string comment)
         {
-            // Trim the comment and focus on the first line.
             ReadOnlySpan<char> line = comment.AsSpan().Trim();
             int index = line.IndexOfAny("\n\r".AsSpan());
             if (0 <= index)
@@ -44,8 +33,7 @@ namespace PRReviewAgent.Services
                 line = line.Slice(0, index);
             }
 
-            // Look for a language tag starting with '/' followed by two ASCII letters.
-            for(int i = 0; i < line.Length;)
+            for (int i = 0; i < line.Length;)
             {
                 if ('/' != line[i])
                 {
@@ -53,19 +41,15 @@ namespace PRReviewAgent.Services
                     continue;
                 }
 
-                // Ensure there are at least 2 characters after '/'
                 if ((i + 3) <= line.Length)
                 {
                     ReadOnlySpan<char> lang = line.Slice(i, 3);
-                    // Check if characters after '/' are letters.
-                    if (!char.IsAsciiLetter(lang[1])
-                        || !char.IsAsciiLetter(lang[2]))
+                    if (!char.IsAsciiLetter(lang[1]) || !char.IsAsciiLetter(lang[2]))
                     {
                         i += 3;
                         continue;
                     }
 
-                    // If there's a character after the tag, it must be whitespace.
                     if ((i + 3) < line.Length)
                     {
                         if (!char.IsWhiteSpace(line[i + 3]))
@@ -74,8 +58,7 @@ namespace PRReviewAgent.Services
                             continue;
                         }
                     }
-                    
-                    // Extract and return the 2-character language code.
+
                     lang = lang.Slice(1);
                     return lang.ToString();
                 }
@@ -84,176 +67,66 @@ namespace PRReviewAgent.Services
             return string.Empty;
         }
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="GitLabWebhookCommentTask"/> class.
-        /// </summary>
-        /// <param name="payloadComment">The GitLab webhook payload for the comment.</param>
         public GitLabWebhookCommentTask(PayloadComment payloadComment)
         {
             payloadComment_ = payloadComment;
 
-            // Extract the language code (e.g., 'en', 'ja') from the comment text.
-            // If the language is not found or no template exists for it, use the default language.
             language_ = FindLanguage(payloadComment_.object_attributes.note);
             if (string.IsNullOrEmpty(language_) || !Context.Instance.Settings.HasTemplate(language_))
             {
                 Tomlyn.Model.TomlTable? commonTable = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["common"];
                 language_ = (string)commonTable["default_language"];
             }
-#if false
-            string json = Newtonsoft.Json.JsonConvert.SerializeObject(payload_, Newtonsoft.Json.Formatting.Indented);
-            System.IO.File.WriteAllText("payload_comment.json", json);
-#endif
         }
 
         /// <summary>
-        /// Represents a change in a file, including its path and summary.
+        /// Determines if a diff should be reviewed. Returns null for deleted/renamed/empty files or non-target extensions.
         /// </summary>
-        public class Change
-        {
-            [Description("path")]
-            public string path { get;set; }
-            [Description("summary")]
-            public string summary { get; set; }
-        }
-
-        /// <summary>
-        /// Represents a collection of changes.
-        /// </summary>
-        /// <param name="changes">The array of changes.</param>
-        public record Changes(
-            [Description("Changed file paths and summaries")]
-            Change[] changes
-        );
-
-        /// <summary>
-        /// Represents an assignment of file paths to a reviewer.
-        /// </summary>
-        public class Assign
-        {
-            public int reviewer_number { get; set; }
-            public string topic { get; set; }
-            public string[] paths { get; set; }
-        }
-
-        /// <summary>
-        /// Represents a collection of assignments.
-        /// </summary>
-        /// <param name="assigns">The array of assignments.</param>
-        public record Assignments(
-            Assign[] assigns
-        );
-
-        /// <summary>
-        /// Determines if a diff is a target for review.
-        /// </summary>
-        /// <param name="diff">The diff to check.</param>
-        /// <param name="isTarget">A function to check if a path is a target.</param>
-        /// <returns>A <see cref="Target"/> object if the diff is a target; otherwise, null.</returns>
         public static ReviewContext? IsTarget(NGitLab.Models.Diff diff, Func<string, bool> isTarget)
         {
-            if (diff.IsDeletedFile)
-            {
-                return null;
-            }
-            if (diff.IsRenamedFile)
-            {
-                return null;
-            }
-            if (string.IsNullOrEmpty(diff.Difference))
-            {
-                return null;
-            }
+            if (diff.IsDeletedFile) return null;
+            if (diff.IsRenamedFile) return null;
+            if (string.IsNullOrEmpty(diff.Difference)) return null;
+
             string path;
             if (string.IsNullOrEmpty(diff.NewPath))
             {
                 if (!string.IsNullOrEmpty(diff.OldPath))
-                {
                     path = diff.OldPath;
-                }
                 else
-                {
                     return null;
-                }
             }
             else
             {
                 path = diff.NewPath;
             }
-            if (!isTarget(path))
-            {
-                return null;
-            }
+
+            if (!isTarget(path)) return null;
+
             return new ReviewContext
             {
                 Path = path,
-
                 Diff = diff.Difference,
-
                 ChangedFile = string.Empty,
-
                 PairFile = string.Empty,
-
                 PairPath = string.Empty,
             };
         }
 
-        /// <summary>
-        /// Gets the review diffs for the specified paths and targets.
-        /// </summary>
-        /// <param name="paths">The paths of the files to include in the review.</param>
-        /// <param name="targets">The list of target files and their summaries.</param>
-        /// <returns>A formatted string containing the review diffs, or null if no template is found.</returns>
-        public FileGroup? GetReviewFiles(Assign assign, List<ReviewContext> contexts)
-        {
-            string? template = Context.Instance.Settings.GetReviewTemplate(language_);
-            if(null == template)
-            {
-                return null;
-            }
-            FileGroup files = new FileGroup();
-            files.Topic = assign.topic;
-            foreach (string path in assign.paths)
-            {
-                ReviewContext? reviewContext = null;
-                foreach(ReviewContext context in contexts)
-                {
-                    if(context.Path == path)
-                    {
-                        reviewContext = context;
-                        break;
-                    }
-                }
-                if(null == reviewContext)
-                {
-                    continue;
-                }
-                files.ReviewContexts.Add(reviewContext);
-            }
-            return files;
-        }
-
-        /// <summary>
-        /// Runs the GitLab webhook comment task asynchronously.
-        /// </summary>
-        /// <param name="serviceProvider">The service provider to resolve dependencies.</param>
-        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
-        /// <returns>A task that represents the asynchronous operation.</returns>
         public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
         {
             ILogger<GitLabWebhookCommentTask>? logger = serviceProvider.GetService<ILogger<GitLabWebhookCommentTask>>();
             logger.LogInformation($"Processing comment: {payloadComment_.object_attributes.id}");
 
             Context context = Context.Instance;
-
             NGitLab.GitLabClient gitLabClient = serviceProvider.GetService<GitLabClientService>().GitLabClient;
 
-            // Step 1: Fetch all diffs associated with the merge request.
+            // Step 1: Fetch all diffs for the merge request.
             NGitLab.IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest(payloadComment_.project.id);
             GitLabCollectionResponse<NGitLab.Models.Diff> response = mergeRequestClient.GetDiffsAsync(payloadComment_.merge_request.iid);
             List<ReviewContext> reviewContexts = new List<ReviewContext>();
 
-            // Step 2: Filter the diffs to identify files that should be reviewed.
+            // Step 2: Filter to files that should be reviewed.
             await foreach (NGitLab.Models.Diff diff in response)
             {
                 ReviewContext? reviewContext = IsTarget(diff, context.Settings.IsTargetExtension);
@@ -268,130 +141,313 @@ namespace PRReviewAgent.Services
                 return;
             }
 
-            // Step 3: Analyze each identified diff using an AI assistant.
-            logger.LogInformation($"Summarizing {reviewContexts.Count} diffs.");
+            // Step 3: Fetch full file contents from the source branch.
+            IRepositoryClient repository = gitLabClient.GetRepository(payloadComment_.merge_request.target_project_id);
+            string sourceBranch = payloadComment_.merge_request.source_branch;
+            logger.LogInformation($"Fetching file contents for {reviewContexts.Count} files.");
             foreach (ReviewContext reviewContext in reviewContexts)
             {
                 try
                 {
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Analyze this diff.\\nReturn:\\n\\n- What is modified?\\n- Why might it be modified?\\n- What APIs/classes/functions are involved?\\n- Which identifiers look important?\\n- What assumptions does this change make?\\n\\nKeep under 200 words.\n{reviewContext.Path}\n----\n{reviewContext.Diff}", context.CancellationToken);
-                    reviewContext.Summary = agentResponse.Text;
+                    FileData file = await repository.Files.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    reviewContext.ChangedFile = file.DecodedContent;
                 }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex.ToString());
-                }
+                catch { }
             }
-            await ContextCollector.CollectAsync(gitLabClient, payloadComment_.merge_request, reviewContexts);
 
-            List<string> reviews = new List<string>();
+            // Step 4: Resolve related (pair) files deterministically.
+            FindPair(reviewContexts);
+            await FindPairAsync(reviewContexts, repository.Files, sourceBranch, cancellationToken);
+
+            // Step 5: Extract AST context for each file.
+            logger.LogInformation($"Extracting AST context for {reviewContexts.Count} files.");
+            foreach (ReviewContext reviewContext in reviewContexts)
             {
-                // Step 4: Prepare the list of summarized changes for the AI planner.
-                List<Change> changes = new List<Change>(reviewContexts.Count);
-                foreach (ReviewContext reviewContext in reviewContexts)
-                {
-                    if (string.IsNullOrEmpty(reviewContext.Summary))
-                    {
-                        continue;
-                    }
-                    changes.Add(new Change() { path = reviewContext.Path, summary = reviewContext.Summary });
-                }
-
-                // Step 5: Ask the AI planner to group the files and assign them for review.
-                logger.LogInformation($"Assigning {changes.Count} changes to reviewers.");
-                string changeFilePaths = Newtonsoft.Json.JsonConvert.SerializeObject(new Changes(changes.ToArray()));
-                Assignments? assignments = null;
                 try
                 {
-                    assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance or topic, and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
+                    (string json, string expandedDiff) = AstContextExtractor.Run(
+                        reviewContext.Path,
+                        reviewContext.ChangedFile,
+                        reviewContext.Path,
+                        reviewContext.Diff,
+                        reviewContext.PairPath,
+                        reviewContext.PairFile);
+                    reviewContext.AstJson = json;
+                    reviewContext.ExpandedDiff = expandedDiff;
                 }
                 catch (Exception ex)
                 {
                     logger.LogError(ex.ToString());
-                    PostComment($"No reviews are generated. Fail in assigning the files to reviewers.\n{ex.Message}", mergeRequestClient, logger);
-                    return;
-                }
-
-                ReviewRequest reviewRequest = new ReviewRequest();
-                reviewRequest.ReviewRules = Context.Instance.Settings.GetReviewTemplate(language_);
-
-                // Step 6: Generate review request for each assigned group of files.
-                logger.LogInformation($"Generating reviews for {assignments.assigns.Length} assignments.");
-                foreach (Assign assign in assignments.assigns)
-                {
-                    FileGroup? files = GetReviewFiles(assign, reviewContexts);
-                    if (null == files || files.ReviewContexts.Count<=0)
-                    {
-                        logger.LogInformation($"No assignment is generated for {assign.paths.Length} files.");
-                        continue;
-                    }
-                    reviewRequest.FileGroups.Add(files);
-                }
-
-                // Step 7: Generate detailed reviews for each assigned group of files.
-                PromptBuilder.Build(reviewRequest, stringBuilder_);
-                logger.LogInformation($"Generating reviews for {assignments.assigns.Length} assignments.");
-                foreach (FileGroup fileGroup in reviewRequest.FileGroups)
-                {
-                    if (string.IsNullOrEmpty(fileGroup.Prompt))
-                    {
-                        continue;
-                    }
-                    try
-                    {
-                        Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, fileGroup.Prompt, context.CancellationToken);
-                        if (string.IsNullOrEmpty(agentResponse.Text))
-                        {
-                            logger.LogInformation($"No review is generated for {fileGroup.ReviewContexts.Count} files.");
-                            continue;
-                        }
-                        stringBuilder_.Clear();
-                        if (!string.IsNullOrEmpty(fileGroup.Topic))
-                        {
-                            stringBuilder_.Append($"Topic: {fileGroup.Topic}\n------------------------------------\n");
-                        }
-                        stringBuilder_.Append(agentResponse.Text);
-                        reviews.Add(stringBuilder_.ToString());
-                        logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.\n{agentResponse.Text}");
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex.ToString());
-                        continue;
-                    }
                 }
             }
 
-            // Step 8: Consolidate the reviews into a final organized message.
-            logger.LogInformation($"Organizing {reviews.Count} reviews.");
+            // Step 6: Build file groups deterministically by base filename.
+            logger.LogInformation($"Building file groups for {reviewContexts.Count} files.");
+            ReviewRequest reviewRequest = new ReviewRequest();
+            reviewRequest.MergeRequestTitle = payloadComment_.merge_request.title ?? string.Empty;
+            reviewRequest.MergeRequestDescription = payloadComment_.merge_request.description;
+            reviewRequest.ReviewRules = Context.Instance.Settings.GetReviewTemplate(language_);
+
+            Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
+            foreach (ReviewContext reviewContext in reviewContexts)
+            {
+                string baseName = Path.GetFileNameWithoutExtension(reviewContext.Path);
+                if (!groups.TryGetValue(baseName, out FileGroup? group))
+                {
+                    group = new FileGroup { Topic = baseName };
+                    groups[baseName] = group;
+                    reviewRequest.FileGroups.Add(group);
+                }
+                group.ReviewContexts.Add(reviewContext);
+            }
+
+            // Step 7: Build prompts for each group.
+            PromptBuilder.Build(reviewRequest, stringBuilder_);
+
+            // Step 8: Execute review for each file group.
+            List<string> reviews = new List<string>();
+            logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
+            foreach (FileGroup fileGroup in reviewRequest.FileGroups)
+            {
+                if (string.IsNullOrEmpty(fileGroup.Prompt)) continue;
+                try
+                {
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, fileGroup.Prompt, context.CancellationToken);
+                    if (string.IsNullOrEmpty(agentResponse.Text))
+                    {
+                        logger.LogInformation($"No review generated for {fileGroup.ReviewContexts.Count} files.");
+                        continue;
+                    }
+                    stringBuilder_.Clear();
+                    stringBuilder_.Append($"## {fileGroup.Topic}\n\n");
+                    stringBuilder_.Append(agentResponse.Text);
+                    reviews.Add(stringBuilder_.ToString());
+                    logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.");
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex.ToString());
+                }
+            }
+
+            // Step 9: Merge reviews and post comment.
+            if (reviews.Count <= 0)
+            {
+                PostComment("No reviews are generated.", mergeRequestClient, logger);
+                return;
+            }
+
             stringBuilder_.Clear();
-            string organizedReview = string.Empty;
-            if(1<=reviews.Count)
+            foreach (string review in reviews)
             {
-                // Use a template to organize the combined review if available.
-                foreach (string review in reviews)
-                {
-                    stringBuilder_.Append(review).Append("\n\n");
-                }
-                organizedReview = stringBuilder_.ToString();
+                stringBuilder_.Append(review).Append("\n\n---\n\n");
             }
-            else
-            {
-                PostComment("No reviews are generated. Fail in assigning the files to reviewers.", mergeRequestClient, logger);
-            }
+            string organizedReview = stringBuilder_.ToString();
+            PostComment(organizedReview, mergeRequestClient, logger);
+            logger.LogInformation($"Final review:\n{organizedReview}");
+        }
 
-            // Step 8: Update the original comment on GitLab with the final review results.
-            if (!string.IsNullOrEmpty(organizedReview))
+        /// <summary>
+        /// Find pair based on filenames
+        /// </summary>
+        /// <param name="reviewContexts"></param>
+        private static void FindPair(List<ReviewContext> reviewContexts)
+        {
+            foreach (ReviewContext reviewContext in reviewContexts)
             {
-                PostComment(organizedReview, mergeRequestClient, logger);
-                logger.LogInformation($"Final review:\n{organizedReview}");
+                string? pairFilename = GuessPairFileName1(reviewContext.Path);
+                if (pairFilename == null)
+                {
+                    continue;
+                }
+                ReviewContext? pair = reviewContexts.Find(c => Path.GetFileName(c.Path) == pairFilename);
+                if (null != pair)
+                {
+                    reviewContext.PairPath = pair.Path;
+                    reviewContext.PairDiff = pair.Diff;
+                    reviewContext.PairFile = pair.ChangedFile;
+                    continue;
+                }
+                pairFilename = GuessPairFileName2(reviewContext.Path);
+                if (pairFilename == null)
+                {
+                    continue;
+                }
+                if (null != pair)
+                {
+                    reviewContext.PairPath = pair.Path;
+                    reviewContext.PairDiff = pair.Diff;
+                    reviewContext.PairFile = pair.ChangedFile;
+                    continue;
+                }
             }
-            else
+        }
+
+        private static async Task<bool> FileExistsAsync(IFilesClient filesClient, string path, string sourceBranch, CancellationToken cancellationToken)
+        {
+            return await filesClient.FileExistsAsync(path, sourceBranch, cancellationToken);
+        }
+
+        private static async Task FindPairAsync(List<ReviewContext> reviewContexts, IFilesClient filesClient, string sourceBranch, CancellationToken cancellationToken)
+        {
+            foreach (ReviewContext reviewContext in reviewContexts)
             {
-                // Fallback message if no review content was generated.
-                stringBuilder_.Clear();
-                stringBuilder_.Append("No reviews are generated.");
-                PostComment(stringBuilder_.ToString(), mergeRequestClient, logger);
+                if(null != reviewContext.PairPath)
+                {
+                    continue;
+                }
+                string? pairPath = GuessPair1(reviewContext.Path);
+                if (pairPath == null){
+                    continue;
+                }
+                if(await FileExistsAsync(filesClient, pairPath, sourceBranch, cancellationToken))
+                {
+                    FileData file = await filesClient.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    continue;
+                }
+
+                pairPath = GuessPair2(reviewContext.Path);
+                if (pairPath == null){
+                    continue;
+                }
+                if(await FileExistsAsync(filesClient, pairPath, sourceBranch, cancellationToken))
+                {
+                    FileData file = await filesClient.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    continue;
+                }
+
+                pairPath = GuessPair3(reviewContext.Path);
+                if (pairPath == null){
+                    continue;
+                }
+                if(await FileExistsAsync(filesClient, pairPath, sourceBranch, cancellationToken))
+                {
+                    FileData file = await filesClient.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    continue;
+                }
+
+                pairPath = GuessPair4(reviewContext.Path);
+                if (pairPath == null){
+                    continue;
+                }
+                if(await FileExistsAsync(filesClient, pairPath, sourceBranch, cancellationToken))
+                {
+                    FileData file = await filesClient.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    continue;
+                }
+            }
+        }
+
+        private static string? GuessPairFileName1(string path)
+        {
+            string ext = Path.GetExtension(path);
+            string filename = Path.GetFileName(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(filename, ".h");
+                case ".h":
+                case ".hpp":
+                    return Path.ChangeExtension(filename, ".cpp");
+                default:
+                    return null;
+            }
+        }
+
+        private static string? GuessPairFileName2(string path)
+        {
+            string ext = Path.GetExtension(path);
+            string filename = Path.GetFileName(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(filename, ".h");
+                case ".h":
+                    return Path.ChangeExtension(filename, ".c");
+                case ".hpp":
+                    return Path.ChangeExtension(filename, ".cpp");
+                default:
+                    return null;
+            }
+        }
+
+        private static string? GuessPair1(string path)
+        {
+            string ext = Path.GetExtension(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(path, ".h").Replace("src", "include");
+                case ".h":
+                case ".hpp":
+                    return Path.ChangeExtension(path, ".cpp").Replace("include", "src");
+                default:
+                    return null;
+            }
+        }
+
+        private static string? GuessPair2(string path)
+        {
+            string ext = Path.GetExtension(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(path, ".h").Replace("src", "include");
+                case ".h":
+                    return Path.ChangeExtension(path, ".c").Replace("include", "src");
+                case ".hpp":
+                    return Path.ChangeExtension(path, ".cpp").Replace("include", "src");
+                default:
+                    return null;
+            }
+        }
+
+        private static string? GuessPair3(string path)
+        {
+            string ext = Path.GetExtension(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(path, ".h").Replace("source", "include");
+                case ".h":
+                case ".hpp":
+                    return Path.ChangeExtension(path, ".cpp").Replace("include", "source");
+                default:
+                    return null;
+            }
+        }
+
+        private static string? GuessPair4(string path)
+        {
+            string ext = Path.GetExtension(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(path, ".h").Replace("source", "include");
+                case ".h":
+                    return Path.ChangeExtension(path, ".c").Replace("include", "source");
+                case ".hpp":
+                    return Path.ChangeExtension(path, ".cpp").Replace("include", "source");
+                default:
+                    return null;
             }
         }
 
@@ -410,10 +466,7 @@ namespace PRReviewAgent.Services
                     int length;
                     for (length = 0; length < span.Length && length < MaxLogLength; ++length)
                     {
-                        if (span[length] == '\n' || span[length] == '\r')
-                        {
-                            break;
-                        }
+                        if (span[length] == '\n' || span[length] == '\r') break;
                     }
                     span = span.Slice(0, length);
                     logger.LogInformation($"Comment is updated. {span}");

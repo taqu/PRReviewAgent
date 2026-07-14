@@ -12,6 +12,7 @@ namespace PRReviewAgent.Services
         public string? PairDiff { get; set; } = string.Empty;
         public string? PairFile { get; set; } = string.Empty;
 
-        public string? Summary { get; set; } = string.Empty;
+        public string? AstJson { get; set; } = string.Empty;
+        public string? ExpandedDiff { get; set; } = string.Empty;
     }
 }
