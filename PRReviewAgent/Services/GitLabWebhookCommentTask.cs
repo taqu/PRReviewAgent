@@ -106,6 +106,7 @@ namespace PRReviewAgent.Services
             return new ReviewContext
             {
                 Path = path,
+                Filename = Path.GetFileName(path),
                 Diff = diff.Difference,
                 ChangedFile = string.Empty,
                 PairFile = string.Empty,
