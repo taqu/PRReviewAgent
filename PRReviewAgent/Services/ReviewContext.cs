@@ -3,6 +3,7 @@ namespace PRReviewAgent.Services
     public sealed class ReviewContext
     {
         public string Path { get; init; } = string.Empty;
+        public string Filename { get; init; } = string.Empty;
 
         public string Diff { get; init; } = string.Empty;
 

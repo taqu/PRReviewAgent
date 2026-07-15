@@ -1,6 +1,3 @@
-
-using System.Collections.Generic;
-
 namespace PRReviewAget.Prompt;
 
 // Language-specific rules that define which AST nodes are "meaningful" expansion boundaries.
