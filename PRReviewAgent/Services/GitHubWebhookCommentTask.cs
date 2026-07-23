@@ -4,6 +4,7 @@ using NGitLab.Models;
 using Octokit;
 using PRReviewAgent.Services.GitHubWebhook;
 using PRReviewAgent.Services.GitLabWebhook;
+using PRReviewAget.Prompt;
 using System;
 using System.ComponentModel;
 using System.Text;
@@ -45,43 +46,6 @@ namespace PRReviewAgent.Services
         }
 
         /// <summary>
-        /// Represents an assignment of file paths to a reviewer.
-        /// </summary>
-        public class Assign
-        {
-            public int reviewer_number { get; set; }
-            public string[] paths { get; set; }
-        }
-
-        /// <summary>
-        /// Represents a collection of assignments.
-        /// </summary>
-        /// <param name="assigns">The array of assignments.</param>
-        public record Assignments(
-            Assign[] assigns
-        );
-
-        /// <summary>
-        /// Represents a target file for review, including its diff and summary.
-        /// </summary>
-        public class Target
-        {
-            public PullRequestFile File { get; set; }
-            public string Summary { get; set; }
-        }
-
-        /// <summary>
-        /// Represents a change in a file, including its path and summary.
-        /// </summary>
-        public class Change
-        {
-            [Description("path")]
-            public string path { get;set; }
-            [Description("summary")]
-            public string summary { get; set; }
-        }
-
-        /// <summary>
         /// Represents a collection of changes.
         /// </summary>
         /// <param name="changes">The array of changes.</param>
@@ -91,46 +55,57 @@ namespace PRReviewAgent.Services
         );
 
         /// <summary>
-        /// Gets the review diffs for the specified paths and targets.
+        /// Determines if a diff should be reviewed. Returns null for deleted/renamed/empty files or non-target extensions.
         /// </summary>
-        /// <param name="paths">The paths of the files to include in the review.</param>
-        /// <param name="targets">The list of target files and their summaries.</param>
-        /// <returns>A formatted string containing the review diffs, or null if no template is found.</returns>
-        public string? GetReviewDiffs(string[] paths, List<Target> targets)
+        public static ReviewContext? IsTarget(PullRequestFile requestFile, Func<string, bool> isTarget)
         {
-            // Retrieve the review template corresponding to the determined language.
-            string? template = Context.Instance.Settings.GetReviewTemplate(language_);
-            if(null == template)
+            bool isDeleted = !string.IsNullOrEmpty(requestFile.PreviousFileName) && string.IsNullOrEmpty(requestFile.FileName);
+            bool isMoved = !string.IsNullOrEmpty(requestFile.PreviousFileName) && !string.IsNullOrEmpty(requestFile.FileName) && requestFile.PreviousFileName != requestFile.FileName && string.IsNullOrEmpty(requestFile.Patch);
+            if (isDeleted || isMoved)
             {
                 return null;
             }
 
-            // Build the review text by appending the template followed by the diffs of assigned files.
-            stringBuilder_.Clear();
-            stringBuilder_.Append(template);
-            stringBuilder_.Append("\n\n");
-                
-            foreach (string path in paths)
+            if (!isTarget(requestFile.FileName))
             {
-                string diff = string.Empty;
-                foreach(Target target in targets)
-                {
-                    // Match the assigned file path with its corresponding diff from the target list.
-                    if(target.File.FileName == path)
-                    {
-                        diff = target.File.Patch;
-                        break;
-                    }
-                }
-                if(string.IsNullOrEmpty(diff))
-                {
-                    continue;
-                }
-                // Append the file name as a header followed by the actual diff content.
-                stringBuilder_.Append("# ").Append(path).Append("\n");
-                stringBuilder_.Append(diff).Append("\n");
+                return null;
             }
-            return stringBuilder_.ToString();
+
+            return new ReviewContext
+            {
+                Path = requestFile.FileName,
+                Filename = Path.GetFileName(requestFile.FileName),
+                Diff = requestFile.Patch,
+                ChangedFile = string.Empty,
+                PairFile = string.Empty,
+                PairPath = string.Empty,
+            };
+        }
+
+        public static async Task<string> GetPullRequestFileContentAsync(
+            GitHubClient client,
+            long repositoryId,
+            string reference,
+            string filePath)
+        {
+            try
+            {
+                IReadOnlyList<RepositoryContent> fileContents = await client.Repository.Content.GetAllContentsByRef(repositoryId, filePath, reference);
+                RepositoryContent targetFile = fileContents[0];
+                if (targetFile.Content != null)
+                {
+                    return targetFile.Content;
+                }
+                else
+                {
+                    byte[] rawBytes = Convert.FromBase64String(targetFile.EncodedContent);
+                    return Encoding.UTF8.GetString(rawBytes);
+                }
+            }
+            catch (ApiException ex)
+            {
+                return string.Empty;
+            }
         }
 
         /// <summary>
@@ -150,36 +125,35 @@ namespace PRReviewAgent.Services
 
             // Step 1: Fetch the list of files included in this pull request.
             IReadOnlyList<PullRequestFile> files = await gitHubClient.PullRequest.Files(payloadIssueComment_.repository.id, pullRequestNumber_);
-            List<Target> targets = new List<Target>();
+            List<ReviewContext> reviewContexts = new List<ReviewContext>();
 
             // Step 2: Identify files that are suitable for review (target extensions and not deleted/moved).
             foreach (PullRequestFile file in files)
             {
-                bool isDeleted = !string.IsNullOrEmpty(file.PreviousFileName) && string.IsNullOrEmpty(file.FileName);
-                bool isMoved = !string.IsNullOrEmpty(file.PreviousFileName) && !string.IsNullOrEmpty(file.FileName) && file.PreviousFileName!=file.FileName && string.IsNullOrEmpty(file.Patch);
-                if (isDeleted || isMoved)
+                ReviewContext? reviewContext = IsTarget(file, context.Settings.IsTargetExtension);
+                if (null != reviewContext)
                 {
-                    continue;
-                }
-                if (context.Settings.IsTargetExtension(file.FileName))
-                {
-                    targets.Add(new Target() { File = file, Summary = string.Empty });
+                    reviewContexts.Add(reviewContext);
                 }
             }
-            if (targets.Count <= 0)
+            if (reviewContexts.Count <= 0)
             {
                 await PostCommentAsync("No reviews are generated. There are no diffs to review.", gitHubClient, logger);
                 return;
             }
 
-            // Step 3: Summarize each file's diff using an AI assistant to prepare for grouping.
-            logger.LogInformation($"Summarizing {targets.Count} diffs.");
-            foreach (Target target in targets)
+            // Step 3: Fetch full file contents from the source branch.
+            logger.LogInformation($"Fetching file contents for {reviewContexts.Count} files.");
+            PullRequest pullRequest = await gitHubClient.PullRequest.Get(payloadIssueComment_.repository.id, pullRequestNumber_);
+            foreach (ReviewContext reviewContext in reviewContexts)
             {
                 try
                 {
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Assistant, $"Summarize a next diff briefly in few lines.\n{target.File.FileName}\n----\n{target.File.Patch}", context.CancellationToken);
-                    target.Summary = agentResponse.Text;
+                    string file = await GetPullRequestFileContentAsync(gitHubClient, payloadIssueComment_.repository.id, pullRequest.Head.Sha, reviewContext.Path);
+                    if (string.IsNullOrEmpty(file))
+                    {
+                        reviewContext.ChangedFile = file;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -187,119 +161,229 @@ namespace PRReviewAgent.Services
                 }
             }
 
+            // Step 4: Resolve related (pair) files deterministically.
+            ContextCollector.FindPair(reviewContexts);
+            await FindPairAsync(reviewContexts, gitHubClient, payloadIssueComment_.repository.id, pullRequest.Head.Sha, cancellationToken);
+
+            // Step 5: Extract AST context for each file.
+            logger.LogInformation($"Extracting AST context for {reviewContexts.Count} files.");
+            foreach (ReviewContext reviewContext in reviewContexts)
+            {
+                try
+                {
+                    (string json, string expandedDiff) = AstContextExtractor.Run(
+                        reviewContext.Path,
+                        reviewContext.ChangedFile,
+                        reviewContext.Path,
+                        reviewContext.Diff,
+                        reviewContext.PairPath,
+                        reviewContext.PairFile);
+                    reviewContext.AstJson = json;
+                    reviewContext.ExpandedDiff = expandedDiff;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex.ToString());
+                }
+            }
+
+            // Step 6: Build file groups deterministically by base filename.
+            logger.LogInformation($"Building file groups for {reviewContexts.Count} files.");
+            ReviewRequest reviewRequest = new ReviewRequest();
+            reviewRequest.MergeRequestTitle = payloadIssueComment_.issue.title ?? string.Empty;
+            reviewRequest.MergeRequestDescription = payloadIssueComment_.issue.body?? string.Empty;
+            reviewRequest.ReviewRules = Context.Instance.Settings.GetReviewTemplate(language_);
+
+            Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
+            foreach (ReviewContext reviewContext in reviewContexts)
+            {
+                string baseName = Path.GetFileNameWithoutExtension(reviewContext.Path);
+                if (!groups.TryGetValue(baseName, out FileGroup? group))
+                {
+                    group = new FileGroup { Topic = baseName };
+                    groups[baseName] = group;
+                    reviewRequest.FileGroups.Add(group);
+                }
+                group.ReviewContexts.Add(reviewContext);
+            }
+
+            // Step 7: Build prompts for each group.
+            PromptBuilder.Build(reviewRequest, stringBuilder_);
+
+
+            // Step 8: Execute review for each file group.
             List<string> reviews = new List<string>();
+            logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
+            foreach (FileGroup fileGroup in reviewRequest.FileGroups)
             {
-                // Step 4: Prepare a list of changes to send to the AI planner for grouping.
-                List<Change> changes = new List<Change>(targets.Count);
-                foreach (Target target in targets)
-                {
-                    if (string.IsNullOrEmpty(target.Summary))
-                    {
-                        continue;
-                    }
-                    changes.Add(new Change() { path = target.File.FileName, summary = target.Summary });
-                }
-
-                // Step 5: Ask the AI planner to group related files and assign them to reviewers.
-                logger.LogInformation($"Assigning {changes.Count} changes to reviewers.");
-                string changeFilePaths = Newtonsoft.Json.JsonConvert.SerializeObject(new Changes(changes.ToArray()));
-                Assignments? assignments = null;
+                if (string.IsNullOrEmpty(fileGroup.Prompt)) continue;
                 try
                 {
-                    assignments = await context.Agents.RunAsync<Assignments>(Agents.Type.Planner, $"Group next diffs in the pull request by relevance and assign file paths to each reviewers.\n```json\n{changeFilePaths}```", context.CancellationToken);
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, fileGroup.Prompt, context.CancellationToken);
+                    if (string.IsNullOrEmpty(agentResponse.Text))
+                    {
+                        logger.LogInformation($"No review generated for {fileGroup.ReviewContexts.Count} files.");
+                        continue;
+                    }
+                    stringBuilder_.Clear();
+                    stringBuilder_.Append($"## {fileGroup.Topic}\n\n");
+                    stringBuilder_.Append(agentResponse.Text);
+                    reviews.Add(stringBuilder_.ToString());
+                    logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.");
                 }
                 catch (Exception ex)
                 {
                     logger.LogError(ex.ToString());
-                    await PostCommentAsync($"No reviews are generated. Fail in assigning the files to reviewers.\n{ex.Message}", gitHubClient, logger);
-                    return;
-                }
-
-                // Step 6: Generate a code review for each assigned group of files.
-                logger.LogInformation($"Generating reviews for {assignments.assigns.Length} assignments.");
-                foreach (Assign assign in assignments.assigns)
-                {
-                    string? reviewText = GetReviewDiffs(assign.paths, targets);
-                    if (string.IsNullOrEmpty(reviewText))
-                    {
-                        continue;
-                    }
-                    try
-                    {
-                        Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, reviewText, context.CancellationToken);
-                        if (string.IsNullOrEmpty(agentResponse.Text))
-                        {
-                            continue;
-                        }
-                        reviews.Add(agentResponse.Text);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex.ToString());
-                        continue;
-                    }
                 }
             }
 
-            // Step 7: Consolidate multiple reviews into a single organized response.
-            logger.LogInformation($"Organizing {reviews.Count} reviews.");
+            // Step 9: Merge reviews and post comment.
+            if (reviews.Count <= 0)
+            {
+                await PostCommentAsync("No reviews are generated.", gitHubClient, logger);
+                return;
+            }
+
             stringBuilder_.Clear();
-            string organizedReview = string.Empty;
-            if (reviews.Count == 1)
+            foreach (string review in reviews)
             {
-                organizedReview = reviews[0];
+                stringBuilder_.Append(review).Append("\n\n---\n\n");
             }
-            else if(1<reviews.Count)
-            {
-                string? organizeTemplate = Context.Instance.Settings.GetOrganizeTemplate(language_);
-                if (null != organizeTemplate)
-                {
-                    stringBuilder_.Append(organizeTemplate);
-                }
-                else
-                {
-                    stringBuilder_.Append("Organize the following reviews:\n");
-                }
-                foreach (string review in reviews)
-                {
-                    stringBuilder_.Append(review).Append("\n\n");
-                }
-                try
-                {
-                    // Use the AI executor to merge the reviews into a final organized text.
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, stringBuilder_.ToString(), context.CancellationToken);
-                    if (!string.IsNullOrEmpty(agentResponse.Text))
-                    {
-                        organizedReview = agentResponse.Text;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    await PostCommentAsync($"No reviews are generated. Fail in organizing the reviews.\n{ex.Message}", gitHubClient, logger);
-                    logger.LogError(ex.ToString());
-                }
-            }
-            else
-            {
-                await PostCommentAsync("No reviews are generated. Fail in assigning the files to reviewers.", gitHubClient, logger);
-            }
+            string organizedReview = stringBuilder_.ToString();
+            await PostCommentAsync(organizedReview, gitHubClient, logger);
+            logger.LogInformation($"Final review:\n{organizedReview}");
+        }
 
-            // Step 8: Post the final review by editing the original comment that triggered the review.
-            if (!string.IsNullOrEmpty(organizedReview))
+        private static async Task FindPairAsync(List<ReviewContext> reviewContexts, GitHubClient client, long repositoryId, string reference, CancellationToken cancellationToken)
+        {
+            foreach (ReviewContext reviewContext in reviewContexts)
             {
-                await PostCommentAsync(organizedReview, gitHubClient, logger);
+                if(!string.IsNullOrEmpty(reviewContext.PairPath))
+                {
+                    continue;
+                }
+                string? pairPath = GuessPair1(reviewContext.Path);
+                if (pairPath == null){
+                    continue;
+                }
+                string? file = null;
+                if(null != (file = await GetPullRequestFileContentAsync(client, repositoryId, reference, pairPath)))
+                {
+                    reviewContext.PairPath = pairPath;
+                    reviewContext.PairFile = file;
+                    continue;
+                }
+
+                pairPath = GuessPair2(reviewContext.Path);
+                if (pairPath == null){
+                    continue;
+                }
+                if(null != (file = await GetPullRequestFileContentAsync(client, repositoryId, reference, pairPath)))
+                {
+                    reviewContext.PairPath = pairPath;
+                    reviewContext.PairFile = file;
+                    continue;
+                }
+
+                pairPath = GuessPair3(reviewContext.Path);
+                if (pairPath == null){
+                    continue;
+                }
+                if(null != (file = await GetPullRequestFileContentAsync(client, repositoryId, reference, pairPath)))
+                {
+                    reviewContext.PairPath = pairPath;
+                    reviewContext.PairFile = file;
+                    continue;
+                }
+
+                pairPath = GuessPair4(reviewContext.Path);
+                if (pairPath == null){
+                    continue;
+                }
+                if(null != (file = await GetPullRequestFileContentAsync(client, repositoryId, reference, pairPath)))
+                {
+                    reviewContext.PairPath = pairPath;
+                    reviewContext.PairFile = file;
+                    continue;
+                }
             }
-            else
+        }
+
+        private static string? GuessPair1(string path)
+        {
+            string ext = Path.GetExtension(path);
+            switch (ext)
             {
-                // Inform the user if no reviews could be generated.
-                stringBuilder_.Clear();
-                stringBuilder_.Append("no reviews are generated.");
-                await PostCommentAsync(stringBuilder_.ToString(), gitHubClient, logger);
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(path, ".h").Replace("src", "include");
+                case ".h":
+                case ".hpp":
+                    return Path.ChangeExtension(path, ".cpp").Replace("include", "src");
+                default:
+                    return null;
+            }
+        }
+
+        private static string? GuessPair2(string path)
+        {
+            string ext = Path.GetExtension(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(path, ".h").Replace("src", "include");
+                case ".h":
+                    return Path.ChangeExtension(path, ".c").Replace("include", "src");
+                case ".hpp":
+                    return Path.ChangeExtension(path, ".cpp").Replace("include", "src");
+                default:
+                    return null;
+            }
+        }
+
+        private static string? GuessPair3(string path)
+        {
+            string ext = Path.GetExtension(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(path, ".h").Replace("source", "include");
+                case ".h":
+                case ".hpp":
+                    return Path.ChangeExtension(path, ".cpp").Replace("include", "source");
+                default:
+                    return null;
+            }
+        }
+
+        private static string? GuessPair4(string path)
+        {
+            string ext = Path.GetExtension(path);
+            switch (ext)
+            {
+                case ".cpp":
+                case ".cc":
+                case ".cxx":
+                case ".c":
+                    return Path.ChangeExtension(path, ".h").Replace("source", "include");
+                case ".h":
+                    return Path.ChangeExtension(path, ".c").Replace("include", "source");
+                case ".hpp":
+                    return Path.ChangeExtension(path, ".cpp").Replace("include", "source");
+                default:
+                    return null;
             }
         }
 
         private const int MaxLogLength = 128;
-
         private async Task PostCommentAsync(string comment, Octokit.GitHubClient gitHubClient, ILogger<GitHubWebhookCommentTask>? logger)
         {
             PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(comment);

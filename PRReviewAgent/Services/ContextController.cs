@@ -6,146 +6,79 @@ namespace PRReviewAgent.Services
 {
     public static class ContextCollector
     {
-        public static async Task CollectAsync(
-            GitLabClient client,
-            PayloadMergeRequest mergeRequest,
-            List<ReviewContext> reviewContexts)
+        /// <summary>
+        /// Find pair based on filenames
+        /// </summary>
+        /// <param name="reviewContexts"></param>
+        public static void FindPair(List<ReviewContext> reviewContexts)
         {
-            IRepositoryClient repository = client.GetRepository(mergeRequest.target_project_id);
-
             foreach (ReviewContext reviewContext in reviewContexts)
             {
-                string changedFile = string.Empty;
-                try
-                {
-                    FileData file = await repository.Files.GetAsync(
-                        reviewContext.Path,
-                        mergeRequest.source_branch);
-
-                    reviewContext.ChangedFile = file.Content;
-                }
-                catch
+                string? pairFilename = GuessPairFileName1(reviewContext.Path);
+                if (pairFilename == null)
                 {
                     continue;
                 }
-            }
-            foreach (ReviewContext reviewContext in reviewContexts)
-            {
-                string? pairPath = GuessPair(reviewContext.Path);
-                if (pairPath != null)
+                ReviewContext? pair = reviewContexts.Find(c => Path.GetFileName(c.Path) == pairFilename);
+                if (null != pair)
                 {
-                    ReviewContext? pair = FindPair(pairPath, reviewContexts);
-                    if(null != pair)
-                    {
-                        reviewContext.PairPath = pair.Path;
-                        reviewContext.PairDiff = pair.Diff;
-                        reviewContext.PairFile = pair.ChangedFile;
-                        continue;
-                    }
-                    try
-                    {
-                        FileData file = await repository.Files.GetAsync(
-                            pairPath,
-                            mergeRequest.source_branch);
-
-                        reviewContext.PairPath = pairPath;
-                        reviewContext.PairFile = file.Content;
-                        continue;
-                    }
-                    catch
-                    {
-                    }
+                    reviewContext.PairPath = pair.Path;
+                    reviewContext.PairDiff = pair.Diff;
+                    reviewContext.PairFile = pair.ChangedFile;
+                    continue;
                 }
-                pairPath = GuessPair2(reviewContext.Path);
-                if (pairPath != null)
+                pairFilename = GuessPairFileName2(reviewContext.Path);
+                if (pairFilename == null)
                 {
-                    ReviewContext? pair = FindPair(pairPath, reviewContexts);
-                    if (null != pair)
-                    {
-                        reviewContext.PairPath = pair.Path;
-                        reviewContext.PairDiff = pair.Diff;
-                        reviewContext.PairFile = pair.ChangedFile;
-                        continue;
-                    }
-                    try
-                    {
-                        FileData file = await repository.Files.GetAsync(
-                            pairPath,
-                            mergeRequest.source_branch);
-
-                        reviewContext.PairPath = pairPath;
-                        reviewContext.PairFile = file.Content;
-                        continue;
-                    }
-                    catch
-                    {
-                    }
+                    continue;
+                }
+                if (null != pair)
+                {
+                    reviewContext.PairPath = pair.Path;
+                    reviewContext.PairDiff = pair.Diff;
+                    reviewContext.PairFile = pair.ChangedFile;
+                    continue;
                 }
             }
         }
 
-        private static string? GuessPair(string path)
+        private static string? GuessPairFileName1(string path)
         {
             string ext = Path.GetExtension(path);
-            string? pairPath = null;
+            string filename = Path.GetFileName(path);
             switch (ext)
             {
                 case ".cpp":
                 case ".cc":
                 case ".cxx":
                 case ".c":
-                    pairPath = Path.ChangeExtension(path, ".h");
-                    pairPath = pairPath.Replace("src", "include");
-                    break;
+                    return Path.ChangeExtension(filename, ".h");
                 case ".h":
                 case ".hpp":
-                    pairPath = Path.ChangeExtension(path, ".cpp");
-                    pairPath = pairPath.Replace("include", "src");
-                    break;
+                    return Path.ChangeExtension(filename, ".cpp");
                 default:
                     return null;
             }
-            return pairPath;
         }
 
-        private static string? GuessPair2(string path)
+        private static string? GuessPairFileName2(string path)
         {
             string ext = Path.GetExtension(path);
-            string? pairPath = null;
+            string filename = Path.GetFileName(path);
             switch (ext)
             {
                 case ".cpp":
                 case ".cc":
                 case ".cxx":
                 case ".c":
-                    pairPath = Path.ChangeExtension(path, ".h");
-                    pairPath = pairPath.Replace("src", "include");
-                    break;
+                    return Path.ChangeExtension(filename, ".h");
                 case ".h":
-                    pairPath = Path.ChangeExtension(path, ".c");
-                    pairPath = pairPath.Replace("include", "src");
-                    break;
+                    return Path.ChangeExtension(filename, ".c");
                 case ".hpp":
-                    pairPath = Path.ChangeExtension(path, ".cpp");
-                    pairPath = pairPath.Replace("include", "src");
-                    break;
+                    return Path.ChangeExtension(filename, ".cpp");
                 default:
                     return null;
             }
-            return pairPath;
-        }
-
-
-        private static ReviewContext? FindPair(string path, List<ReviewContext> reviewContexts)
-        {
-            foreach (ReviewContext reviewContext in reviewContexts)
-            {
-                if (reviewContext.Path == path)
-                {
-                    return reviewContext;
-                }
-            }
-            return null;
         }
     }
 }
