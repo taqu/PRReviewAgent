@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc.Rendering;
-using Microsoft.Extensions.Logging;
 using NGitLab;
 using NGitLab.Models;
 using PRReviewAgent.Services.GitLabWebhook;
@@ -157,7 +156,7 @@ namespace PRReviewAgent.Services
             }
 
             // Step 4: Resolve related (pair) files deterministically.
-            FindPair(reviewContexts);
+            ContextCollector.FindPair(reviewContexts);
             await FindPairAsync(reviewContexts, repository.Files, sourceBranch, cancellationToken);
 
             // Step 5: Extract AST context for each file.
@@ -248,52 +247,21 @@ namespace PRReviewAgent.Services
             logger.LogInformation($"Final review:\n{organizedReview}");
         }
 
-        /// <summary>
-        /// Find pair based on filenames
-        /// </summary>
-        /// <param name="reviewContexts"></param>
-        private static void FindPair(List<ReviewContext> reviewContexts)
+        private static async Task<FileData?> GetFileAsync(IFilesClient filesClient, string path, string sourceBranch, CancellationToken cancellationToken)
         {
-            foreach (ReviewContext reviewContext in reviewContexts)
-            {
-                string? pairFilename = GuessPairFileName1(reviewContext.Path);
-                if (pairFilename == null)
-                {
-                    continue;
-                }
-                ReviewContext? pair = reviewContexts.Find(c => Path.GetFileName(c.Path) == pairFilename);
-                if (null != pair)
-                {
-                    reviewContext.PairPath = pair.Path;
-                    reviewContext.PairDiff = pair.Diff;
-                    reviewContext.PairFile = pair.ChangedFile;
-                    continue;
-                }
-                pairFilename = GuessPairFileName2(reviewContext.Path);
-                if (pairFilename == null)
-                {
-                    continue;
-                }
-                if (null != pair)
-                {
-                    reviewContext.PairPath = pair.Path;
-                    reviewContext.PairDiff = pair.Diff;
-                    reviewContext.PairFile = pair.ChangedFile;
-                    continue;
-                }
+            try {
+                return await filesClient.GetAsync(path, sourceBranch, cancellationToken);
             }
-        }
-
-        private static async Task<bool> FileExistsAsync(IFilesClient filesClient, string path, string sourceBranch, CancellationToken cancellationToken)
-        {
-            return await filesClient.FileExistsAsync(path, sourceBranch, cancellationToken);
+            catch {
+                return null;
+            }
         }
 
         private static async Task FindPairAsync(List<ReviewContext> reviewContexts, IFilesClient filesClient, string sourceBranch, CancellationToken cancellationToken)
         {
             foreach (ReviewContext reviewContext in reviewContexts)
             {
-                if(null != reviewContext.PairPath)
+                if(!string.IsNullOrEmpty(reviewContext.PairPath))
                 {
                     continue;
                 }
@@ -301,9 +269,11 @@ namespace PRReviewAgent.Services
                 if (pairPath == null){
                     continue;
                 }
-                if(await FileExistsAsync(filesClient, pairPath, sourceBranch, cancellationToken))
+                FileData? file = null;
+                if(null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
                 {
-                    FileData file = await filesClient.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    reviewContext.PairPath = file.Path;
+                    reviewContext.PairFile = file.DecodedContent;
                     continue;
                 }
 
@@ -311,9 +281,10 @@ namespace PRReviewAgent.Services
                 if (pairPath == null){
                     continue;
                 }
-                if(await FileExistsAsync(filesClient, pairPath, sourceBranch, cancellationToken))
+                if(null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
                 {
-                    FileData file = await filesClient.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    reviewContext.PairPath = file.Path;
+                    reviewContext.PairFile = file.DecodedContent;
                     continue;
                 }
 
@@ -321,9 +292,10 @@ namespace PRReviewAgent.Services
                 if (pairPath == null){
                     continue;
                 }
-                if(await FileExistsAsync(filesClient, pairPath, sourceBranch, cancellationToken))
+                if(null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
                 {
-                    FileData file = await filesClient.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    reviewContext.PairPath = file.Path;
+                    reviewContext.PairFile = file.DecodedContent;
                     continue;
                 }
 
@@ -331,50 +303,12 @@ namespace PRReviewAgent.Services
                 if (pairPath == null){
                     continue;
                 }
-                if(await FileExistsAsync(filesClient, pairPath, sourceBranch, cancellationToken))
+                if(null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
                 {
-                    FileData file = await filesClient.GetAsync(reviewContext.Path, sourceBranch, cancellationToken);
+                    reviewContext.PairPath = file.Path;
+                    reviewContext.PairFile = file.DecodedContent;
                     continue;
                 }
-            }
-        }
-
-        private static string? GuessPairFileName1(string path)
-        {
-            string ext = Path.GetExtension(path);
-            string filename = Path.GetFileName(path);
-            switch (ext)
-            {
-                case ".cpp":
-                case ".cc":
-                case ".cxx":
-                case ".c":
-                    return Path.ChangeExtension(filename, ".h");
-                case ".h":
-                case ".hpp":
-                    return Path.ChangeExtension(filename, ".cpp");
-                default:
-                    return null;
-            }
-        }
-
-        private static string? GuessPairFileName2(string path)
-        {
-            string ext = Path.GetExtension(path);
-            string filename = Path.GetFileName(path);
-            switch (ext)
-            {
-                case ".cpp":
-                case ".cc":
-                case ".cxx":
-                case ".c":
-                    return Path.ChangeExtension(filename, ".h");
-                case ".h":
-                    return Path.ChangeExtension(filename, ".c");
-                case ".hpp":
-                    return Path.ChangeExtension(filename, ".cpp");
-                default:
-                    return null;
             }
         }
 
