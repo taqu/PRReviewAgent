@@ -32,7 +32,7 @@ public sealed record ExpandedRegion(
     {
         get
         {
-            var result = new List<int>();
+            List<int> result = new List<int>();
             int n = NewStart;
             foreach (DiffHunkLine line in Lines)
             {
@@ -144,7 +144,7 @@ public static class DiffExpander
             return Array.Empty<ExpandedRegion>();
 
         // Step 1: For each hunk, find the enclosing AST region using '+' line positions.
-        var hunkRegions = new List<(int AstStart, int AstEnd, ParsedHunk Hunk)>(hunks.Count);
+        List<(int AstStart, int AstEnd, ParsedHunk Hunk)> hunkRegions = new List<(int AstStart, int AstEnd, ParsedHunk Hunk)>(hunks.Count);
 
         foreach (ParsedHunk hunk in hunks)
         {
@@ -176,7 +176,7 @@ public static class DiffExpander
         hunkRegions.Sort(static (a, b) => a.AstStart.CompareTo(b.AstStart));
 
         // Step 3: Merge overlapping AST regions, accumulating their hunks.
-        var mergedGroups = new List<(int AstStart, int AstEnd, List<ParsedHunk> Hunks)>();
+        List<(int AstStart, int AstEnd, List<ParsedHunk> Hunks)> mergedGroups = new List<(int AstStart, int AstEnd, List<ParsedHunk> Hunks)>();
 
         foreach ((int astStart, int astEnd, ParsedHunk hunk) in hunkRegions)
         {
@@ -193,7 +193,7 @@ public static class DiffExpander
         }
 
         // Step 4: Build an expanded ExpandedRegion for each merged group.
-        var result = new List<ExpandedRegion>(mergedGroups.Count);
+        List<ExpandedRegion> result = new List<ExpandedRegion>(mergedGroups.Count);
         foreach ((int astStart, int astEnd, List<ParsedHunk> groupHunks) in mergedGroups)
         {
             groupHunks.Sort(static (a, b) => a.NewStart.CompareTo(b.NewStart));
@@ -208,7 +208,7 @@ public static class DiffExpander
     static ExpandedRegion BuildExpandedRegion(
         string[] newFileLines, int astStart, int astEnd, List<ParsedHunk> hunks)
     {
-        var lines  = new List<DiffHunkLine>();
+        List<DiffHunkLine> lines  = new List<DiffHunkLine>();
         int oldCount = 0;
         int newCount = 0;
         int cursor   = astStart; // next new-file line to emit
@@ -291,7 +291,7 @@ public static class DiffExpander
 
     static List<ParsedHunk> ParseHunks(string diffText)
     {
-        var hunks = new List<ParsedHunk>();
+        List<ParsedHunk> hunks = new List<ParsedHunk>();
         ParsedHunk? current = null;
 
         foreach (string line in SplitLines(diffText))

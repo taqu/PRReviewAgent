@@ -52,3 +52,11 @@ ssl_verify = false
 [review]
 # file extensions to review
 target_extensions = ["c","cpp", "cxx", "cc", "h", "hpp", "inl", "cs", "py", "rs"]
+
+[auto_improve]
+enabled = false
+model_path = "Models/granite-embedding-278m-multilingual.gguf"
+db_path = "AppData/review_rurles.db"
+stale_rule_months = 3
+min_confidence_score = 7
+

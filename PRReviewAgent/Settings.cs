@@ -198,6 +198,46 @@ namespace PRReviewAgent
         }
 
         /// <summary>
+        /// Gets the number of months after which an unhit rule is considered stale.
+        /// Reads from [auto_improve] stale_rule_months in config.toml; defaults to 3.
+        /// </summary>
+        public int StaleRuleMonthsThreshold
+        {
+            get
+            {
+                if (config_ != null
+                    && config_.TryGetValue("auto_improve", out object? section)
+                    && section is Tomlyn.Model.TomlTable table
+                    && table.TryGetValue("stale_rule_months", out object? value)
+                    && value is long months)
+                {
+                    return (int)months;
+                }
+                return 3;
+            }
+        }
+
+        /// <summary>
+        /// Gets the minimum confidence score below which a stale rule is pruned.
+        /// Reads from [auto_improve] min_confidence_score in config.toml; defaults to 7.
+        /// </summary>
+        public int MinConfidenceScoreThreshold
+        {
+            get
+            {
+                if (config_ != null
+                    && config_.TryGetValue("auto_improve", out object? section)
+                    && section is Tomlyn.Model.TomlTable table
+                    && table.TryGetValue("min_confidence_score", out object? value)
+                    && value is long score)
+                {
+                    return (int)score;
+                }
+                return 7;
+            }
+        }
+
+        /// <summary>
         /// Gets the secrets table.
         /// </summary>
         public Tomlyn.Model.TomlTable? Secrets => secrets_;
