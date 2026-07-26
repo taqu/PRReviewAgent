@@ -1,7 +1,4 @@
-using NGitLab;
-using NGitLab.Models;
 using PRReviewAgent.Services.GitLabWebhook;
-using System.Text;
 
 namespace PRReviewAgent.Test
 {

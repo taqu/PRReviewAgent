@@ -1,10 +1,9 @@
-using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace LlamaPure
+namespace PRReviewAgent
 {
-    public sealed class LlamaPureClient : IDisposable
+    public sealed class LlamaClient : IDisposable
     {
         private IntPtr _model;
         private IntPtr _ctx;
@@ -13,13 +12,20 @@ namespace LlamaPure
         private int _nEmbd;
         private bool _disposed;
 
-         /// <summary>
+        // -------------------------------------------------------------------------
+        // Native DLL loader
+        // -------------------------------------------------------------------------
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr LoadLibraryW(string lpFileName);
+
+        /// <summary>
         /// Explicitly loads all native DLLs from the extension directory using
         /// their full paths, so the OS loader never searches PATH or CWD.
         /// Must be called before any P/Invoke into llama.dll.
         /// </summary>
-        public static void LoadNativeDlls(string extDir)
+        public static void LoadNativeDlls()
         {
+            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
             // Load in dependency order: base Å® cpu Å® ggml Å® llama
 #if DEBUG
             string[] dlls = { "ggml-base.dll", "ggml-cpu.dll", "ggml.dll", "llama.dll" };
@@ -28,7 +34,7 @@ namespace LlamaPure
 #endif
             foreach (string dll in dlls)
             {
-                string fullPath = System.IO.Path.Combine(extDir, "llama.cpp", "bin", dll);
+                string fullPath = System.IO.Path.Combine(exeDir, "llama.cpp", dll);
                 if (LoadLibraryW(fullPath) == IntPtr.Zero) {
                     throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), $"LoadLibrary failed for: {fullPath}");
                 }
@@ -36,33 +42,33 @@ namespace LlamaPure
         }
 
 
-        public LlamaPureClient(string modelPath, uint contextSize = 2048, int threads = 4)
+        public LlamaClient(string modelPath, uint contextSize = 2048, int threads = 4)
         {
             if (string.IsNullOrEmpty(modelPath))
                 throw new ArgumentException("Model path must not be null or empty.", nameof(modelPath));
 
-            LlamaPureNative.llama_backend_init();
+            LlamaNative.llama_backend_init();
 
-            LlamaPureNative.LlamaModelParams modelParams = LlamaPureNative.llama_model_default_params();
-            modelParams.load_mode = LlamaPureNative.LlamaLoadMode.None;
-            _model = LlamaPureNative.llama_model_load_from_file(modelPath, modelParams);
+            LlamaNative.LlamaModelParams modelParams = LlamaNative.llama_model_default_params();
+            modelParams.load_mode = LlamaNative.LlamaLoadMode.None;
+            _model = LlamaNative.llama_model_load_from_file(modelPath, modelParams);
             if (_model == IntPtr.Zero)
                 throw new InvalidOperationException($"Failed to load model from '{modelPath}'.");
 
-            _vocab = LlamaPureNative.llama_model_get_vocab(_model);
+            _vocab = LlamaNative.llama_model_get_vocab(_model);
             if (_vocab == IntPtr.Zero)
                 throw new InvalidOperationException("Failed to get vocabulary from model.");
 
-            _nVocab = LlamaPureNative.llama_vocab_n_tokens(_vocab);
-            _nEmbd  = LlamaPureNative.llama_model_n_embd(_model);
+            _nVocab = LlamaNative.llama_vocab_n_tokens(_vocab);
+            _nEmbd  = LlamaNative.llama_model_n_embd(_model);
 
-            var ctxParams = LlamaPureNative.llama_context_default_params();
+            var ctxParams = LlamaNative.llama_context_default_params();
             ctxParams.n_ctx       = contextSize;
             ctxParams.n_batch     = contextSize;
             ctxParams.n_threads   = threads;
             ctxParams.embeddings  = 1;
 
-            _ctx = LlamaPureNative.llama_init_from_model(_model, ctxParams);
+            _ctx = LlamaNative.llama_init_from_model(_model, ctxParams);
             if (_ctx == IntPtr.Zero)
                 throw new InvalidOperationException("Failed to create llama context.");
         }
@@ -76,17 +82,17 @@ namespace LlamaPure
             if (tokenIds.Length == 0)
                 throw new InvalidOperationException("Tokenization produced no tokens.");
 
-            LlamaPureNative.LlamaBatch batch = LlamaPureNative.llama_batch_init(tokenIds.Length, 0, 1);
+            LlamaNative.LlamaBatch batch = LlamaNative.llama_batch_init(tokenIds.Length, 0, 1);
             try
             {
                 FillBatch(ref batch, tokenIds, posOffset: 0, setLastLogit: true);
 
-                int ret = LlamaPureNative.llama_decode(_ctx, batch);
+                int ret = LlamaNative.llama_decode(_ctx, batch);
                 if (ret != 0)
                     throw new InvalidOperationException($"llama_decode failed with code {ret}.");
 
                 int lastIdx = tokenIds.Length - 1;
-                IntPtr embdPtr = LlamaPureNative.llama_get_embeddings_ith(_ctx, lastIdx);
+                IntPtr embdPtr = LlamaNative.llama_get_embeddings_ith(_ctx, lastIdx);
                 if (embdPtr == IntPtr.Zero)
                     throw new InvalidOperationException("llama_get_embeddings_ith returned null.");
 
@@ -96,7 +102,7 @@ namespace LlamaPure
             }
             finally
             {
-                LlamaPureNative.llama_batch_free(batch);
+                LlamaNative.llama_batch_free(batch);
             }
         }
 
@@ -111,23 +117,23 @@ namespace LlamaPure
                 throw new InvalidOperationException("Tokenization produced no tokens.");
 
             // Prefill: decode all prompt tokens, request logits for the last one only.
-            LlamaPureNative.LlamaBatch batch = LlamaPureNative.llama_batch_init(promptTokens.Length, 0, 1);
+            LlamaNative.LlamaBatch batch = LlamaNative.llama_batch_init(promptTokens.Length, 0, 1);
             int prefillRet;
             try
             {
                 FillBatch(ref batch, promptTokens, posOffset: 0, setLastLogit: true);
-                prefillRet = LlamaPureNative.llama_decode(_ctx, batch);
+                prefillRet = LlamaNative.llama_decode(_ctx, batch);
             }
             finally
             {
-                LlamaPureNative.llama_batch_free(batch);
+                LlamaNative.llama_batch_free(batch);
             }
 
             if (prefillRet != 0)
                 throw new InvalidOperationException($"llama_decode (prefill) failed with code {prefillRet}.");
 
             // Sample first token from the last prompt token's logits.
-            IntPtr logitsPtr = LlamaPureNative.llama_get_logits_ith(_ctx, promptTokens.Length - 1);
+            IntPtr logitsPtr = LlamaNative.llama_get_logits_ith(_ctx, promptTokens.Length - 1);
             int sampledToken = GreedySample(logitsPtr, _nVocab);
 
             var sb = new StringBuilder();
@@ -141,23 +147,23 @@ namespace LlamaPure
                 sb.Append(TokenToString(sampledToken));
 
                 // Decode the single new token.
-                LlamaPureNative.LlamaBatch stepBatch = LlamaPureNative.llama_batch_init(1, 0, 1);
+                LlamaNative.LlamaBatch stepBatch = LlamaNative.llama_batch_init(1, 0, 1);
                 int stepRet;
                 try
                 {
                     FillBatch(ref stepBatch, new[] { sampledToken }, posOffset: currentPos, setLastLogit: true);
-                    stepRet = LlamaPureNative.llama_decode(_ctx, stepBatch);
+                    stepRet = LlamaNative.llama_decode(_ctx, stepBatch);
                 }
                 finally
                 {
-                    LlamaPureNative.llama_batch_free(stepBatch);
+                    LlamaNative.llama_batch_free(stepBatch);
                 }
 
                 if (stepRet != 0)
                     throw new InvalidOperationException($"llama_decode (step {step}) failed with code {stepRet}.");
 
                 currentPos++;
-                logitsPtr   = LlamaPureNative.llama_get_logits_ith(_ctx, 0);
+                logitsPtr   = LlamaNative.llama_get_logits_ith(_ctx, 0);
                 sampledToken = GreedySample(logitsPtr, _nVocab);
             }
 
@@ -171,17 +177,17 @@ namespace LlamaPure
 
             if (_ctx != IntPtr.Zero)
             {
-                LlamaPureNative.llama_free(_ctx);
+                LlamaNative.llama_free(_ctx);
                 _ctx = IntPtr.Zero;
             }
 
             if (_model != IntPtr.Zero)
             {
-                LlamaPureNative.llama_model_free(_model);
+                LlamaNative.llama_model_free(_model);
                 _model = IntPtr.Zero;
             }
 
-            LlamaPureNative.llama_backend_free();
+            LlamaNative.llama_backend_free();
         }
 
         private int[] Tokenize(string text, bool addSpecial)
@@ -191,7 +197,7 @@ namespace LlamaPure
             var tokens = new int[maxTokens];
 
             byte specialFlag = addSpecial ? (byte)1 : (byte)0;
-            int count = LlamaPureNative.llama_tokenize(
+            int count = LlamaNative.llama_tokenize(
                 _vocab, text, nBytes, tokens, maxTokens, specialFlag, 0);
 
             if (count < 0)
@@ -199,7 +205,7 @@ namespace LlamaPure
                 // Buffer too small; reallocate with the exact required size.
                 maxTokens = -count;
                 tokens = new int[maxTokens];
-                count = LlamaPureNative.llama_tokenize(
+                count = LlamaNative.llama_tokenize(
                     _vocab, text, nBytes, tokens, maxTokens, specialFlag, 0);
             }
 
@@ -211,7 +217,7 @@ namespace LlamaPure
             return result;
         }
 
-        private void FillBatch(ref LlamaPureNative.LlamaBatch batch, int[] tokenIds, int posOffset, bool setLastLogit)
+        private void FillBatch(ref LlamaNative.LlamaBatch batch, int[] tokenIds, int posOffset, bool setLastLogit)
         {
             int n = tokenIds.Length;
             batch.n_tokens = n;
@@ -257,14 +263,14 @@ namespace LlamaPure
         private string TokenToString(int token)
         {
             var buf = new byte[256];
-            int len = LlamaPureNative.llama_token_to_piece(_vocab, token, buf, buf.Length, 0, 0);
+            int len = LlamaNative.llama_token_to_piece(_vocab, token, buf, buf.Length, 0, 0);
             if (len <= 0) return string.Empty;
             return Encoding.UTF8.GetString(buf, 0, len);
         }
 
         private bool IsEndOfGeneration(int token)
         {
-            return LlamaPureNative.llama_vocab_is_eog(_vocab, token) != 0;
+            return LlamaNative.llama_vocab_is_eog(_vocab, token) != 0;
         }
 
         private static float ReadFloat(IntPtr ptr, int index)
@@ -283,8 +289,9 @@ namespace LlamaPure
 
         private void ThrowIfDisposed()
         {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(LlamaPureClient));
+            if (_disposed) {
+                throw new ObjectDisposedException(nameof(LlamaClient));
+            }
         }
     }
 }

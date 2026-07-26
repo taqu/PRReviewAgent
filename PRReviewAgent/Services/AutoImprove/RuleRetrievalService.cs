@@ -19,7 +19,7 @@ namespace PRReviewAgent.Services.AutoImprove
             int topN = 5,
             CancellationToken cancellationToken = default)
         {
-            float[] queryEmbedding = await _embeddingProvider.GetEmbeddingAsync(codeContext, cancellationToken);
+            float[] queryEmbedding = _embeddingProvider.GetEmbedding(codeContext);
             List<LearnedRule> allRules = await _repository.GetAllActiveAsync(cancellationToken);
 
             List<(LearnedRule rule, float score)> scored = allRules

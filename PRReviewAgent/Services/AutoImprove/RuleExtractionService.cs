@@ -39,8 +39,7 @@ namespace PRReviewAgent.Services.AutoImprove
                 LearnedRule? extractedRule = ParseRuleJson(agentResponse.Text);
                 if (extractedRule == null) return;
 
-                float[] embedding = await _embeddingProvider.GetEmbeddingAsync(
-                    $"{extractedRule.AstPattern} {extractedRule.RuleDescription}", cancellationToken);
+                float[] embedding = _embeddingProvider.GetEmbedding($"{extractedRule.AstPattern} {extractedRule.RuleDescription}");
 
                 extractedRule.Id = Medo.Uuid7.NewGuid().ToString();
                 extractedRule.Embedding = embedding;
