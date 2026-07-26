@@ -247,7 +247,7 @@ namespace PRReviewAgent.Services
                 if (string.IsNullOrEmpty(fileGroup.Prompt)) continue;
                 try
                 {
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, fileGroup.Prompt, context.CancellationToken);
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(fileGroup.Prompt, context.CancellationToken);
                     if (string.IsNullOrEmpty(agentResponse.Text))
                     {
                         logger.LogInformation($"No review generated for {fileGroup.ReviewContexts.Count} files.");

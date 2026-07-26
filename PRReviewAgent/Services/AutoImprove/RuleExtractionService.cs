@@ -33,8 +33,7 @@ namespace PRReviewAgent.Services.AutoImprove
             try
             {
                 string prompt = BuildExtractionPrompt(astContext, diff, fileDependencies);
-                Microsoft.Agents.AI.AgentResponse agentResponse = await Context.Instance.Agents.RunAsync(
-                    Agents.Type.Executor, prompt, cancellationToken);
+                Microsoft.Agents.AI.AgentResponse agentResponse = await Context.Instance.Agents.RunAsync(prompt, cancellationToken);
                 if (string.IsNullOrWhiteSpace(agentResponse.Text)) return;
 
                 LearnedRule? extractedRule = ParseRuleJson(agentResponse.Text);

@@ -1,10 +1,7 @@
 
 using Microsoft.AspNetCore.Authentication.Certificate;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.AutoImprove;
-using System;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
