@@ -92,22 +92,6 @@ namespace PRReviewAgent
                     {
                     }
                 }
-
-                // Load organization templates (e.g., organize.en.md, organize.ja.md).
-                foreach (string file in System.IO.Directory.EnumerateFiles("Templates", "organize.*.md"))
-                {
-                    string filename = System.IO.Path.GetFileName(file);
-                    // Extract the language code from the filename.
-                    ReadOnlySpan<char> key = filename.AsSpan().Slice("organize.".Length, filename.Length - "organize.".Length - ".md".Length);
-                    try
-                    {
-                        string template = System.IO.File.ReadAllText(file);
-                        organizeTemplates_.Add(key.ToString(), template);
-                    }
-                    catch
-                    {
-                    }
-                }
             }
             return true;
         }
@@ -119,7 +103,7 @@ namespace PRReviewAgent
         /// <returns>True if both review and organize templates exist; otherwise, false.</returns>
         public bool HasTemplate(string lang)
         {
-            return reviewTemplates_.ContainsKey(lang) && organizeTemplates_.ContainsKey(lang);
+            return reviewTemplates_.ContainsKey(lang);
         }
 
         /// <summary>
@@ -141,27 +125,6 @@ namespace PRReviewAgent
         public IEnumerable<string> GetReviewTemplates()
         {
             return reviewTemplates_.Values.AsEnumerable<string>();
-        }
-
-        /// <summary>
-        /// Gets the organize template for the specified language.
-        /// </summary>
-        /// <param name="lang">The language code.</param>
-        /// <returns>The organize template text, or null if not found.</returns>
-        public string? GetOrganizeTemplate(string lang)
-        {
-            string? template = null;
-            organizeTemplates_.TryGetValue(lang, out template);
-            return template;
-        }
-
-        /// <summary>
-        /// Gets all organize templates.
-        /// </summary>
-        /// <returns>An enumerable of organize template texts.</returns>
-        public IEnumerable<string> GetOrganizeTemplates()
-        {
-            return organizeTemplates_.Values.AsEnumerable<string>();
         }
 
         /// <summary>
@@ -250,7 +213,6 @@ namespace PRReviewAgent
         private Tomlyn.Model.TomlTable? secrets_;
         private Tomlyn.Model.TomlTable? config_;
         private Dictionary<string, string> reviewTemplates_ = new Dictionary<string, string>();
-        private Dictionary<string, string> organizeTemplates_ = new Dictionary<string, string>();
         private string[] extensions_ = new string[0];
     }
 }

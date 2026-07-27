@@ -2,13 +2,13 @@ namespace PRReviewAgent.Services.AutoImprove
 {
     public sealed class LocalEmbeddingProvider : IDisposable
     {
-        private LlamaClient llamaClient_;
+        private LlamaPure.LlamaPureClient llamaClient_;
         private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
         private bool _disposed;
 
         public LocalEmbeddingProvider(string modelPath)
         {
-            llamaClient_ = new LlamaClient(modelPath, 128, 4);
+            llamaClient_ = new LlamaPure.LlamaPureClient(modelPath, 8192, 1);
         }
 
         public float[] GetEmbedding(string text)

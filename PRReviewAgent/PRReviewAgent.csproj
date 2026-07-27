@@ -7,6 +7,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="llama.cpp\**" />
+    <Content Remove="llama.cpp\**" />
+    <EmbeddedResource Remove="llama.cpp\**" />
+    <None Remove="llama.cpp\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="config.toml" />
     <None Remove="secrets.toml" />
     <None Remove="Templates\organize.en.md" />
@@ -20,25 +27,7 @@
     <Content Include="config.toml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="llama.cpp\ggml-base.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="llama.cpp\ggml-cpu.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="llama.cpp\ggml.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="llama.cpp\llama.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
     <Content Include="secrets.toml">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="Templates\organize.en.md">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="Templates\organize.ja.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Templates\review.en.md">
@@ -50,6 +39,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="LlamaPure" Version="1.0.1" />
     <PackageReference Include="Medo.Uuid7" Version="3.2.0" />
     <PackageReference Include="Microsoft.Agents.AI" Version="1.15.0" />
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.15.0" />

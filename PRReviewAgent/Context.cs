@@ -65,11 +65,6 @@ namespace PRReviewAgent
             {
                 await agents_.RunAsync(template, CancellationToken);
             }
-            // Run each organize template through the agents to warm them up
-            foreach(string template in settigs_.GetOrganizeTemplates())
-            {
-                await agents_.RunAsync(template, CancellationToken);
-            }
         }
 
         private Settings settigs_ = new Settings();

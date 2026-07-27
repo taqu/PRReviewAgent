@@ -135,7 +135,7 @@ namespace PRReviewAgent
             {
                 try
                 {
-                    string modelPath = autoImprove.TryGetValue("model_path", out object? mp) ? (string)mp : "models/granite-embedding-278m-multilingual.gguf";
+                    string modelPath = autoImprove.TryGetValue("model_path", out object? mp) ? (string)mp : "Models/granite-embedding-278m-multilingual.gguf";
                     string dbPath = autoImprove.TryGetValue("db_path", out object? dp) ? (string)dp : "AppData/review_rules.db";
 
                     LocalEmbeddingProvider embeddingProvider = new LocalEmbeddingProvider(modelPath);
