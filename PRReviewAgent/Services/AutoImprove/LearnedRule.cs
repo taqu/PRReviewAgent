@@ -3,6 +3,7 @@ namespace PRReviewAgent.Services.AutoImprove
     public sealed class LearnedRule
     {
         public string Id { get; set; } = string.Empty;
+        public string MergeRequestId { get; set; } = string.Empty;
         public string AstPattern { get; set; } = string.Empty;
         public string RuleDescription { get; set; } = string.Empty;
         public string? BadPattern { get; set; }

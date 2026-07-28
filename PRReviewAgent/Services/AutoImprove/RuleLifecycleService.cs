@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading;
 
 namespace PRReviewAgent.Services.AutoImprove
 {
@@ -12,25 +13,39 @@ namespace PRReviewAgent.Services.AutoImprove
             _repository = repository;
         }
 
-        public void TrackReviewedRules(string prKey, IEnumerable<LearnedRule> rules)
+        public async Task TrackReviewedRulesAsync(string prKey, IEnumerable<LearnedRule> rules, CancellationToken cancellationToken = default)
         {
             List<(string Id, string? BadPattern)> tracked = rules.Select(r => (r.Id, r.BadPattern)).ToList();
             _pendingReviews[prKey] = tracked;
+            foreach (var r in rules)
+            {
+                await _repository.InsertPendingReviewAsync(prKey, r.Id, r.BadPattern, cancellationToken);
+            }
         }
 
         public async Task OnPrMergedAsync(string prKey, string mergedDiff, CancellationToken cancellationToken = default)
         {
-            if (!_pendingReviews.TryRemove(prKey, out List<(string RuleId, string? BadPattern)>? trackedRules)) return;
-
-            foreach ((string ruleId, string badPattern) in trackedRules)
+            List<(string RuleId, string? BadPattern)> trackedRules = await _repository.GetPendingReviewsAsync(prKey, cancellationToken);
+            if (trackedRules.Count<=0){
+                return;
+            }
+            try
             {
-                bool patternStillPresent = !string.IsNullOrEmpty(badPattern)
-                    && mergedDiff.Contains(badPattern, StringComparison.OrdinalIgnoreCase);
+                foreach ((string ruleId, string? badPattern) in trackedRules)
+                {
+                    bool patternStillPresent = !string.IsNullOrEmpty(badPattern) && mergedDiff.Contains(badPattern, StringComparison.OrdinalIgnoreCase);
 
-                if (patternStillPresent)
-                    await _repository.DecrementConfidenceAsync(ruleId, cancellationToken);
-                else
-                    await _repository.IncrementConfidenceAsync(ruleId, cancellationToken);
+                    if (patternStillPresent) {
+                        await _repository.DecrementConfidenceByChunkIdAsync(ruleId, cancellationToken);
+                    }
+                    else {
+                        await _repository.IncrementConfidenceByChunkIdAsync(ruleId, cancellationToken);
+                    }
+                }
+            }
+            finally
+            {
+                await _repository.DeletePendingReviewsAsync(prKey, cancellationToken);
             }
         }
     }

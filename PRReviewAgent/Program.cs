@@ -135,10 +135,12 @@ namespace PRReviewAgent
             {
                 try
                 {
-                    string modelPath = autoImprove.TryGetValue("model_path", out object? mp) ? (string)mp : "Models/granite-embedding-278m-multilingual.gguf";
+                    string modelPath = autoImprove.TryGetValue("model_path", out object? mp) ? (string)mp : "Models/granite-embedding-97M-multilingual-r2-Q8_0.gguf";
                     string dbPath = autoImprove.TryGetValue("db_path", out object? dp) ? (string)dp : "AppData/review_rules.db";
+                    long context_size = autoImprove.TryGetValue("context_size", out object? cs) ? (long)cs : 512;
+                    long chunk_overlap = autoImprove.TryGetValue("chunk_overlap", out object? co) ? (long)co : 64;
 
-                    LocalEmbeddingProvider embeddingProvider = new LocalEmbeddingProvider(modelPath);
+                    LocalEmbeddingProvider embeddingProvider = new LocalEmbeddingProvider(modelPath, (uint)context_size, (int)chunk_overlap);
                     RuleRepository ruleRepository = new RuleRepository(dbPath);
                     ruleRepository.InitializeAsync().GetAwaiter().GetResult();
 

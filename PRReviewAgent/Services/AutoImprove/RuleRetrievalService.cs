@@ -19,22 +19,43 @@ namespace PRReviewAgent.Services.AutoImprove
             int topN = 5,
             CancellationToken cancellationToken = default)
         {
-            float[] queryEmbedding = _embeddingProvider.GetEmbedding(codeContext);
+            List<float[]> queryEmbeddings = _embeddingProvider.GetEmbedding(codeContext);
+            if (null == queryEmbeddings || queryEmbeddings.Count <= 0)
+            {
+                return new List<LearnedRule>();
+            }
             List<LearnedRule> allRules = await _repository.GetAllActiveAsync(cancellationToken);
 
-            List<(LearnedRule rule, float score)> scored = allRules
-                .Select(r => (rule: r, score: EmbeddingUtils.CosineSimilarity(queryEmbedding, r.Embedding)))
+            List<(LearnedRule rule, float score)> scored = allRules.Select(r =>{
+                float maxScore = queryEmbeddings
+                    .Select(q => EmbeddingUtils.CosineSimilarity(q, r.Embedding))
+                    .Max();
+
+                return (rule: r, score: maxScore);
+            })
                 .Where(x => x.score >= threshold)
                 .OrderByDescending(x => x.score)
+                .ToList();
+            if (!scored.Any()){
+                return new List<LearnedRule>();
+            }
+
+            List<string> targetMergeRequestIds = scored
+                .Select(x => x.rule.MergeRequestId)
+                .Distinct()
                 .Take(topN)
                 .ToList();
 
-            foreach ((LearnedRule rule, float _) in scored)
+            string dateTime = DateTime.UtcNow.ToString("O");
+            foreach (string mergeRequestId in targetMergeRequestIds)
             {
-                _ = _repository.UpdateLastHitAsync(rule.Id, cancellationToken);
+                _ = _repository.UpdateLastHitByMergeRequestIdAsync(mergeRequestId, dateTime, cancellationToken);
             }
-
-            return scored.Select(x => x.rule).ToList();
+            List<LearnedRule> uniqueRules = scored.Where(x => targetMergeRequestIds.Contains(x.rule.MergeRequestId))
+                .GroupBy(x => x.rule.MergeRequestId)
+                .Select(g => g.First().rule)
+                .ToList();
+            return uniqueRules;
         }
 
         public static string FormatRulesForPrompt(IReadOnlyList<LearnedRule> rules)

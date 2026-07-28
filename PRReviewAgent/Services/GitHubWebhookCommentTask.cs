@@ -212,8 +212,7 @@ namespace PRReviewAgent.Services
                     if (relevantRules.Count > 0)
                     {
                         reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules);
-                        ruleLifecycleService?.TrackReviewedRules(
-                            $"github/{payloadIssueComment_.repository.id}/{pullRequestNumber_}", relevantRules);
+                        await ruleLifecycleService?.TrackReviewedRulesAsync($"github/{payloadIssueComment_.repository.id}/{pullRequestNumber_}", relevantRules, cancellationToken);
                     }
                 }
                 catch (Exception ex)

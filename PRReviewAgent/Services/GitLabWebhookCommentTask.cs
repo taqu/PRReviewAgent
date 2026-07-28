@@ -206,8 +206,7 @@ namespace PRReviewAgent.Services
                     if (relevantRules.Count > 0)
                     {
                         reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules);
-                        ruleLifecycleService?.TrackReviewedRules(
-                            $"gitlab/{payloadComment_.project.id}/{payloadComment_.merge_request.iid}", relevantRules);
+                        await ruleLifecycleService?.TrackReviewedRulesAsync($"gitlab/{payloadComment_.project.id}/{payloadComment_.merge_request.iid}", relevantRules, cancellationToken);
                     }
                 }
                 catch (Exception ex)

@@ -34,8 +34,10 @@ target_extensions = ["c","cpp", "cxx", "cc", "h", "hpp", "inl", "cs", "py", "rs"
 
 [auto_improve]
 enabled = false
-model_path = "Models/granite-embedding-278m-multilingual.gguf"
+model_path = "Models/granite-embedding-97M-multilingual-r2-Q8_0.gguf"
 db_path = "AppData/review_rurles.db"
 stale_rule_months = 3
 min_confidence_score = 7
+context_size = 16384
+chunk_overlap = 128
 

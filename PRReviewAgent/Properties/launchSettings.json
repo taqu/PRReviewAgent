@@ -6,7 +6,8 @@
         "ASPNETCORE_ENVIRONMENT": "Development"
       },
       "dotnetRunMessages": true,
-      "applicationUrl": "http://localhost:5247"
+      "applicationUrl": "http://localhost:5247",
+      "nativeDebugging": true
     }
   },
   "$schema": "https://json.schemastore.org/launchsettings.json"

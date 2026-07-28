@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace PRReviewAgent.Services.AutoImprove
 {
@@ -21,10 +22,12 @@ namespace PRReviewAgent.Services.AutoImprove
             {
                 await using SqliteConnection conn = new SqliteConnection(_connectionString);
                 await conn.OpenAsync(cancellationToken);
-                await using SqliteCommand cmd = conn.CreateCommand();
-                cmd.CommandText = @"
+                {
+                    await using SqliteCommand cmd = conn.CreateCommand();
+                    cmd.CommandText = @"
                     CREATE TABLE IF NOT EXISTS learned_rules (
                         id TEXT PRIMARY KEY,
+                        merge_request_id TEXT NOT NULL,
                         ast_pattern TEXT NOT NULL,
                         rule_description TEXT NOT NULL,
                         bad_pattern TEXT,
@@ -35,7 +38,19 @@ namespace PRReviewAgent.Services.AutoImprove
                         created_at TEXT NOT NULL
                     );
                     CREATE INDEX IF NOT EXISTS idx_confidence ON learned_rules(confidence_score);";
-                await cmd.ExecuteNonQueryAsync(cancellationToken);
+                    await cmd.ExecuteNonQueryAsync(cancellationToken);
+                }
+                {
+                    await using SqliteCommand cmd = conn.CreateCommand();
+                    cmd.CommandText = @"
+                    CREATE TABLE IF NOT EXISTS pending_reviews (
+                        pr_key TEXT NOT NULL,
+                        rule_id TEXT NOT NULL,
+                        bad_pattern TEXT,
+                        PRIMARY KEY (pr_key, rule_id)
+                    );";
+                    await cmd.ExecuteNonQueryAsync(cancellationToken);
+                }
             }
             finally
             {
@@ -52,9 +67,10 @@ namespace PRReviewAgent.Services.AutoImprove
                 await conn.OpenAsync(cancellationToken);
                 await using SqliteCommand cmd = conn.CreateCommand();
                 cmd.CommandText = @"INSERT INTO learned_rules
-                    (id, ast_pattern, rule_description, bad_pattern, good_pattern, embedding, confidence_score, last_hit_at, created_at)
+                    (id, merge_request_id, ast_pattern, rule_description, bad_pattern, good_pattern, embedding, confidence_score, last_hit_at, created_at)
                     VALUES (@id, @ast_pattern, @rule_description, @bad_pattern, @good_pattern, @embedding, @confidence_score, @last_hit_at, @created_at)";
                 cmd.Parameters.AddWithValue("@id", rule.Id);
+                cmd.Parameters.AddWithValue("@merge_request_id", rule.MergeRequestId);
                 cmd.Parameters.AddWithValue("@ast_pattern", rule.AstPattern);
                 cmd.Parameters.AddWithValue("@rule_description", rule.RuleDescription);
                 cmd.Parameters.AddWithValue("@bad_pattern", (object?)rule.BadPattern ?? DBNull.Value);
@@ -79,7 +95,7 @@ namespace PRReviewAgent.Services.AutoImprove
                 await using SqliteConnection conn = new SqliteConnection(_connectionString);
                 await conn.OpenAsync(cancellationToken);
                 await using SqliteCommand cmd = conn.CreateCommand();
-                cmd.CommandText = @"SELECT id, ast_pattern, rule_description, bad_pattern, good_pattern,
+                cmd.CommandText = @"SELECT id, merge_request_id, ast_pattern, rule_description, bad_pattern, good_pattern,
                     embedding, confidence_score, last_hit_at, created_at
                     FROM learned_rules WHERE confidence_score > 0";
                 await using SqliteDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken);
@@ -89,6 +105,7 @@ namespace PRReviewAgent.Services.AutoImprove
                     rules.Add(new LearnedRule
                     {
                         Id = (string)reader["id"],
+                        MergeRequestId = (string)reader["merge_request_id"],
                         AstPattern = (string)reader["ast_pattern"],
                         RuleDescription = (string)reader["rule_description"],
                         BadPattern = reader["bad_pattern"] as string,
@@ -107,7 +124,7 @@ namespace PRReviewAgent.Services.AutoImprove
             }
         }
 
-        public async Task UpdateLastHitAsync(string id, CancellationToken cancellationToken = default)
+        public async Task UpdateLastHitByMergeRequestIdAsync(string mergeRequestId, string dataTime, CancellationToken cancellationToken = default)
         {
             await _semaphore.WaitAsync(cancellationToken);
             try
@@ -115,9 +132,9 @@ namespace PRReviewAgent.Services.AutoImprove
                 await using SqliteConnection conn = new SqliteConnection(_connectionString);
                 await conn.OpenAsync(cancellationToken);
                 await using SqliteCommand cmd = conn.CreateCommand();
-                cmd.CommandText = "UPDATE learned_rules SET last_hit_at = @ts WHERE id = @id";
-                cmd.Parameters.AddWithValue("@ts", DateTime.UtcNow.ToString("O"));
-                cmd.Parameters.AddWithValue("@id", id);
+                cmd.CommandText = "UPDATE learned_rules SET last_hit_at = @ts WHERE merge_request_id = @merge_request_id";
+                cmd.Parameters.AddWithValue("@ts", dataTime);
+                cmd.Parameters.AddWithValue("@merge_request_id", mergeRequestId);
                 await cmd.ExecuteNonQueryAsync(cancellationToken);
             }
             finally
@@ -193,6 +210,151 @@ namespace PRReviewAgent.Services.AutoImprove
             }
         }
 
+        public async Task InsertPendingReviewAsync(string prKey, string ruleId, string? badPattern, CancellationToken cancellationToken = default)
+        {
+            await _semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                await using var conn = new SqliteConnection(_connectionString);
+                await conn.OpenAsync(cancellationToken);
+                await using var cmd = conn.CreateCommand();
+
+                cmd.CommandText = @"
+                INSERT OR IGNORE INTO pending_reviews (pr_key, rule_id, bad_pattern)
+                VALUES (@prKey, @ruleId, @badPattern);";
+
+                cmd.Parameters.AddWithValue("@prKey", prKey);
+                cmd.Parameters.AddWithValue("@ruleId", ruleId);
+                cmd.Parameters.AddWithValue("@badPattern", (object?)badPattern ?? DBNull.Value);
+
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+
+        public async Task<List<(string RuleId, string? BadPattern)>> GetPendingReviewsAsync(string prKey, CancellationToken cancellationToken = default)
+        {
+            await _semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                await using var conn = new SqliteConnection(_connectionString);
+                await conn.OpenAsync(cancellationToken);
+                await using var cmd = conn.CreateCommand();
+
+                cmd.CommandText = "SELECT rule_id, bad_pattern FROM pending_reviews WHERE pr_key = @prKey;";
+                cmd.Parameters.AddWithValue("@prKey", prKey);
+
+                var result = new List<(string RuleId, string? BadPattern)>();
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    string ruleId = reader.GetString(0);
+                    string? badPattern = reader.IsDBNull(1) ? null : reader.GetString(1);
+                    result.Add((ruleId, badPattern));
+                }
+                return result;
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        public async Task DeletePendingReviewsAsync(string prKey, CancellationToken cancellationToken = default)
+        {
+            await _semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                await using var conn = new SqliteConnection(_connectionString);
+                await conn.OpenAsync(cancellationToken);
+                await using var cmd = conn.CreateCommand();
+
+                cmd.CommandText = "DELETE FROM pending_reviews WHERE pr_key = @prKey;";
+                cmd.Parameters.AddWithValue("@prKey", prKey);
+
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        public async Task DecrementConfidenceByChunkIdAsync(string chunkId, CancellationToken cancellationToken = default)
+        {
+            await _semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                await using var conn = new SqliteConnection(_connectionString);
+                await conn.OpenAsync(cancellationToken);
+
+                // トランザクションを開始して一貫性を担保
+                await using DbTransaction? transaction = await conn.BeginTransactionAsync(cancellationToken);
+
+                try
+                {
+                    await using (var updateCmd = conn.CreateCommand())
+                    {
+                        updateCmd.Transaction = (SqliteTransaction)transaction;
+                        updateCmd.CommandText = @"
+                        UPDATE learned_rules 
+                        SET confidence_score = confidence_score - 1 
+                        WHERE merge_request_id = (SELECT merge_request_id FROM learned_rules WHERE id = @id);";
+                        updateCmd.Parameters.AddWithValue("@id", chunkId);
+                        await updateCmd.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
+                    await using (var deleteCmd = conn.CreateCommand())
+                    {
+                        deleteCmd.Transaction = (SqliteTransaction)transaction;
+                        deleteCmd.CommandText = @"
+                        DELETE FROM learned_rules 
+                        WHERE merge_request_id IN (
+                            SELECT merge_request_id FROM learned_rules WHERE confidence_score <= 0
+                        );";
+                        await deleteCmd.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                catch
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    throw;
+                }
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        public async Task IncrementConfidenceByChunkIdAsync(string chunkId, CancellationToken cancellationToken = default)
+        {
+            await _semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                await using var conn = new SqliteConnection(_connectionString);
+                await conn.OpenAsync(cancellationToken);
+                await using var cmd = conn.CreateCommand();
+
+                cmd.CommandText = @"
+                UPDATE learned_rules 
+                SET confidence_score = MIN(confidence_score + 1, 10) 
+                WHERE merge_request_id = (SELECT merge_request_id FROM learned_rules WHERE id = @id);";
+                cmd.Parameters.AddWithValue("@id", chunkId);
+
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
         public void Dispose()
         {
             if (_disposed) return;

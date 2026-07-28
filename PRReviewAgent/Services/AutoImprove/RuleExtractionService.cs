@@ -37,17 +37,28 @@ namespace PRReviewAgent.Services.AutoImprove
                 if (string.IsNullOrWhiteSpace(agentResponse.Text)) return;
 
                 LearnedRule? extractedRule = ParseRuleJson(agentResponse.Text);
-                if (extractedRule == null) return;
+                if (extractedRule == null){
+                    return;
+                }
 
-                float[] embedding = _embeddingProvider.GetEmbedding($"{extractedRule.AstPattern} {extractedRule.RuleDescription}");
-
-                extractedRule.Id = Medo.Uuid7.NewGuid().ToString();
-                extractedRule.Embedding = embedding;
-                extractedRule.ConfidenceScore = 5;
-                extractedRule.CreatedAt = DateTime.UtcNow;
-                extractedRule.LastHitAt = DateTime.UtcNow;
-
-                await _repository.InsertAsync(extractedRule, cancellationToken);
+                List<float[]> embeddings = _embeddingProvider.GetEmbedding($"{extractedRule.AstPattern} {extractedRule.RuleDescription}");
+                string currentMergeRequestId = Medo.Uuid7.NewGuid().ToString();
+                foreach (float[] embedding in embeddings)
+                {
+                    LearnedRule ruleChunk = new LearnedRule
+                    {
+                        Id = Medo.Uuid7.NewGuid().ToString(),
+                        MergeRequestId = currentMergeRequestId,
+                        AstPattern = extractedRule.AstPattern,
+                        RuleDescription = extractedRule.RuleDescription,
+                        BadPattern = extractedRule.BadPattern,
+                        GoodPattern = extractedRule.GoodPattern,
+                        Embedding = embedding,
+                        CreatedAt = DateTime.UtcNow,
+                        LastHitAt = DateTime.UtcNow
+                    };
+                    await _repository.InsertAsync(ruleChunk, cancellationToken);
+                }
                 _logger.LogInformation($"Learned new rule: {extractedRule.RuleDescription}");
             }
             catch (Exception ex)
