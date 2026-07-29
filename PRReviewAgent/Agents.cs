@@ -15,16 +15,6 @@ namespace PRReviewAgent
     public class Agents
     {
         /// <summary>
-        /// Defines the available types of AI agents.
-        /// </summary>
-        public enum Type
-        {
-            Assistant = 0,
-            Planner = 1,
-            Executor = 2,
-        }
-
-        /// <summary>
         /// Builds and initializes an OpenAI ChatClient and AIAgent based on the provided name and configuration.
         /// </summary>
         /// <param name="chatClient">The initialized ChatClient.</param>
@@ -77,9 +67,7 @@ namespace PRReviewAgent
         public Agents()
         {
             // Build the three core agents: assistant, planner, and executor
-            Build(out agents_[0].chatClient_, out agents_[0].aiAgent_, "assistant");
-            Build(out agents_[1].chatClient_, out agents_[1].aiAgent_, "planner");
-            Build(out agents_[2].chatClient_, out agents_[2].aiAgent_, "executor");
+            Build(out agent_.chatClient_, out agent_.aiAgent_, "reviewer");
         }
 
         /// <summary>
@@ -89,10 +77,10 @@ namespace PRReviewAgent
         /// <param name="prompt">The prompt to send to the agent.</param>
         /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
         /// <returns>A task that represents the asynchronous operation. The task result contains the <see cref="AgentResponse"/>.</returns>
-        public async Task<AgentResponse> RunAsync(Type type, string prompt, CancellationToken cancellationToken)
+        public async Task<AgentResponse> RunAsync(string prompt, CancellationToken cancellationToken)
         {
             // Execute the agent and return the raw response
-            AgentResponse response = await agents_[(int)type].aiAgent_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+            AgentResponse response = await agent_.aiAgent_.RunAsync(prompt, null, runOptions_, cancellationToken);
             return response;
         }
 
@@ -104,13 +92,13 @@ namespace PRReviewAgent
         /// <param name="prompt">The prompt to send to the agent.</param>
         /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
         /// <returns>A task that represents the asynchronous operation. The task result contains the deserialized response of type <typeparamref name="T"/>.</returns>
-        public async Task<T> RunAsync<T>(Type type, string prompt, CancellationToken cancellationToken)
+        public async Task<T> RunAsync<T>(string prompt, CancellationToken cancellationToken)
         {
             // Set the expected response format to JSON schema based on type T
             runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
 
             // Execute the agent
-            AgentResponse response = await agents_[(int)type].aiAgent_.RunAsync(prompt, session_, runOptions_, cancellationToken);
+            AgentResponse response = await agent_.aiAgent_.RunAsync(prompt, null, runOptions_, cancellationToken);
 
             // Reset response format for subsequent calls
             runOptions_.ResponseFormat = null;
@@ -127,8 +115,7 @@ namespace PRReviewAgent
             public OpenAI.Chat.ChatClient chatClient_;
             public AIAgent aiAgent_;
         }
-        private Agent[] agents_ = new Agent[3];
+        private Agent agent_ = new Agent();
         private AgentRunOptions runOptions_ = new AgentRunOptions();
-        private AgentSession? session_;
     }
 }

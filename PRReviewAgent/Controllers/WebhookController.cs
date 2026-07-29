@@ -29,6 +29,7 @@ namespace PRReviewAgent.Controllers
         private const string GitlabTokenKey = "X-Gitlab-Token";
         private const string GitlabEvent = "X-Gitlab-Event";
         private const string GitlabEventUUIDKey = "X-Gitlab-Event-UUID";
+        private const string GitHubEventKey = "X-GitHub-Event";
 
         /// <summary>
         /// Receives and processes a GitLab webhook.
@@ -80,6 +81,18 @@ namespace PRReviewAgent.Controllers
                 // Process the webhook payload based on the event type
                 switch (eventType)
                 {
+                    case "Merge Request Hook":
+                        {
+                            Services.GitLabWebhook.PayloadMergeRequestEvent mrPayload =
+                                JsonConvert.DeserializeObject<Services.GitLabWebhook.PayloadMergeRequestEvent>(payload.ToString());
+                            if (mrPayload.object_attributes.action == "merge")
+                            {
+                                GitLabMergeMRTask mergeTask = new GitLabMergeMRTask(mrPayload);
+                                await taskQueue_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
+                                return Ok();
+                            }
+                        }
+                        break;
                     case "Note Hook":
                         {
                             // Parse the payload for comment-related events
@@ -133,24 +146,46 @@ namespace PRReviewAgent.Controllers
                     return NotFound();
                 }
             }
+            HttpContext.Request.Headers.TryGetValue(GitHubEventKey, out StringValues githubEventType);
+            string githubEvent = githubEventType.FirstOrDefault() ?? "issue_comment";
+
             try
             {
-                // Parse the payload for issue-related comment events
-                Services.GitHubWebhook.PayloadIssueComment payloadIssueComment = JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadIssueComment>(payload.ToString());
-                // Get the first line of the comment
-                ReadOnlySpan<char> line = payloadIssueComment.comment.body.AsSpan().Trim();
-                int index = line.IndexOfAny("\n\r".AsSpan());
-                if (0 <= index)
+                switch (githubEvent)
                 {
-                    line = line.Slice(0, index);
-                }
-                // Check if the comment body contains the trigger command "/review"
-                if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Enqueue a background task to perform the GitHub-specific review process
-                    GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
-                    await taskQueue_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
-                    return Ok();
+                    case "pull_request":
+                    {
+                        Services.GitHubWebhook.PayloadPullRequestEvent prPayload =
+                            JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadPullRequestEvent>(payload.ToString());
+                        if (prPayload.action == "closed" && prPayload.pull_request.merged)
+                        {
+                            GitHubMergePRTask mergeTask = new GitHubMergePRTask(prPayload);
+                            await taskQueue_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
+                            return Ok();
+                        }
+                        break;
+                    }
+                    default:
+                    {
+                        // Parse the payload for issue-related comment events
+                        Services.GitHubWebhook.PayloadIssueComment payloadIssueComment =
+                            JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadIssueComment>(payload.ToString());
+                        // Get the first line of the comment
+                        ReadOnlySpan<char> line = payloadIssueComment.comment.body.AsSpan().Trim();
+                        int index = line.IndexOfAny("\n\r".AsSpan());
+                        if (0 <= index)
+                        {
+                            line = line.Slice(0, index);
+                        }
+                        // Check if the comment body contains the trigger command "/review"
+                        if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
+                        {
+                            GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
+                            await taskQueue_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
+                            return Ok();
+                        }
+                        break;
+                    }
                 }
             }
             catch (Exception ex)

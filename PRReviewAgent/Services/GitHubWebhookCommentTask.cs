@@ -2,6 +2,7 @@ using NGitLab;
 using NGitLab.Impl;
 using NGitLab.Models;
 using Octokit;
+using PRReviewAgent.Services.AutoImprove;
 using PRReviewAgent.Services.GitHubWebhook;
 using PRReviewAgent.Services.GitLabWebhook;
 using PRReviewAget.Prompt;
@@ -194,6 +195,32 @@ namespace PRReviewAgent.Services
             reviewRequest.MergeRequestDescription = payloadIssueComment_.issue.body?? string.Empty;
             reviewRequest.ReviewRules = Context.Instance.Settings.GetReviewTemplate(language_);
 
+            // Retrieve learned rules via RAG and attach to request.
+            RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
+            RuleLifecycleService? ruleLifecycleService = serviceProvider.GetService<RuleLifecycleService>();
+            if (ruleRetrievalService != null)
+            {
+                try
+                {
+                    string queryContext = string.Join("\n", reviewContexts
+                        .Where(ctx => !string.IsNullOrEmpty(ctx.AstJson))
+                        .Select(ctx => ctx.AstJson));
+                    if (string.IsNullOrEmpty(queryContext))
+                        queryContext = string.Join("\n", reviewContexts.Select(ctx => ctx.Path));
+
+                    List<LearnedRule> relevantRules = await ruleRetrievalService.GetRelevantRulesAsync(queryContext, cancellationToken: cancellationToken);
+                    if (relevantRules.Count > 0)
+                    {
+                        reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules);
+                        await ruleLifecycleService?.TrackReviewedRulesAsync($"github/{payloadIssueComment_.repository.id}/{pullRequestNumber_}", relevantRules, cancellationToken);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to retrieve learned rules");
+                }
+            }
+
             Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
             foreach (ReviewContext reviewContext in reviewContexts)
             {
@@ -219,7 +246,7 @@ namespace PRReviewAgent.Services
                 if (string.IsNullOrEmpty(fileGroup.Prompt)) continue;
                 try
                 {
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(Agents.Type.Executor, fileGroup.Prompt, context.CancellationToken);
+                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(fileGroup.Prompt, context.CancellationToken);
                     if (string.IsNullOrEmpty(agentResponse.Text))
                     {
                         logger.LogInformation($"No review generated for {fileGroup.ReviewContexts.Count} files.");

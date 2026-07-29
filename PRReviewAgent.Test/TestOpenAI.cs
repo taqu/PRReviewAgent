@@ -1,10 +1,5 @@
-using NGitLab;
 using Octokit;
-using PRReviewAgent.Services;
 using PRReviewAgent.Services.GitHubWebhook;
-using PRReviewAgent.Services.GitLabWebhook;
-using System.Text;
-using System.Xml.Linq;
 
 namespace PRReviewAgent.Test;
 

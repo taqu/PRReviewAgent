@@ -1,9 +1,7 @@
 
 using Microsoft.AspNetCore.Authentication.Certificate;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using PRReviewAgent.Services;
-using System;
+using PRReviewAgent.Services.AutoImprove;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
@@ -128,6 +126,38 @@ namespace PRReviewAgent
             {
                 builder.Services.AddHostedService<WarmUpTask>();
             }
+
+            // Register auto-improve services if configured.
+            if (Context.Instance.Settings.Config.TryGetValue("auto_improve", out object? autoImproveObj)
+                && autoImproveObj is Tomlyn.Model.TomlTable autoImprove
+                && autoImprove.TryGetValue("enabled", out object? enabledObj)
+                && enabledObj is bool enabled && enabled)
+            {
+                try
+                {
+                    string modelPath = autoImprove.TryGetValue("model_path", out object? mp) ? (string)mp : "Models/granite-embedding-97M-multilingual-r2-Q8_0.gguf";
+                    string dbPath = autoImprove.TryGetValue("db_path", out object? dp) ? (string)dp : "AppData/review_rules.db";
+                    long context_size = autoImprove.TryGetValue("context_size", out object? cs) ? (long)cs : 512;
+                    long chunk_overlap = autoImprove.TryGetValue("chunk_overlap", out object? co) ? (long)co : 64;
+
+                    LocalEmbeddingProvider embeddingProvider = new LocalEmbeddingProvider(modelPath, (uint)context_size, (int)chunk_overlap);
+                    RuleRepository ruleRepository = new RuleRepository(dbPath);
+                    ruleRepository.InitializeAsync().GetAwaiter().GetResult();
+
+                    builder.Services.AddSingleton(embeddingProvider);
+                    builder.Services.AddSingleton(ruleRepository);
+                    builder.Services.AddSingleton<RuleExtractionService>();
+                    builder.Services.AddSingleton<RuleRetrievalService>();
+                    builder.Services.AddSingleton<RuleLifecycleService>();
+                    builder.Services.AddHostedService<RulePruningWorker>();
+                    System.Console.WriteLine("Auto-improve module initialized.");
+                }
+                catch (Exception ex)
+                {
+                    System.Console.WriteLine($"Auto-improve module disabled: {ex.Message}");
+                }
+            }
+
             WebApplication app = builder.Build();
             if (ssl_verify)
             {

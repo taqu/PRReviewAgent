@@ -4,7 +4,15 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="llama.cpp\**" />
+    <Content Remove="llama.cpp\**" />
+    <EmbeddedResource Remove="llama.cpp\**" />
+    <None Remove="llama.cpp\**" />
+  </ItemGroup>
 
   <ItemGroup>
     <None Remove="config.toml" />
@@ -23,12 +31,6 @@
     <Content Include="secrets.toml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="Templates\organize.en.md">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="Templates\organize.ja.md">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
     <Content Include="Templates\review.en.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -38,13 +40,19 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-rc2" />
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc2" />
+    <PackageReference Include="LlamaPure" Version="1.0.3" />
+    <PackageReference Include="Medo.Uuid7" Version="3.2.0" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.15.0" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.15.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Certificate" Version="9.0.13" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.1" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.1" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="NGitLab" Version="11.4.0" />
     <PackageReference Include="Octokit" Version="14.0.0" />
     <PackageReference Include="Octokit.Webhooks.AspNetCore" Version="3.2.1" />
+    <PackageReference Include="OpenAI" Version="2.12.0" />
     <PackageReference Include="Tomlyn.Signed" Version="0.20.0" />
     <PackageReference Include="TreeSitter.DotNet" Version="1.3.0" />
   </ItemGroup>

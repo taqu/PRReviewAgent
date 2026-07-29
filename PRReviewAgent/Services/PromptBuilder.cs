@@ -10,6 +10,11 @@ namespace PRReviewAgent.Services
             foreach(FileGroup fileGroup in reviewRequest.FileGroups)
             {
                 stringBuilder.Clear();
+                if (!string.IsNullOrEmpty(reviewRequest.LearnedRules))
+                {
+                    stringBuilder.Append(reviewRequest.LearnedRules);
+                    stringBuilder.Append("\n\n----\n");
+                }
                 stringBuilder.Append(reviewRequest.ReviewRules);
                 stringBuilder.Append("\n\n----\n");
                 if (!string.IsNullOrEmpty(reviewRequest.MergeRequestTitle))

@@ -63,12 +63,7 @@ namespace PRReviewAgent
             // Run each review template through the agents to warm them up
             foreach(string template in settigs_.GetReviewTemplates())
             {
-                await agents_.RunAsync(Agents.Type.Executor, template, CancellationToken);
-            }
-            // Run each organize template through the agents to warm them up
-            foreach(string template in settigs_.GetOrganizeTemplates())
-            {
-                await agents_.RunAsync(Agents.Type.Executor, template, CancellationToken);
+                await agents_.RunAsync(template, CancellationToken);
             }
         }
 
