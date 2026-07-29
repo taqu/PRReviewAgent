@@ -115,8 +115,3 @@ If no issues are found, output only:
 
 No findings.
 
-# Project-Specific Rules
-
-Additional project-specific rules will be provided after this document.
-
-If a project-specific rule conflicts with this guideline, the project-specific rule takes precedence.
