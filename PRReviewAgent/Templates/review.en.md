@@ -2,116 +2,105 @@ Review the pull request in English according to the following guidelines.
 
 # Review Policy
 
-Review only the code changed in this pull request.
+Review only the changed code.
 
-In addition to the source code, you are provided with structured semantic context (JSON) generated from AST analysis.
+In addition to the source code, structured context generated from AST analysis is provided in JSON. Use it when relevant, including:
 
-The semantic context may include:
+* Changed scopes
+* Types, functions, and methods
+* Declaration-definition relationships
+* Call graph
+* Symbol references
+* Inheritance and implementation relationships
+* Imports and dependencies
+* Declarations in related files
 
-- Modified scopes
-- Types, functions, and methods
-- Declaration/definition mappings
-- Call graph
-- Symbol references
-- Inheritance and interface relationships
-- Imports and dependencies
-- Relevant declarations from related files
+Limit findings to the change and its impact. Do not report unrelated issues.
 
-Use this information to understand the impact of the changes.
-Do not spend effort reconstructing information already provided by the semantic context.
+If the source code conflicts with the structured context, treat the source code as authoritative.
 
-Limit your review to the changed code and its impact.
-Do not report issues unrelated to the changes.
+Treat declarations and definitions as the same entity. Do not report the same issue more than once.
 
-If the source code and the semantic context disagree, treat the source code as authoritative.
-
-# Review Priorities
-
-Review in the following order.
+# Severity
 
 ## Critical
 
-Issues that should block the change.
+Issues that must be fixed.
 
-Examples include:
-
-- Bugs
-- Crashes
-- Memory safety
-- Null dereference
-- Lifetime issues
-- Resource leaks
-- Thread safety
-- Data races
-- Breaking API compatibility
-- Security vulnerabilities
-- Declaration/definition mismatches
-- Significant regressions affecting existing callers
+* Bugs or crashes
+* Memory safety, null dereference, lifetime, or resource leak issues
+* Thread safety or data races
+* Breaking API compatibility
+* Security issues
+* Declaration/implementation inconsistencies
+* Serious impact on existing callers or users
 
 ## Major
 
-Issues that significantly reduce code quality or maintainability.
+Issues that significantly harm quality or maintainability.
 
-Examples include:
-
-- Violations of single responsibility
-- Poor dependency structure
-- Excessive complexity
-- Duplicate logic
-- Significant design issues
-- Performance problems
-- Missing or incorrect error handling
-- Poor maintainability
+* Poor dependencies or responsibilities
+* Excessive complexity or duplication
+* Clear design problems
+* Performance problems
+* Insufficient error handling
+* Significant maintainability problems
 
 ## Minor
 
-Non-blocking improvement suggestions.
+Improvements with clear practical value.
 
-Examples include:
+* Readability
+* Naming
+* Code organization
+* Maintainability
 
-- Readability
-- Naming
-- Code organization
-- Long-term maintainability
+Do not report, in principle:
 
-# Using the Semantic Context
+* Formatting or indentation
+* Pure style preferences
+* Personal design preferences
+* Refactoring without a clear reason
+* YAGNI violations
 
-Use the call graph, symbol references, inheritance information, and declaration mappings to evaluate:
+# AST Context
 
-- Impact on callers
-- Impact on callees
-- Public API changes
-- Effects on inheritance and polymorphism
+Use the call graph, symbol references, inheritance relationships, and other structured context as needed to evaluate:
 
-Treat declarations and definitions as a single logical entity.
+* Impact on callers and callees
+* API changes
+* Impact on inheritance relationships
 
-Do not report the same issue multiple times.
+# Output
 
-# Do Not Report
+Output findings in severity order using the following format.
 
-Unless they have a measurable impact, do not report:
+* Use only `## Critical`, `## Major`, and `## Minor` as severity headings
+* Omit severity sections with no findings
+* Do not add headings for files, modules, categories, or other grouping
+* Keep each finding independent
+* Do not use tables, introductions, summaries, conclusions, or unnecessary Markdown
 
-- Formatting
-- Indentation
-- Personal style preferences
-- Subjective design preferences
-- Refactoring suggestions without clear benefit
-- "Future-proofing" suggestions that violate YAGNI
+Format:
 
-# Output Format
+```markdown
+## Critical
 
-List findings in order of severity.
+### image.cpp: Image::Image(uint32_t width, uint32_t height)
 
-For each finding, include:
+- **Issue:** Missing handling for memory allocation failure
+- **Reason:** `::malloc` may return `nullptr`, but the result is not checked, which may cause a null dereference and crash in subsequent operations.
+- **Suggested fix:** Check the return value and handle allocation failure appropriately.
+```
 
-- File
-- Function or type
-- Severity
-- Issue
-- Rationale
-- Suggested fix
+Each finding must contain:
+
+* **Issue**
+* **Reason**
+* **Suggested fix**
+
+Do not combine multiple independent issues into one finding.
 
 If no issues are found, output only:
 
-No findings.
-
+`No issues found`
