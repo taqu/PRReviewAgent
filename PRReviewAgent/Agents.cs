@@ -33,6 +33,7 @@ namespace PRReviewAgent
             double temperature = (double)config[$"{name}_temperature"];
             double topp = (double)config[$"{name}_topp"];
             long topk = (long)config[$"{name}_topk"];
+            double frequencyPenalty = (double)config[$"{name}_frequency_penalty"];
             long thinkingEffort = (long)config[$"{name}_thinking_effort"];
             long thinkingOutput = (long)config[$"{name}_thinking_output"];
             long timeout = (long)config[$"{name}_timeout"];
@@ -56,6 +57,7 @@ namespace PRReviewAgent
                         Temperature = (float)temperature,
                         TopP = (float)topp,
                         TopK = (int)topk,
+                        FrequencyPenalty = (float)frequencyPenalty,
                         Instructions = (string)config[$"{name}_instructions"],
                         Reasoning = new ReasoningOptions
                         {
