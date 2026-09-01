@@ -33,10 +33,13 @@ namespace PRReviewAgent.Services.AutoImprove
             try
             {
                 string prompt = BuildExtractionPrompt(astContext, diff, fileDependencies);
-                Microsoft.Agents.AI.AgentResponse agentResponse = await Context.Instance.Agents.RunAsync(prompt, cancellationToken);
-                if (string.IsNullOrWhiteSpace(agentResponse.Text)) return;
-
-                LearnedRule? extractedRule = ParseRuleJson(agentResponse.Text);
+#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+                string response = await Context.Instance.Agents.RunAsync(prompt, OpenAI.Chat.ChatReasoningEffortLevel.None, cancellationToken);
+#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+                if (string.IsNullOrWhiteSpace(response)){
+                    return;
+                }
+                LearnedRule? extractedRule = ParseRuleJson(response);
                 if (extractedRule == null){
                     return;
                 }

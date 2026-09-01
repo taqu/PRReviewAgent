@@ -1,5 +1,3 @@
-
-using Microsoft.AspNetCore.Authentication.Certificate;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.AutoImprove;
 using System.Net.Security;
@@ -112,7 +110,7 @@ namespace PRReviewAgent
                 if (ssl_verify)
                 {
                     builder.Services.AddAuthentication(
-                        CertificateAuthenticationDefaults.AuthenticationScheme)
+                        Microsoft.AspNetCore.Authentication.Certificate.CertificateAuthenticationDefaults.AuthenticationScheme)
                     .AddCertificate();
                 }
 

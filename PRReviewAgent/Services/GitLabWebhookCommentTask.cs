@@ -1,9 +1,12 @@
 using Microsoft.AspNetCore.Mvc.Rendering;
 using NGitLab;
 using NGitLab.Models;
+using OpenAI.Chat;
+using PRReviewAgent.Prompt;
 using PRReviewAgent.Services.AutoImprove;
 using PRReviewAgent.Services.GitLabWebhook;
 using PRReviewAget.Prompt;
+using System;
 using System.Text;
 
 namespace PRReviewAgent.Services
@@ -187,7 +190,8 @@ namespace PRReviewAgent.Services
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = payloadComment_.merge_request.title ?? string.Empty;
             reviewRequest.MergeRequestDescription = payloadComment_.merge_request.description;
-            reviewRequest.ReviewRules = Context.Instance.Settings.GetReviewTemplate(language_);
+            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template(language_);
+            reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
             // Retrieve learned rules via RAG and attach to request.
             RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
@@ -205,7 +209,7 @@ namespace PRReviewAgent.Services
                     List<LearnedRule> relevantRules = await ruleRetrievalService.GetRelevantRulesAsync(queryContext, cancellationToken: cancellationToken);
                     if (relevantRules.Count > 0)
                     {
-                        reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules);
+                        reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules, language_);
                         await ruleLifecycleService?.TrackReviewedRulesAsync($"gitlab/{payloadComment_.project.id}/{payloadComment_.merge_request.iid}", relevantRules, cancellationToken);
                     }
                 }
@@ -228,26 +232,39 @@ namespace PRReviewAgent.Services
                 group.ReviewContexts.Add(reviewContext);
             }
 
-            // Step 7: Build prompts for each group.
-            PromptBuilder.Build(reviewRequest, stringBuilder_);
-
-            // Step 8: Execute review for each file group.
+            // Step 7: Execute 2 turn review for each file group.
             List<string> reviews = new List<string>();
             logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
             foreach (FileGroup fileGroup in reviewRequest.FileGroups)
             {
-                if (string.IsNullOrEmpty(fileGroup.Prompt)) continue;
+                string promptTurn1 = PromptBuilder.BuildTurn1(reviewRequest, fileGroup, stringBuilder_);
+                if (string.IsNullOrEmpty(promptTurn1)) continue;
                 try
                 {
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(fileGroup.Prompt, context.CancellationToken);
-                    if (string.IsNullOrEmpty(agentResponse.Text))
+                    string candidateResponse = await context.Agents.RunAsync(promptTurn1, context.CancellationToken);
+                    if (string.IsNullOrEmpty(candidateResponse))
                     {
-                        logger.LogInformation($"No review generated for {fileGroup.ReviewContexts.Count} files.");
+                        logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
+                        continue;
+                    }
+                    IssuesResponse issuesResponse = System.Text.Json.JsonSerializer.Deserialize<IssuesResponse>(candidateResponse);
+                    if(null == issuesResponse || issuesResponse.issues.Length <= 0)
+                    {
+                        logger.LogInformation($"Wrong format for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
+                        continue;
+                    }
+                    string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
+#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+                    string reviewResponse = await context.Agents.RunAsync(promptTurn2, ChatReasoningEffortLevel.None, context.CancellationToken);
+#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+                    if (string.IsNullOrEmpty(reviewResponse))
+                    {
+                        logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
                         continue;
                     }
                     stringBuilder_.Clear();
-                    stringBuilder_.Append($"## {fileGroup.Topic}\n\n");
-                    stringBuilder_.Append(agentResponse.Text);
+                    stringBuilder_.Append($"# {fileGroup.Topic}\n\n");
+                    stringBuilder_.Append(reviewResponse);
                     reviews.Add(stringBuilder_.ToString());
                     logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.");
                 }
@@ -257,7 +274,7 @@ namespace PRReviewAgent.Services
                 }
             }
 
-            // Step 9: Merge reviews and post comment.
+            // Step 8: Merge reviews and post comment.
             if (reviews.Count <= 0)
             {
                 PostComment("No reviews are generated.", mergeRequestClient, logger);

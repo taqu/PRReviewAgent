@@ -193,7 +193,8 @@ namespace PRReviewAgent.Services
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = payloadIssueComment_.issue.title ?? string.Empty;
             reviewRequest.MergeRequestDescription = payloadIssueComment_.issue.body?? string.Empty;
-            reviewRequest.ReviewRules = Context.Instance.Settings.GetReviewTemplate(language_);
+            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template(language_);
+            reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
             // Retrieve learned rules via RAG and attach to request.
             RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
@@ -211,7 +212,7 @@ namespace PRReviewAgent.Services
                     List<LearnedRule> relevantRules = await ruleRetrievalService.GetRelevantRulesAsync(queryContext, cancellationToken: cancellationToken);
                     if (relevantRules.Count > 0)
                     {
-                        reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules);
+                        reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules, language_);
                         await ruleLifecycleService?.TrackReviewedRulesAsync($"github/{payloadIssueComment_.repository.id}/{pullRequestNumber_}", relevantRules, cancellationToken);
                     }
                 }
@@ -234,27 +235,25 @@ namespace PRReviewAgent.Services
                 group.ReviewContexts.Add(reviewContext);
             }
 
-            // Step 7: Build prompts for each group.
-            PromptBuilder.Build(reviewRequest, stringBuilder_);
 
-
-            // Step 8: Execute review for each file group.
+            // Step 7: Execute review for each file group.
             List<string> reviews = new List<string>();
             logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
             foreach (FileGroup fileGroup in reviewRequest.FileGroups)
             {
-                if (string.IsNullOrEmpty(fileGroup.Prompt)) continue;
+                string promptTurn1 = PromptBuilder.BuildTurn1(reviewRequest, fileGroup, stringBuilder_);
+                if (string.IsNullOrEmpty(promptTurn1)) continue;
                 try
                 {
-                    Microsoft.Agents.AI.AgentResponse agentResponse = await context.Agents.RunAsync(fileGroup.Prompt, context.CancellationToken);
-                    if (string.IsNullOrEmpty(agentResponse.Text))
+                    string reviewResponse = await context.Agents.RunAsync(promptTurn1, context.CancellationToken);
+                    if (string.IsNullOrEmpty(reviewResponse))
                     {
                         logger.LogInformation($"No review generated for {fileGroup.ReviewContexts.Count} files.");
                         continue;
                     }
                     stringBuilder_.Clear();
                     stringBuilder_.Append($"## {fileGroup.Topic}\n\n");
-                    stringBuilder_.Append(agentResponse.Text);
+                    stringBuilder_.Append(reviewResponse);
                     reviews.Add(stringBuilder_.ToString());
                     logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.");
                 }
@@ -264,7 +263,7 @@ namespace PRReviewAgent.Services
                 }
             }
 
-            // Step 9: Merge reviews and post comment.
+            // Step 8: Merge reviews and post comment.
             if (reviews.Count <= 0)
             {
                 await PostCommentAsync("No reviews are generated.", gitHubClient, logger);

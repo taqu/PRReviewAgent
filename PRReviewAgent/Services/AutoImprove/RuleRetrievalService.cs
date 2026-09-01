@@ -58,13 +58,17 @@ namespace PRReviewAgent.Services.AutoImprove
             return uniqueRules;
         }
 
-        public static string FormatRulesForPrompt(IReadOnlyList<LearnedRule> rules)
+        public static string FormatRulesForPrompt(IReadOnlyList<LearnedRule> rules, string language)
         {
             if (rules.Count == 0) return string.Empty;
+            string? template = Context.Instance.Settings.GetLearnedTemplate(language);
 
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("[IMPORTANT: PROJECT-SPECIFIC RULES]");
-            sb.AppendLine("The following rules have been automatically learned from past modifications in this repository. Pay strict attention to these patterns:");
+            if (!string.IsNullOrEmpty(template))
+            {
+                sb.AppendLine(template);
+            }
             foreach (LearnedRule rule in rules)
             {
                 sb.AppendLine($"- Pattern: {rule.AstPattern}");

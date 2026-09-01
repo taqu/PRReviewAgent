@@ -77,23 +77,36 @@ namespace PRReviewAgent
             // Step 3: Enumerate and load Markdown templates from the Templates directory.
             if (System.IO.Directory.Exists("Templates"))
             {
-                // Load review templates (e.g., review.en.md, review.ja.md).
-                foreach (string file in System.IO.Directory.EnumerateFiles("Templates", "review.*.md"))
-                {
-                    string filename = System.IO.Path.GetFileName(file);
-                    // Extract the language code from the filename.
-                    ReadOnlySpan<char> key = filename.AsSpan().Slice("review.".Length, filename.Length - "review.".Length - ".md".Length);
-                    try
-                    {
-                        string template = System.IO.File.ReadAllText(file);
-                        reviewTemplates_.Add(key.ToString(), template);
-                    }
-                    catch
-                    {
-                    }
-                }
+                review1Templates_ = LoadTemplate("review1");
+                review2Templates_ = LoadTemplate("review2");
+                learnedTemplates_ = LoadTemplate("learned");
             }
             return true;
+        }
+
+        /// <summary>
+        /// Load review templates (e.g., review.en.md, review.ja.md).
+        /// </summary>
+        /// <param name="prefix"></param>
+        /// <returns></returns>
+        private static Dictionary<string, string> LoadTemplate(string prefix)
+        {
+            Dictionary<string, string> templates = new();
+            foreach (string file in System.IO.Directory.EnumerateFiles("Templates", $"{prefix}.*.md"))
+            {
+                string filename = System.IO.Path.GetFileName(file);
+                // Extract the language code from the filename.
+                ReadOnlySpan<char> key = filename.AsSpan().Slice(prefix.Length + 1, filename.Length - prefix.Length - 1 - ".md".Length);
+                try
+                {
+                    string template = System.IO.File.ReadAllText(file);
+                    templates.Add(key.ToString(), template);
+                }
+                catch
+                {
+                }
+            }
+            return templates;
         }
 
         /// <summary>
@@ -103,7 +116,7 @@ namespace PRReviewAgent
         /// <returns>True if both review and organize templates exist; otherwise, false.</returns>
         public bool HasTemplate(string lang)
         {
-            return reviewTemplates_.ContainsKey(lang);
+            return review1Templates_.ContainsKey(lang) && review2Templates_.ContainsKey(lang) &&learnedTemplates_.ContainsKey(lang);
         }
 
         /// <summary>
@@ -111,10 +124,34 @@ namespace PRReviewAgent
         /// </summary>
         /// <param name="lang">The language code.</param>
         /// <returns>The review template text, or null if not found.</returns>
-        public string? GetReviewTemplate(string lang)
+        public string? GetReview1Template(string lang)
         {
             string? template = null;
-            reviewTemplates_.TryGetValue(lang, out template);
+            review1Templates_.TryGetValue(lang, out template);
+            return template;
+        }
+
+        /// <summary>
+        /// Gets the review template for the specified language.
+        /// </summary>
+        /// <param name="lang">The language code.</param>
+        /// <returns>The review template text, or null if not found.</returns>
+        public string? GetReview2Template(string lang)
+        {
+            string? template = null;
+            review2Templates_.TryGetValue(lang, out template);
+            return template;
+        }
+
+        /// <summary>
+        /// Gets the review template for the specified language.
+        /// </summary>
+        /// <param name="lang">The language code.</param>
+        /// <returns>The review template text, or null if not found.</returns>
+        public string? GetLearnedTemplate(string lang)
+        {
+            string? template = null;
+            learnedTemplates_.TryGetValue(lang, out template);
             return template;
         }
 
@@ -122,10 +159,20 @@ namespace PRReviewAgent
         /// Gets all review templates.
         /// </summary>
         /// <returns>An enumerable of review template texts.</returns>
-        public IEnumerable<string> GetReviewTemplates()
+        public IEnumerable<string> GetReview1Templates()
         {
-            return reviewTemplates_.Values.AsEnumerable<string>();
+            return review1Templates_.Values.AsEnumerable<string>();
         }
+
+        /// <summary>
+        /// Gets all review templates.
+        /// </summary>
+        /// <returns>An enumerable of review template texts.</returns>
+        public IEnumerable<string> GetReview2Templates()
+        {
+            return review2Templates_.Values.AsEnumerable<string>();
+        }
+
 
         /// <summary>
         /// Gets the extension from the specified file path.
@@ -212,7 +259,9 @@ namespace PRReviewAgent
 
         private Tomlyn.Model.TomlTable? secrets_;
         private Tomlyn.Model.TomlTable? config_;
-        private Dictionary<string, string> reviewTemplates_ = new Dictionary<string, string>();
+        private Dictionary<string, string> review1Templates_ = new();
+        private Dictionary<string, string> review2Templates_ = new();
+        private Dictionary<string, string> learnedTemplates_ = new();
         private string[] extensions_ = new string[0];
     }
 }

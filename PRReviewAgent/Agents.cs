@@ -1,11 +1,6 @@
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
-using Octokit.Webhooks.Models.PageBuildEvent;
 using OpenAI;
 using OpenAI.Chat;
-using System;
 using System.ClientModel;
-using System.Collections.Generic;
 
 namespace PRReviewAgent
 {
@@ -18,9 +13,9 @@ namespace PRReviewAgent
         /// Builds and initializes an OpenAI ChatClient and AIAgent based on the provided name and configuration.
         /// </summary>
         /// <param name="chatClient">The initialized ChatClient.</param>
-        /// <param name="aIAgent">The initialized AIAgent.</param>
+        /// <param name="chatCompletionOptions">The initialized ChatCompletionOptions.</param>
         /// <param name="name">The name identifier used to look up configuration settings.</param>
-        private static void Build(out OpenAI.Chat.ChatClient chatClient, out AIAgent aIAgent, string name)
+        private static void Build(out OpenAI.Chat.ChatClient chatClient, out string instructions, ChatCompletionOptions chatCompletionOptions, string name)
         {
             // Retrieve OpenAI API key from secrets
             Tomlyn.Model.TomlTable? secrets = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Secrets["openai"];
@@ -30,13 +25,21 @@ namespace PRReviewAgent
             Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["agent"];
             string model = (string)config[$"{name}_model"];
             long max_output = (long)config[$"{name}_max_output"];
-            double temperature = (double)config[$"{name}_temperature"];
-            double topp = (double)config[$"{name}_topp"];
-            long topk = (long)config[$"{name}_topk"];
-            double frequencyPenalty = (double)config[$"{name}_frequency_penalty"];
-            long thinkingEffort = (long)config[$"{name}_thinking_effort"];
-            long thinkingOutput = (long)config[$"{name}_thinking_output"];
+            if (!model.StartsWith("gpt-5"))
+            {
+                double temperature = (double)config[$"{name}_temperature"];
+                double topp = (double)config[$"{name}_topp"];
+                //long topk = (long)config[$"{name}_topk"];
+                double frequencyPenalty = (double)config[$"{name}_frequency_penalty"];
+
+                chatCompletionOptions.Temperature = (float)temperature;
+                chatCompletionOptions.TopP = (float)topp;
+                chatCompletionOptions.FrequencyPenalty = (float)frequencyPenalty;
+            }
+            long thinkingEffort = Math.Clamp((long)config[$"{name}_thinking_effort"], 0, 3);
+            //long thinkingOutput = (long)config[$"{name}_thinking_output"];
             long timeout = (long)config[$"{name}_timeout"];
+            instructions = (string)config[$"{name}_instructions"];
 
             // Configure OpenAI client options including endpoint and timeout
             OpenAIClientOptions options = new OpenAIClientOptions();
@@ -46,28 +49,24 @@ namespace PRReviewAgent
             // Initialize the ChatClient with the API key and options
             chatClient = new OpenAI.Chat.ChatClient(model, new ApiKeyCredential(apiKey), options);
 
-            // Create the AIAgent using the ChatClient and specified options
-            aIAgent = chatClient.AsAIAgent(
-                options: new ChatClientAgentOptions()
-                {
-                    Name = (string)config[$"{name}_name"],
-                    ChatOptions = new()
-                    {
-                        MaxOutputTokens = (int)max_output,
-                        Temperature = (float)temperature,
-                        TopP = (float)topp,
-                        TopK = (int)topk,
-                        FrequencyPenalty = (float)frequencyPenalty,
-                        Instructions = (string)config[$"{name}_instructions"],
-                        Reasoning = new ReasoningOptions
-                        {
-                            Effort = (ReasoningEffort)Math.Clamp(thinkingEffort, 0, 3),
-                            Output = (ReasoningOutput)Math.Clamp(thinkingOutput, 0, 2),
-                        }
-                    },
-                    ChatHistoryProvider = null,
-                }
-            );
+            chatCompletionOptions.MaxOutputTokenCount = (int)max_output;
+#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+            switch (thinkingEffort)
+            {
+                case 0:
+                    chatCompletionOptions.ReasoningEffortLevel = ChatReasoningEffortLevel.None;
+                    break;
+                case 1:
+                    chatCompletionOptions.ReasoningEffortLevel = ChatReasoningEffortLevel.Low;
+                    break;
+                case 2:
+                    chatCompletionOptions.ReasoningEffortLevel = ChatReasoningEffortLevel.Medium;
+                    break;
+                case 3:
+                    chatCompletionOptions.ReasoningEffortLevel = ChatReasoningEffortLevel.High;
+                    break;
+            }
+#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
         }
 
         /// <summary>
@@ -76,7 +75,7 @@ namespace PRReviewAgent
         public Agents()
         {
             // Build the three core agents: assistant, planner, and executor
-            Build(out agent_.chatClient_, out agent_.aiAgent_, "reviewer");
+            Build(out chatClient_, out instructions_, chatCompletionOptions_, "reviewer");
         }
 
         /// <summary>
@@ -86,13 +85,68 @@ namespace PRReviewAgent
         /// <param name="prompt">The prompt to send to the agent.</param>
         /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
         /// <returns>A task that represents the asynchronous operation. The task result contains the <see cref="AgentResponse"/>.</returns>
-        public async Task<AgentResponse> RunAsync(string prompt, CancellationToken cancellationToken)
+        public async Task<string> RunAsync(string prompt, CancellationToken cancellationToken)
         {
             // Execute the agent and return the raw response
-            AgentResponse response = await agent_.aiAgent_.RunAsync(prompt, null, runOptions_, cancellationToken);
-            return response;
+            OpenAI.Chat.ChatMessage[] messages;
+            if (string.IsNullOrEmpty(instructions_))
+            {
+                messages = new OpenAI.Chat.ChatMessage[1];
+                messages[0] = OpenAI.Chat.ChatMessage.CreateUserMessage(prompt);
+            }
+            else
+            {
+                messages = new OpenAI.Chat.ChatMessage[2];
+                messages[0] = OpenAI.Chat.ChatMessage.CreateSystemMessage(instructions_);
+                messages[1] = OpenAI.Chat.ChatMessage.CreateUserMessage(prompt);
+            }
+            ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions_);
+            if (response.Value.Content.Count <= 0)
+            {
+                return string.Empty;
+            }
+            return response.Value.Content[0].Text;
         }
 
+        /// <summary>
+        /// Runs the specified agent asynchronously with a prompt.
+        /// </summary>
+        /// <param name="type">The type of agent to run.</param>
+        /// <param name="prompt">The prompt to send to the agent.</param>
+        /// <param name="reasoningEffort">Reasoning effort</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the <see cref="AgentResponse"/>.</returns>
+#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+        public async Task<string> RunAsync(string prompt, ChatReasoningEffortLevel reasoningEffort, CancellationToken cancellationToken)
+#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+        {
+            // Execute the agent and return the raw response
+            OpenAI.Chat.ChatMessage[] messages;
+            if (string.IsNullOrEmpty(instructions_))
+            {
+                messages = new OpenAI.Chat.ChatMessage[1];
+                messages[0] = OpenAI.Chat.ChatMessage.CreateUserMessage(prompt);
+            }
+            else
+            {
+                messages = new OpenAI.Chat.ChatMessage[2];
+                messages[0] = OpenAI.Chat.ChatMessage.CreateSystemMessage(instructions_);
+                messages[1] = OpenAI.Chat.ChatMessage.CreateUserMessage(prompt);
+            }
+#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+            ChatReasoningEffortLevel? oldReasoningEffort = chatCompletionOptions_.ReasoningEffortLevel;
+            chatCompletionOptions_.ReasoningEffortLevel = reasoningEffort;
+            ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions_, cancellationToken);
+            chatCompletionOptions_.ReasoningEffortLevel = oldReasoningEffort;
+#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします
+            if (response.Value.Content.Count <= 0)
+            {
+                return string.Empty;
+            }
+            return response.Value.Content[0].Text;
+        }
+
+#if false
         /// <summary>
         /// Runs the specified agent asynchronously with a prompt and returns the result deserialized to the specified type.
         /// </summary>
@@ -115,16 +169,9 @@ namespace PRReviewAgent
             // Deserialize the JSON response text into type T
             return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
         }
-
-        /// <summary>
-        /// Represents an individual AI agent consisting of a ChatClient and an AIAgent.
-        /// </summary>
-        private struct Agent
-        {
-            public OpenAI.Chat.ChatClient chatClient_;
-            public AIAgent aiAgent_;
-        }
-        private Agent agent_ = new Agent();
-        private AgentRunOptions runOptions_ = new AgentRunOptions();
+#endif
+        private OpenAI.Chat.ChatClient chatClient_;
+        private ChatCompletionOptions chatCompletionOptions_ = new ChatCompletionOptions();
+        private string instructions_ = string.Empty;
     }
 }

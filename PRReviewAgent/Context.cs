@@ -61,7 +61,12 @@ namespace PRReviewAgent
         public async Task WarmUpAsync()
         {
             // Run each review template through the agents to warm them up
-            foreach(string template in settigs_.GetReviewTemplates())
+            foreach(string template in settigs_.GetReview1Templates())
+            {
+                await agents_.RunAsync(template, CancellationToken);
+            }
+
+            foreach(string template in settigs_.GetReview2Templates())
             {
                 await agents_.RunAsync(template, CancellationToken);
             }
