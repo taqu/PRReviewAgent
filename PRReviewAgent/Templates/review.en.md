@@ -84,8 +84,8 @@ Output findings in severity order using the following format.
 Format:
 
 ```markdown
+# image
 ## Critical
-
 ### image.cpp: Image::Image(uint32_t width, uint32_t height)
 
 - **Issue:** Missing handling for memory allocation failure

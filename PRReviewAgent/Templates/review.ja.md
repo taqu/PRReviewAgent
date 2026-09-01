@@ -85,8 +85,8 @@ Call Graph、シンボル参照、継承関係などを使い、必要に応じ�
 形式:
 
 ```markdown
+# image
 ## Critical
-
 ### image.cpp: Image::Image(uint32_t width, uint32_t height)
 
 - **問題:** メモリ確保失敗時のハンドリング不足

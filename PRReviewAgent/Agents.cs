@@ -30,6 +30,8 @@ namespace PRReviewAgent
             Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["agent"];
             string model = (string)config[$"{name}_model"];
             double temperature = (double)config[$"{name}_temperature"];
+            double topp = (double)config[$"{name}_topp"];
+            long topk = (long)config[$"{name}_topk"];
             long thinkingEffort = (long)config[$"{name}_thinking_effort"];
             long thinkingOutput = (long)config[$"{name}_thinking_output"];
             long timeout = (long)config[$"{name}_timeout"];
@@ -50,6 +52,8 @@ namespace PRReviewAgent
                     ChatOptions = new()
                     {
                         Temperature = (float)temperature,
+                        TopP = (float)topp,
+                        TopK = (int)topk,
                         Instructions = (string)config[$"{name}_instructions"],
                         Reasoning = new ReasoningOptions
                         {
@@ -57,6 +61,7 @@ namespace PRReviewAgent
                             Output = (ReasoningOutput)Math.Clamp(thinkingOutput, 0, 2),
                         }
                     },
+                    ChatHistoryProvider = null,
                 }
             );
         }
