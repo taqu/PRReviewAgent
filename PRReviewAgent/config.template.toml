@@ -15,6 +15,7 @@ reviewer = "https://api.openai.com/v1"
 reviewer_name = "Reviewer"
 reviewer_model = "gpt-5-mini"
 reviewer_instructions = "You are a reviewer for a pull request. Your review should be correct and strict."
+reviewer_max_output = 16384
 reviewer_temperature = 0.7
 reviewer_topp = 0.9
 reviewer_topk = 40

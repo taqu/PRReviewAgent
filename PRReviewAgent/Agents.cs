@@ -29,6 +29,7 @@ namespace PRReviewAgent
             // Load agent-specific configuration settings
             Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["agent"];
             string model = (string)config[$"{name}_model"];
+            long max_output = (long)config[$"{name}_max_output"];
             double temperature = (double)config[$"{name}_temperature"];
             double topp = (double)config[$"{name}_topp"];
             long topk = (long)config[$"{name}_topk"];
@@ -51,6 +52,7 @@ namespace PRReviewAgent
                     Name = (string)config[$"{name}_name"],
                     ChatOptions = new()
                     {
+                        MaxOutputTokens = (int)max_output,
                         Temperature = (float)temperature,
                         TopP = (float)topp,
                         TopK = (int)topk,
