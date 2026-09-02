@@ -163,6 +163,7 @@ namespace PRReviewAgent
             }
 
             app.MapControllers();
+            Context.Instance.AddLogger(app.Services.GetRequiredService<ILoggerFactory>());
             app.Run();
         }
     }

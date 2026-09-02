@@ -190,7 +190,7 @@ namespace PRReviewAgent.Services
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = payloadComment_.merge_request.title ?? string.Empty;
             reviewRequest.MergeRequestDescription = payloadComment_.merge_request.description;
-            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template(language_);
+            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
             // Retrieve learned rules via RAG and attach to request.

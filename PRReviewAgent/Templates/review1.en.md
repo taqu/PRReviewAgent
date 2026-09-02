@@ -8,6 +8,16 @@ Identify concrete, actionable issues introduced by the changed code.
 
 Reduce missed issues while avoiding weakly supported findings and false positives.
 
+# Language
+
+All output must be written in English.
+
+The source code may contain comments, strings, identifiers, or documentation in other languages. Do not mirror their language in the output.
+
+Keep code identifiers, symbol names, file paths, literals, and quoted source text unchanged when necessary for evidence.
+
+Write all explanatory fields such as `problem`, `evidence`, `impact`, and `suggested_fix` in English.
+
 # Review Scope
 
 Review only the changed code and its direct impact.

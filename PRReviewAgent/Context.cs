@@ -1,4 +1,5 @@
 using Octokit.Webhooks.Events.Package;
+using System.Diagnostics;
 
 namespace PRReviewAgent
 {
@@ -11,6 +12,21 @@ namespace PRReviewAgent
         /// Gets the singleton instance of the <see cref="Context"/> class.
         /// </summary>
         public static Context Instance => context_;
+
+#if DEBUG
+        private ILogger? logger_;
+#endif
+        [Conditional("DEBUG")]
+        public void AddLogger(ILoggerFactory factory)
+        {
+            context_.logger_ = factory.CreateLogger("Context");
+        }
+
+        [Conditional("DEBUG")]
+        public void Log(LogLevel logLevel, string message, params object[] args)
+        {
+            logger_?.Log(logLevel, message, args);
+        }
 
         /// <summary>
         /// Initializes the application context, including settings and agents.
@@ -61,12 +77,12 @@ namespace PRReviewAgent
         public async Task WarmUpAsync()
         {
             // Run each review template through the agents to warm them up
-            foreach(string template in settigs_.GetReview1Templates())
+            foreach (string template in settigs_.GetReview1Templates())
             {
                 await agents_.RunAsync(template, CancellationToken);
             }
 
-            foreach(string template in settigs_.GetReview2Templates())
+            foreach (string template in settigs_.GetReview2Templates())
             {
                 await agents_.RunAsync(template, CancellationToken);
             }
