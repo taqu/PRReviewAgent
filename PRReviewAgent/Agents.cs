@@ -140,6 +140,58 @@ namespace PRReviewAgent
             return response.Value.Content[0].Text;
         }
 
+        private static void FixSchemaForOpenAi(JsonNode? node)
+        {
+            if (node is not JsonObject obj) return;
+
+            // Convert array types like ["object", "null"] to a single string type
+            if (obj.TryGetPropertyValue("type", out var typeNode))
+            {
+                // If the type is in an array format such as ["object", "null"] or ["string", "null"]
+                if (typeNode is JsonArray typeArray)
+                {
+                    // Extract a valid type other than "null" (e.g., "object", "string") from the array
+                    var actualType = typeArray.FirstOrDefault(x => x?.ToString() != "null")?.ToString();
+                    if (actualType != null)
+                    {
+                        // Overwrite the array with a single string value (e.g., "object")
+                        obj["type"] = JsonValue.Create(actualType);
+                    }
+                }
+            }
+
+            // Retrieve the current type string for evaluation
+            string? typeString = obj["type"]?.ToString();
+
+            // If the type is object or contains properties
+            if (typeString == "object" || obj.ContainsKey("properties"))
+            {
+                // 1. Force additionalProperties to false
+                obj["additionalProperties"] = false;
+
+                // 2. Mark all properties as required
+                if (obj.TryGetPropertyValue("properties", out var propsNode) && propsNode is JsonObject propsObj)
+                {
+                    var requiredArray = new JsonArray();
+                    foreach (var prop in propsObj)
+                    {
+                        requiredArray.Add(prop.Key);
+                        // Recursively process child elements (nested objects or arrays)
+                        FixSchemaForOpenAi(prop.Value);
+                    }
+                    obj["required"] = requiredArray;
+                }
+            }
+            // If the type is an array, recursively process the contents of items
+            else if (typeString == "array")
+            {
+                if (obj.TryGetPropertyValue("items", out var itemsNode))
+                {
+                    FixSchemaForOpenAi(itemsNode);
+                }
+            }
+        }
+
         /// <summary>
         /// Runs the specified agent asynchronously with a prompt and returns the result deserialized to the specified type.
         /// </summary>
@@ -148,7 +200,7 @@ namespace PRReviewAgent
         /// <param name="prompt">The prompt to send to the agent.</param>
         /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
         /// <returns>A task that represents the asynchronous operation. The task result contains the deserialized response of type <typeparamref name="T"/>.</returns>
-        public async Task<T?> RunAsync<T>(string prompt, CancellationToken cancellationToken) where T:class
+        public async Task<T?> RunAsync<T>(string prompt, CancellationToken cancellationToken) where T : class
         {
             // Set the expected response format to JSON schema based on type T
             Type type = typeof(T);
@@ -156,7 +208,16 @@ namespace PRReviewAgent
             string schemaName = attribute?.Name ?? $"{type.Name}_schema";
             string? schemaDescription = attribute?.Description;
 
-            JsonNode schemaNode = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
+            JsonNode schemaNode = System.Text.Json.JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
+            // Correct metadata for OpenAI
+            if (schemaNode is JsonObject rootObj)
+            {
+                rootObj.Remove("$schema");
+                rootObj.Remove("$id");
+                rootObj.Remove("$comment");
+            }
+            FixSchemaForOpenAi(schemaNode);
+
             BinaryData schemaData = BinaryData.FromString(schemaNode.ToString());
 
             ChatResponseFormat jsonFormat = ChatResponseFormat.CreateJsonSchemaFormat(
@@ -175,6 +236,33 @@ namespace PRReviewAgent
             {
                 return null;
             }
+
+#if DEBUG
+            try
+            {
+                string jsonText = response.GetRawResponse().Content.ToString();
+                using (JsonDocument doc = JsonDocument.Parse(response.GetRawResponse().Content))
+                {
+                    JsonElement root = doc.RootElement;
+                    if (root.TryGetProperty("choices", out JsonElement choices) && choices.GetArrayLength() > 0)
+                    {
+                        if (choices[0].TryGetProperty("message", out JsonElement message))
+                        {
+                            if (message.TryGetProperty("reasoning_content", out JsonElement reasoningElement))
+                            {
+                                string reasoningContent = reasoningElement.GetString() ?? string.Empty;
+                                if (!string.IsNullOrEmpty(reasoningContent))
+                                {
+                                    Context.Instance.Log(LogLevel.Information, reasoningContent);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+#endif
+
             try
             {
                 return System.Text.Json.JsonSerializer.Deserialize<T>(response.Value.Content[0].Text);
