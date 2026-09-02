@@ -10,6 +10,7 @@ namespace PRReviewAgent.Prompt
         public string confidence { get; set; }
     }
 
+    [LlmSchema("issues_schema", "structure of issue list")]
     public class IssuesResponse
     {
         public Issue[] issues { get; set; } = new Issue[0];

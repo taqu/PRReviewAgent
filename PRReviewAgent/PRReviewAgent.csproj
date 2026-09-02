@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -22,15 +22,6 @@
     <None Remove="Templates\review.en.md" />
     <None Remove="Templates\review.ja.md" />
     <None Remove="Templates\review.jp.md" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="config.toml">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="secrets.toml">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
   </ItemGroup>
 
   <ItemGroup>

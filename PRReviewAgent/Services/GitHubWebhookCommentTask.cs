@@ -2,6 +2,8 @@ using NGitLab;
 using NGitLab.Impl;
 using NGitLab.Models;
 using Octokit;
+using OpenAI.Chat;
+using PRReviewAgent.Prompt;
 using PRReviewAgent.Services.AutoImprove;
 using PRReviewAgent.Services.GitHubWebhook;
 using PRReviewAgent.Services.GitLabWebhook;
@@ -245,14 +247,24 @@ namespace PRReviewAgent.Services
                 if (string.IsNullOrEmpty(promptTurn1)) continue;
                 try
                 {
-                    string reviewResponse = await context.Agents.RunAsync(promptTurn1, context.CancellationToken);
+                    IssuesResponse? issuesResponse = await context.Agents.RunAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
+                    if (null == issuesResponse || issuesResponse.issues.Length <= 0)
+                    {
+                        logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
+                        PromptBuilder.AddNotFound(fileGroup, reviews, language_, stringBuilder_);
+                        continue;
+                    }
+                    string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
+#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+                    string reviewResponse = await context.Agents.RunAsync(promptTurn2, ChatReasoningEffortLevel.None, context.CancellationToken);
+#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
                     if (string.IsNullOrEmpty(reviewResponse))
                     {
-                        logger.LogInformation($"No review generated for {fileGroup.ReviewContexts.Count} files.");
+                        logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
                         continue;
                     }
                     stringBuilder_.Clear();
-                    stringBuilder_.Append($"## {fileGroup.Topic}\n\n");
+                    stringBuilder_.Append($"# {fileGroup.Topic}\n\n");
                     stringBuilder_.Append(reviewResponse);
                     reviews.Add(stringBuilder_.ToString());
                     logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.");

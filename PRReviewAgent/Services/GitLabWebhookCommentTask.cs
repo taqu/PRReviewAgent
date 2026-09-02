@@ -241,16 +241,11 @@ namespace PRReviewAgent.Services
                 if (string.IsNullOrEmpty(promptTurn1)) continue;
                 try
                 {
-                    string candidateResponse = await context.Agents.RunAsync(promptTurn1, context.CancellationToken);
-                    if (string.IsNullOrEmpty(candidateResponse))
+                    IssuesResponse? issuesResponse = await context.Agents.RunAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
+                    if (null == issuesResponse || issuesResponse.issues.Length <= 0)
                     {
                         logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
-                        continue;
-                    }
-                    IssuesResponse issuesResponse = System.Text.Json.JsonSerializer.Deserialize<IssuesResponse>(candidateResponse);
-                    if(null == issuesResponse || issuesResponse.issues.Length <= 0)
-                    {
-                        logger.LogInformation($"Wrong format for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
+                        PromptBuilder.AddNotFound(fileGroup, reviews, language_, stringBuilder_);
                         continue;
                     }
                     string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);

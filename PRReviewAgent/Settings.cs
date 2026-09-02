@@ -80,6 +80,7 @@ namespace PRReviewAgent
                 review1Templates_ = LoadTemplate("review1");
                 review2Templates_ = LoadTemplate("review2");
                 learnedTemplates_ = LoadTemplate("learned");
+                noproblemTemplates_ = LoadTemplate("noproblem");
             }
             return true;
         }
@@ -152,6 +153,18 @@ namespace PRReviewAgent
         {
             string? template = null;
             learnedTemplates_.TryGetValue(lang, out template);
+            return template;
+        }
+
+        /// <summary>
+        /// Gets the review template for the specified language.
+        /// </summary>
+        /// <param name="lang">The language code.</param>
+        /// <returns>The review template text, or null if not found.</returns>
+        public string? GetNoProblemTemplate(string lang)
+        {
+            string? template = null;
+            noproblemTemplates_.TryGetValue(lang, out template);
             return template;
         }
 
@@ -262,6 +275,7 @@ namespace PRReviewAgent
         private Dictionary<string, string> review1Templates_ = new();
         private Dictionary<string, string> review2Templates_ = new();
         private Dictionary<string, string> learnedTemplates_ = new();
+        private Dictionary<string, string> noproblemTemplates_ = new();
         private string[] extensions_ = new string[0];
     }
 }

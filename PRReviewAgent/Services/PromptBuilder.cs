@@ -145,5 +145,18 @@ namespace PRReviewAgent.Services
             stringBuilder.Append(jsonText);
             return stringBuilder.ToString();
         }
+
+        public static void AddNotFound(FileGroup fileGroup, List<string> reviews, string language, StringBuilder stringBuilder)
+        {
+            string? template = Context.Instance.Settings.GetNoProblemTemplate(language);
+            if (string.IsNullOrEmpty(template))
+            {
+                return;
+            }
+            stringBuilder.Clear();
+            stringBuilder.Append($"# {fileGroup.Topic}\n\n");
+            stringBuilder.Append(template);
+            reviews.Add(stringBuilder.ToString());
+        }
     }
 }

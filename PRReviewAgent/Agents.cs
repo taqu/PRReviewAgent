@@ -1,9 +1,26 @@
 using OpenAI;
 using OpenAI.Chat;
 using System.ClientModel;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Schema;
+using System.Xml.Schema;
 
 namespace PRReviewAgent
 {
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct)]
+    public class LlmSchemaAttribute : Attribute
+    {
+        public string Name { get; }
+        public string Description { get; }
+
+        public LlmSchemaAttribute(string name, string description)
+        {
+            Name = name;
+            Description = description;
+        }
+    }
+
     /// <summary>
     /// Manages different types of AI agents and their interactions with the OpenAI API.
     /// </summary>
@@ -88,18 +105,7 @@ namespace PRReviewAgent
         public async Task<string> RunAsync(string prompt, CancellationToken cancellationToken)
         {
             // Execute the agent and return the raw response
-            OpenAI.Chat.ChatMessage[] messages;
-            if (string.IsNullOrEmpty(instructions_))
-            {
-                messages = new OpenAI.Chat.ChatMessage[1];
-                messages[0] = OpenAI.Chat.ChatMessage.CreateUserMessage(prompt);
-            }
-            else
-            {
-                messages = new OpenAI.Chat.ChatMessage[2];
-                messages[0] = OpenAI.Chat.ChatMessage.CreateSystemMessage(instructions_);
-                messages[1] = OpenAI.Chat.ChatMessage.CreateUserMessage(prompt);
-            }
+            OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
             ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions_);
             if (response.Value.Content.Count <= 0)
             {
@@ -121,23 +127,11 @@ namespace PRReviewAgent
 #pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
         {
             // Execute the agent and return the raw response
-            OpenAI.Chat.ChatMessage[] messages;
-            if (string.IsNullOrEmpty(instructions_))
-            {
-                messages = new OpenAI.Chat.ChatMessage[1];
-                messages[0] = OpenAI.Chat.ChatMessage.CreateUserMessage(prompt);
-            }
-            else
-            {
-                messages = new OpenAI.Chat.ChatMessage[2];
-                messages[0] = OpenAI.Chat.ChatMessage.CreateSystemMessage(instructions_);
-                messages[1] = OpenAI.Chat.ChatMessage.CreateUserMessage(prompt);
-            }
+            OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
 #pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
-            ChatReasoningEffortLevel? oldReasoningEffort = chatCompletionOptions_.ReasoningEffortLevel;
+            ChatCompletionOptions chatCompletionOptions = CloneChatCompletionOptions();
             chatCompletionOptions_.ReasoningEffortLevel = reasoningEffort;
-            ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions_, cancellationToken);
-            chatCompletionOptions_.ReasoningEffortLevel = oldReasoningEffort;
+            ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions, cancellationToken);
 #pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします
             if (response.Value.Content.Count <= 0)
             {
@@ -146,7 +140,6 @@ namespace PRReviewAgent
             return response.Value.Content[0].Text;
         }
 
-#if false
         /// <summary>
         /// Runs the specified agent asynchronously with a prompt and returns the result deserialized to the specified type.
         /// </summary>
@@ -155,21 +148,72 @@ namespace PRReviewAgent
         /// <param name="prompt">The prompt to send to the agent.</param>
         /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
         /// <returns>A task that represents the asynchronous operation. The task result contains the deserialized response of type <typeparamref name="T"/>.</returns>
-        public async Task<T> RunAsync<T>(string prompt, CancellationToken cancellationToken)
+        public async Task<T?> RunAsync<T>(string prompt, CancellationToken cancellationToken) where T:class
         {
             // Set the expected response format to JSON schema based on type T
-            runOptions_.ResponseFormat = Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(AIJsonUtilities.CreateJsonSchema(typeof(T)));
+            Type type = typeof(T);
+            LlmSchemaAttribute? attribute = (LlmSchemaAttribute?)Attribute.GetCustomAttribute(type, typeof(LlmSchemaAttribute));
+            string schemaName = attribute?.Name ?? $"{type.Name}_schema";
+            string? schemaDescription = attribute?.Description;
 
-            // Execute the agent
-            AgentResponse response = await agent_.aiAgent_.RunAsync(prompt, null, runOptions_, cancellationToken);
+            JsonNode schemaNode = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
+            BinaryData schemaData = BinaryData.FromString(schemaNode.ToString());
 
-            // Reset response format for subsequent calls
-            runOptions_.ResponseFormat = null;
+            ChatResponseFormat jsonFormat = ChatResponseFormat.CreateJsonSchemaFormat(
+                jsonSchemaFormatName: schemaName,
+                jsonSchema: schemaData,
+                jsonSchemaFormatDescription: schemaDescription,
+                jsonSchemaIsStrict: true
+            );
+            ChatCompletionOptions chatCompletionOptions = CloneChatCompletionOptions();
+            chatCompletionOptions.ResponseFormat = jsonFormat;
 
-            // Deserialize the JSON response text into type T
-            return Newtonsoft.Json.JsonConvert.DeserializeObject<T>(response.Text);
+            OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
+
+            ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions, cancellationToken);
+            if (response.Value.Content.Count <= 0)
+            {
+                return null;
+            }
+            try
+            {
+                return System.Text.Json.JsonSerializer.Deserialize<T>(response.Value.Content[0].Text);
+            }
+            catch
+            {
+                return null;
+            }
         }
-#endif
+
+        public ChatMessage[] CreateChatMessages(string message)
+        {
+            if (string.IsNullOrEmpty(instructions_))
+            {
+                ChatMessage[] messages = new OpenAI.Chat.ChatMessage[1];
+                messages[0] = OpenAI.Chat.ChatMessage.CreateUserMessage(message);
+                return messages;
+            }
+            else
+            {
+                ChatMessage[] messages = new OpenAI.Chat.ChatMessage[2];
+                messages[0] = OpenAI.Chat.ChatMessage.CreateSystemMessage(instructions_);
+                messages[1] = OpenAI.Chat.ChatMessage.CreateUserMessage(message);
+                return messages;
+            }
+        }
+        public ChatCompletionOptions CloneChatCompletionOptions()
+        {
+            ChatCompletionOptions chatCompletionOptions = new ChatCompletionOptions();
+            chatCompletionOptions.Temperature = chatCompletionOptions_.Temperature;
+            chatCompletionOptions.TopP = chatCompletionOptions_.TopP;
+            chatCompletionOptions.FrequencyPenalty = chatCompletionOptions_.FrequencyPenalty;
+            chatCompletionOptions.ResponseFormat = chatCompletionOptions_.ResponseFormat;
+            chatCompletionOptions.MaxOutputTokenCount = chatCompletionOptions_.MaxOutputTokenCount;
+#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+            chatCompletionOptions.ReasoningEffortLevel = chatCompletionOptions_.ReasoningEffortLevel;
+#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+            return chatCompletionOptions;
+        }
         private OpenAI.Chat.ChatClient chatClient_;
         private ChatCompletionOptions chatCompletionOptions_ = new ChatCompletionOptions();
         private string instructions_ = string.Empty;
