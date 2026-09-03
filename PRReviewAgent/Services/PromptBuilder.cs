@@ -76,7 +76,12 @@ namespace PRReviewAgent.Services
         {
             stringBuilder.Clear();
             stringBuilder.Append(reviewRequest.ReviewRulesTurn1);
+            if (!string.IsNullOrEmpty(reviewRequest.LocalPolicy))
+            {
+                stringBuilder.Append($"\n\n{reviewRequest.LocalPolicy}");
+            }
             stringBuilder.Append("\n----\n");
+
             if (!string.IsNullOrEmpty(reviewRequest.MergeRequestTitle))
             {
                 stringBuilder.Append("# MR Title\n");

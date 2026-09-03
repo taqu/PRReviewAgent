@@ -15,6 +15,8 @@ namespace PRReviewAgent
         /// </summary>
         public const string ConfigFileName = "config.toml";
 
+        public const string TemplatesDirectory = "Templates";
+
         /// <summary>
         /// Initializes the settings by loading secrets, configuration, and templates.
         /// </summary>
@@ -81,6 +83,7 @@ namespace PRReviewAgent
                 review2Templates_ = LoadTemplate("review2");
                 learnedTemplates_ = LoadTemplate("learned");
                 noproblemTemplates_ = LoadTemplate("noproblem");
+                localPolicy_ = LoadOneTemplate("localpolicy");
             }
             return true;
         }
@@ -93,7 +96,7 @@ namespace PRReviewAgent
         private static Dictionary<string, string> LoadTemplate(string prefix)
         {
             Dictionary<string, string> templates = new();
-            foreach (string file in System.IO.Directory.EnumerateFiles("Templates", $"{prefix}.*.md"))
+            foreach (string file in System.IO.Directory.EnumerateFiles(TemplatesDirectory, $"{prefix}.*.md"))
             {
                 string filename = System.IO.Path.GetFileName(file);
                 // Extract the language code from the filename.
@@ -108,6 +111,23 @@ namespace PRReviewAgent
                 }
             }
             return templates;
+        }
+
+        private static string LoadOneTemplate(string prefix)
+        {
+            string path = System.IO.Path.Combine(TemplatesDirectory, $"{prefix}.md");
+            if (!System.IO.File.Exists(path))
+            {
+                return string.Empty;
+            }
+            try
+            {
+                return System.IO.File.ReadAllText(path);
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         /// <summary>
@@ -184,6 +204,15 @@ namespace PRReviewAgent
         public IEnumerable<string> GetReview2Templates()
         {
             return review2Templates_.Values.AsEnumerable<string>();
+        }
+
+        /// <summary>
+        /// Get project specific conding policy
+        /// </summary>
+        /// <returns></returns>
+        public string GetLocalPolicy()
+        {
+            return localPolicy_;
         }
 
 
@@ -277,5 +306,6 @@ namespace PRReviewAgent
         private Dictionary<string, string> learnedTemplates_ = new();
         private Dictionary<string, string> noproblemTemplates_ = new();
         private string[] extensions_ = new string[0];
+        private string localPolicy_ = string.Empty;
     }
 }

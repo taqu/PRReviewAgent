@@ -13,6 +13,7 @@ namespace PRReviewAgent.Services
         public string MergeRequestDescription { get; set; } = string.Empty;
         public string? ReviewRulesTurn1 { get; set; } = string.Empty;
         public string? ReviewRulesTurn2 { get; set; } = string.Empty;
+        public string? LocalPolicy {  get; set; } = string.Empty;
         public string? LearnedRules { get; set; }
         public List<FileGroup> FileGroups => files_;
         private List<FileGroup> files_ = new List<FileGroup>();

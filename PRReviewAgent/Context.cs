@@ -19,13 +19,17 @@ namespace PRReviewAgent
         [Conditional("DEBUG")]
         public void AddLogger(ILoggerFactory factory)
         {
+#if DEBUG
             context_.logger_ = factory.CreateLogger("Context");
+#endif
         }
 
         [Conditional("DEBUG")]
         public void Log(LogLevel logLevel, string message, params object[] args)
         {
+#if DEBUG
             logger_?.Log(logLevel, message, args);
+#endif
         }
 
         /// <summary>

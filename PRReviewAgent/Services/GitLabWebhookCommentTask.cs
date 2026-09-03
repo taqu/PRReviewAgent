@@ -192,6 +192,7 @@ namespace PRReviewAgent.Services
             reviewRequest.MergeRequestDescription = payloadComment_.merge_request.description;
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
+            reviewRequest.LocalPolicy = Context.Instance.Settings.GetLocalPolicy();
 
             // Retrieve learned rules via RAG and attach to request.
             RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
