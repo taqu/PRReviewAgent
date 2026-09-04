@@ -256,6 +256,7 @@ namespace PRReviewAgent.Services
                     if (string.IsNullOrEmpty(reviewResponse))
                     {
                         logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
+                        PromptBuilder.AddNotFound(fileGroup, reviews, language_, stringBuilder_);
                         continue;
                     }
                     stringBuilder_.Clear();
