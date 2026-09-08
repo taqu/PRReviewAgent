@@ -130,9 +130,35 @@ namespace PRReviewAgent
             OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
 #pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
             ChatCompletionOptions chatCompletionOptions = CloneChatCompletionOptions();
-            chatCompletionOptions_.ReasoningEffortLevel = reasoningEffort;
+            chatCompletionOptions.ReasoningEffortLevel = reasoningEffort;
             ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions, cancellationToken);
 #pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします
+#if DEBUG
+            try
+            {
+                string jsonText = response.GetRawResponse().Content.ToString();
+                using (JsonDocument doc = JsonDocument.Parse(response.GetRawResponse().Content))
+                {
+                    JsonElement root = doc.RootElement;
+                    if (root.TryGetProperty("choices", out JsonElement choices) && choices.GetArrayLength() > 0)
+                    {
+                        if (choices[0].TryGetProperty("message", out JsonElement message))
+                        {
+                            if (message.TryGetProperty("reasoning_content", out JsonElement reasoningElement))
+                            {
+                                string reasoningContent = reasoningElement.GetString() ?? string.Empty;
+                                if (!string.IsNullOrEmpty(reasoningContent))
+                                {
+                                    Context.Instance.Log(LogLevel.Information, reasoningContent);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+#endif
+            Context.Instance.Log(LogLevel.Information, $"input tokens:{response.Value.Usage.InputTokenCount} output tokens:{response.Value.Usage.OutputTokenCount} total tokens:{response.Value.Usage.TotalTokenCount}");
             if (response.Value.Content.Count <= 0)
             {
                 return string.Empty;
@@ -265,6 +291,7 @@ namespace PRReviewAgent
 
             try
             {
+                Context.Instance.Log(LogLevel.Information, $"input tokens:{response.Value.Usage.InputTokenCount} output tokens:{response.Value.Usage.OutputTokenCount} total tokens:{response.Value.Usage.TotalTokenCount}");
                 return System.Text.Json.JsonSerializer.Deserialize<T>(response.Value.Content[0].Text);
             }
             catch
@@ -272,6 +299,89 @@ namespace PRReviewAgent
                 return null;
             }
         }
+
+        private static ReadOnlySpan<char> CleanJson(ReadOnlySpan<char> text)
+        {
+            text = text.Trim();
+            if (text.IsEmpty){
+                return text;
+            }
+
+            int start = text.IndexOf('{');
+            if (start == -1){
+                start = text.IndexOf('[');
+            }
+
+            int end = text.LastIndexOf('}');
+            if (end == -1){
+                end = text.LastIndexOf(']');
+            }
+
+            if (start != -1 && end != -1 && end > start)
+            {
+                return text.Slice(start, end - start + 1);
+            }
+            return text;
+        }
+
+        /// <summary>
+        /// Runs the specified agent asynchronously with a prompt and returns the result deserialized to the specified type.
+        /// </summary>
+        /// <typeparam name="T">The type to deserialize the agent's response into.</typeparam>
+        /// <param name="type">The type of agent to run.</param>
+        /// <param name="prompt">The prompt to send to the agent.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the deserialized response of type <typeparamref name="T"/>.</returns>
+        public async Task<T?> RunJsonAsync<T>(string prompt, CancellationToken cancellationToken) where T : class
+        {
+            ChatCompletionOptions chatCompletionOptions = CloneChatCompletionOptions();
+
+            OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
+
+            ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions, cancellationToken);
+            if (response.Value.Content.Count <= 0)
+            {
+                return null;
+            }
+
+#if DEBUG
+            try
+            {
+                string jsonText = response.GetRawResponse().Content.ToString();
+                using (JsonDocument doc = JsonDocument.Parse(response.GetRawResponse().Content))
+                {
+                    JsonElement root = doc.RootElement;
+                    if (root.TryGetProperty("choices", out JsonElement choices) && choices.GetArrayLength() > 0)
+                    {
+                        if (choices[0].TryGetProperty("message", out JsonElement message))
+                        {
+                            if (message.TryGetProperty("reasoning_content", out JsonElement reasoningElement))
+                            {
+                                string reasoningContent = reasoningElement.GetString() ?? string.Empty;
+                                if (!string.IsNullOrEmpty(reasoningContent))
+                                {
+                                    Context.Instance.Log(LogLevel.Information, reasoningContent);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+#endif
+
+            try
+            {
+                Context.Instance.Log(LogLevel.Information, $"input tokens:{response.Value.Usage.InputTokenCount} output tokens:{response.Value.Usage.OutputTokenCount} total tokens:{response.Value.Usage.TotalTokenCount}");
+                ReadOnlySpan<char> json = CleanJson(response.Value.Content[0].Text);
+                return System.Text.Json.JsonSerializer.Deserialize<T>(json);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
 
         public ChatMessage[] CreateChatMessages(string message)
         {

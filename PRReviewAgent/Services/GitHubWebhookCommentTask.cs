@@ -247,7 +247,7 @@ namespace PRReviewAgent.Services
                 if (string.IsNullOrEmpty(promptTurn1)) continue;
                 try
                 {
-                    IssuesResponse? issuesResponse = await context.Agents.RunAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
+                    IssuesResponse? issuesResponse = await context.Agents.RunJsonAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
                     if (null == issuesResponse || issuesResponse.issues.Length <= 0)
                     {
                         logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
@@ -255,9 +255,9 @@ namespace PRReviewAgent.Services
                         continue;
                     }
                     string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
-#pragma warning disable OPENAI001 // ��ނ́A�]���̖ړI�ł̂ݒ񋟂���Ă��܂��B�����̍X�V�ŕύX�܂��͍폜����邱�Ƃ�����܂��B���s����ɂ́A���̐f�f���\���ɂ��܂��B
+#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
                     string reviewResponse = await context.Agents.RunAsync(promptTurn2, ChatReasoningEffortLevel.None, context.CancellationToken);
-#pragma warning restore OPENAI001 // ��ނ́A�]���̖ړI�ł̂ݒ񋟂���Ă��܂��B�����̍X�V�ŕύX�܂��͍폜����邱�Ƃ�����܂��B���s����ɂ́A���̐f�f���\���ɂ��܂��B
+#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
                     if (string.IsNullOrEmpty(reviewResponse))
                     {
                         logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");

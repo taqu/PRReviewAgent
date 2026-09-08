@@ -192,7 +192,6 @@ namespace PRReviewAgent.Services
             reviewRequest.MergeRequestDescription = payloadComment_.merge_request.description;
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
-            reviewRequest.LocalPolicy = Context.Instance.Settings.GetLocalPolicy();
 
             // Retrieve learned rules via RAG and attach to request.
             RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
@@ -242,7 +241,7 @@ namespace PRReviewAgent.Services
                 if (string.IsNullOrEmpty(promptTurn1)) continue;
                 try
                 {
-                    IssuesResponse? issuesResponse = await context.Agents.RunAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
+                    IssuesResponse? issuesResponse = await context.Agents.RunJsonAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
                     if (null == issuesResponse || issuesResponse.issues.Length <= 0)
                     {
                         logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
