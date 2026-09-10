@@ -80,13 +80,16 @@ namespace PRReviewAgent.Services
                         ctx.ExpandedDiff = expandedDiff;
 
                         SourceLanguage language = SourceLanguageDetector.Detect(ctx.Path, ctx.PairPath);
+                        string diff = ctx.ExpandedDiff ?? ctx.Diff ?? string.Empty;
+                        var (structures, symbols, dependencies) = RuleContextSelector.Select(json, diff, language);
                         RuleExtractionContext ruleContext = new RuleExtractionContext
                         {
                             Language = language,
                             FilePath = ctx.Path,
-                            Diff = ctx.ExpandedDiff ?? ctx.Diff ?? string.Empty,
-                            AstContext = string.IsNullOrEmpty(json) ? null : json,
-                            FileDependencies = ctx.PairPath,
+                            ExpandedDiff = diff,
+                            Structures = structures,
+                            Symbols = symbols,
+                            Dependencies = dependencies,
                         };
                         await ruleExtractionService.ExtractAndSaveRuleAsync(ruleContext, cancellationToken);
                     }

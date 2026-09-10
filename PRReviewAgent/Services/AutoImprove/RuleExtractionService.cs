@@ -11,7 +11,7 @@ namespace PRReviewAgent.Services.AutoImprove
 
         private const string ExtractionSystemPrompt =
             "You are a static analysis extraction system.\n\n" +
-            "Analyze the provided code change, AST structure, and relevant file dependencies.\n\n" +
+            "Analyze the provided code change, and any structural or semantic context supplied.\n\n" +
             "Extract the underlying engineering rule, coding standard, or bug-fix pattern applied by the developer.\n\n" +
             "Use the programming language specified in the input when interpreting syntax and semantics.\n\n" +
             "Respond only in the following JSON format without markdown code blocks:\n" +
@@ -52,7 +52,7 @@ namespace PRReviewAgent.Services.AutoImprove
 
         public async Task ExtractAndSaveRuleAsync(RuleExtractionContext context, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(context.Diff)) return;
+            if (string.IsNullOrWhiteSpace(context.ExpandedDiff)) return;
 
             if (context.Language == SourceLanguage.Unknown)
             {
@@ -62,7 +62,13 @@ namespace PRReviewAgent.Services.AutoImprove
 
             try
             {
-                _logger.LogInformation("Extracting rule for {Path} as {Language}", context.FilePath, SourceLanguageDetector.DisplayName(context.Language));
+                _logger.LogInformation(
+                    "Extracting rule for {Path} as {Language}",
+                    context.FilePath, SourceLanguageDetector.DisplayName(context.Language));
+                _logger.LogInformation(
+                    "Rule extraction context for {Path}: structures={Structures}, symbols={Symbols}, dependencies={Dependencies}",
+                    context.FilePath, context.Structures.Count, context.Symbols.Count, context.Dependencies.Count);
+
                 string prompt = BuildExtractionPrompt(context);
                 string? response = await _subAgent.RunAsync(prompt, cancellationToken);
                 if (string.IsNullOrWhiteSpace(response)) return;
@@ -99,30 +105,54 @@ namespace PRReviewAgent.Services.AutoImprove
         public static string BuildExtractionPrompt(RuleExtractionContext context)
         {
             string languageName = SourceLanguageDetector.DisplayName(context.Language);
-            StringBuilder sb = new StringBuilder();
+            var sb = new StringBuilder();
+
             sb.AppendLine(ExtractionSystemPrompt);
             sb.AppendLine("\n---");
+
+            // Language section (always present)
             sb.AppendLine("# Language");
             if (LanguageHints.TryGetValue(context.Language, out string? hint))
-            {
                 sb.AppendLine($"{languageName}: {hint}");
-            }
             else
-            {
                 sb.AppendLine(languageName);
-            }
-            if (!string.IsNullOrEmpty(context.FileDependencies))
+
+            // Changed code is primary evidence
+            sb.AppendLine("# Changed Code");
+            sb.AppendLine(context.ExpandedDiff);
+
+            // Relevant structural context (omit if empty)
+            if (context.Structures.Count > 0)
             {
-                sb.AppendLine("# File Dependencies");
-                sb.AppendLine(context.FileDependencies);
+                sb.AppendLine("# Relevant Structure");
+                foreach (StructuralContext s in context.Structures)
+                {
+                    string line = string.IsNullOrEmpty(s.ChangeKind)
+                        ? $"function: {s.FunctionSignature}"
+                        : $"function: {s.FunctionSignature} [{s.ChangeKind}]";
+                    sb.AppendLine(line);
+                    if (!string.IsNullOrEmpty(s.ContainingType))
+                        sb.AppendLine($"type: {s.ContainingType}");
+                }
             }
-            if (!string.IsNullOrEmpty(context.AstContext))
+
+            // Relevant semantic context: symbols + dependencies (omit if both empty)
+            bool hasSymbols = context.Symbols.Count > 0;
+            bool hasDeps = context.Dependencies.Count > 0;
+            if (hasSymbols || hasDeps)
             {
-                sb.AppendLine("# AST Context");
-                sb.AppendLine(context.AstContext);
+                sb.AppendLine("# Relevant Semantic Context");
+                foreach (SymbolContext sym in context.Symbols)
+                    sb.AppendLine($"{sym.Kind}: {sym.Name}");
+                foreach (DependencyContext dep in context.Dependencies)
+                {
+                    string change = dep.Change ?? string.Empty;
+                    sb.AppendLine(string.IsNullOrEmpty(change)
+                        ? $"{dep.Kind}: {dep.Name}"
+                        : $"{change}: {dep.Kind} {dep.Name}");
+                }
             }
-            sb.AppendLine("# Code Diff");
-            sb.AppendLine(context.Diff);
+
             return sb.ToString();
         }
 

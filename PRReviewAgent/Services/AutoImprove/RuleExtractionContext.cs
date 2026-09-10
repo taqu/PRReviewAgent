@@ -4,8 +4,9 @@ namespace PRReviewAgent.Services.AutoImprove
     {
         public required SourceLanguage Language { get; init; }
         public required string FilePath { get; init; }
-        public required string Diff { get; init; }
-        public string? AstContext { get; init; }
-        public string? FileDependencies { get; init; }
+        public required string ExpandedDiff { get; init; }
+        public IReadOnlyList<StructuralContext> Structures { get; init; } = [];
+        public IReadOnlyList<SymbolContext> Symbols { get; init; } = [];
+        public IReadOnlyList<DependencyContext> Dependencies { get; init; } = [];
     }
 }
