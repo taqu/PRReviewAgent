@@ -524,6 +524,254 @@ public class TestRuleExtractionSubAgent
     }
 
     // =========================================================================
+    // Phase 4: Conservative prompt content
+    // =========================================================================
+
+    [TestMethod]
+    public void Prompt_ContainsPrimaryEvidenceInstruction()
+    {
+        string prompt = RuleExtractionService.BuildExtractionPrompt(MakeCppContext("- old\n+ new"));
+        StringAssert.Contains(prompt, "primary evidence");
+    }
+
+    [TestMethod]
+    public void Prompt_ProhibitsProjectWidePolicy()
+    {
+        string prompt = RuleExtractionService.BuildExtractionPrompt(MakeCppContext("- old\n+ new"));
+        StringAssert.Contains(prompt, "project-wide policy");
+    }
+
+    [TestMethod]
+    public void Prompt_InstructsReturnUnknown()
+    {
+        string prompt = RuleExtractionService.BuildExtractionPrompt(MakeCppContext("- old\n+ new"));
+        StringAssert.Contains(prompt, "UNKNOWN");
+    }
+
+    [TestMethod]
+    public void Prompt_ProhibitsUnsupportedIntent()
+    {
+        string prompt = RuleExtractionService.BuildExtractionPrompt(MakeCppContext("- old\n+ new"));
+        StringAssert.Contains(prompt, "unsupported");
+    }
+
+    [TestMethod]
+    public void Prompt_IsLanguageNeutral_NoCppSpecificRole()
+    {
+        foreach (SourceLanguage lang in new[] {
+            SourceLanguage.Python, SourceLanguage.Rust,
+            SourceLanguage.CSharp, SourceLanguage.C })
+        {
+            string prompt = RuleExtractionService.BuildExtractionPrompt(new RuleExtractionContext
+            {
+                Language = lang,
+                FilePath = "file",
+                ExpandedDiff = "- old\n+ new",
+            });
+            Assert.IsFalse(prompt.Contains("expert static analysis bot for C/C++"),
+                $"Old C/C++-specific role must not appear for {lang}");
+        }
+    }
+
+    // =========================================================================
+    // Phase 4: UNKNOWN parsing
+    // =========================================================================
+
+    [TestMethod]
+    public void IsUnknown_ExactMarker_ReturnsTrue()
+    {
+        LearnedRule rule = new LearnedRule { RuleDescription = "UNKNOWN" };
+        Assert.IsTrue(RuleExtractionService.IsUnknown(rule));
+    }
+
+    [TestMethod]
+    public void IsUnknown_CaseInsensitive()
+    {
+        Assert.IsTrue(RuleExtractionService.IsUnknown(new LearnedRule { RuleDescription = "unknown" }));
+        Assert.IsTrue(RuleExtractionService.IsUnknown(new LearnedRule { RuleDescription = "Unknown" }));
+    }
+
+    [TestMethod]
+    public void IsUnknown_WithWhitespace_ReturnsTrue()
+    {
+        Assert.IsTrue(RuleExtractionService.IsUnknown(new LearnedRule { RuleDescription = "  UNKNOWN  " }));
+    }
+
+    [TestMethod]
+    public void IsUnknown_ValidRule_ReturnsFalse()
+    {
+        LearnedRule rule = new LearnedRule
+        {
+            RuleDescription = "Check an optional object before invoking methods on it.",
+        };
+        Assert.IsFalse(RuleExtractionService.IsUnknown(rule));
+    }
+
+    // =========================================================================
+    // Phase 4: UNKNOWN persistence (must not reach embeddingProvider)
+    // =========================================================================
+
+    [TestMethod]
+    public async Task ExtractAndSave_UnknownResponse_EmbeddingNotCalled()
+    {
+        const string unknownJson =
+            "{\"ast_pattern\":\"\",\"rule_description\":\"UNKNOWN\"," +
+            "\"bad_pattern\":\"\",\"good_pattern\":\"\"}";
+
+        TrackingSubAgent stub = new TrackingSubAgent { ReturnValue = unknownJson };
+        RuleExtractionService service = new RuleExtractionService(
+            stub,
+            null!,   // embeddingProvider — NPE if reached
+            null!,   // repository — NPE if reached
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<RuleExtractionService>.Instance);
+
+        // Must complete without NPE; UNKNOWN must stop before embedding.
+        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), CancellationToken.None);
+
+        Assert.IsTrue(stub.WasCalled);
+    }
+
+    // =========================================================================
+    // Phase 4: Generic rule rejection
+    // =========================================================================
+
+    [TestMethod]
+    public void IsGenericRule_FollowBestPractices_ReturnsTrue()
+    {
+        LearnedRule rule = new LearnedRule
+        {
+            RuleDescription = "Follow best practices.",
+            BadPattern = "bad",
+            GoodPattern = "good",
+        };
+        Assert.IsTrue(RuleExtractionService.IsGenericRule(rule));
+    }
+
+    [TestMethod]
+    public void IsGenericRule_HandleErrorsProperly_ReturnsTrue()
+    {
+        Assert.IsTrue(RuleExtractionService.IsGenericRule(new LearnedRule
+        {
+            RuleDescription = "Handle errors properly",
+            BadPattern = "x",
+            GoodPattern = "y",
+        }));
+    }
+
+    [TestMethod]
+    public void IsGenericRule_ImproveCodeQuality_ReturnsTrue()
+    {
+        Assert.IsTrue(RuleExtractionService.IsGenericRule(new LearnedRule
+        {
+            RuleDescription = "Improve code quality.",
+            BadPattern = "a",
+            GoodPattern = "b",
+        }));
+    }
+
+    [TestMethod]
+    public void IsGenericRule_BothPatternsEmpty_ReturnsTrue()
+    {
+        Assert.IsTrue(RuleExtractionService.IsGenericRule(new LearnedRule
+        {
+            RuleDescription = "Some rule without patterns.",
+            BadPattern = null,
+            GoodPattern = null,
+        }));
+    }
+
+    [TestMethod]
+    public void IsGenericRule_IdenticalPatterns_ReturnsTrue()
+    {
+        Assert.IsTrue(RuleExtractionService.IsGenericRule(new LearnedRule
+        {
+            RuleDescription = "Some rule.",
+            BadPattern = "same pattern",
+            GoodPattern = "same pattern",
+        }));
+    }
+
+    [TestMethod]
+    public void IsGenericRule_ClearRule_ReturnsFalse()
+    {
+        LearnedRule rule = new LearnedRule
+        {
+            RuleDescription = "Check an optional object before invoking methods on it.",
+            BadPattern = "Invoke a method on a potentially missing object.",
+            GoodPattern = "Guard the method call with an explicit existence check.",
+        };
+        Assert.IsFalse(RuleExtractionService.IsGenericRule(rule));
+    }
+
+    [TestMethod]
+    public async Task ExtractAndSave_GenericRule_EmbeddingNotCalled()
+    {
+        const string genericJson =
+            "{\"ast_pattern\":\"\",\"rule_description\":\"Follow best practices.\"," +
+            "\"bad_pattern\":\"bad\",\"good_pattern\":\"good\"}";
+
+        TrackingSubAgent stub = new TrackingSubAgent { ReturnValue = genericJson };
+        RuleExtractionService service = new RuleExtractionService(
+            stub, null!, null!,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<RuleExtractionService>.Instance);
+
+        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), CancellationToken.None);
+
+        Assert.IsTrue(stub.WasCalled, "SubAgent must be called");
+        // embeddingProvider is null; if it were reached it would NPE.
+    }
+
+    // =========================================================================
+    // Phase 4: Valid rule still persists (embedding path must be reached)
+    // =========================================================================
+
+    [TestMethod]
+    public void IsUnknown_And_IsGenericRule_ClearRule_BothFalse()
+    {
+        // Confirms a clear rule would pass both gates and reach the embedding path.
+        LearnedRule rule = new LearnedRule
+        {
+            RuleDescription = "Check an optional object before invoking methods on it.",
+            BadPattern = "Invoke a method on a potentially missing object.",
+            GoodPattern = "Guard the method call with an explicit existence check.",
+        };
+        Assert.IsFalse(RuleExtractionService.IsUnknown(rule));
+        Assert.IsFalse(RuleExtractionService.IsGenericRule(rule));
+    }
+
+    // =========================================================================
+    // Phase 4: Language-independent UNKNOWN handling
+    // =========================================================================
+
+    [TestMethod]
+    public async Task ExtractAndSave_UnknownResponse_AllLanguages_EmbeddingNotCalled()
+    {
+        const string unknownJson =
+            "{\"ast_pattern\":\"\",\"rule_description\":\"UNKNOWN\"," +
+            "\"bad_pattern\":\"\",\"good_pattern\":\"\"}";
+
+        foreach (SourceLanguage language in new[] {
+            SourceLanguage.C, SourceLanguage.Cpp, SourceLanguage.CSharp,
+            SourceLanguage.Python, SourceLanguage.Rust })
+        {
+            TrackingSubAgent stub = new TrackingSubAgent { ReturnValue = unknownJson };
+            RuleExtractionService service = new RuleExtractionService(
+                stub, null!, null!,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<RuleExtractionService>.Instance);
+
+            await service.ExtractAndSaveRuleAsync(new RuleExtractionContext
+            {
+                Language = language,
+                FilePath = "file",
+                ExpandedDiff = "- old\n+ new",
+            }, CancellationToken.None);
+
+            Assert.IsTrue(stub.WasCalled, $"SubAgent must be called for {language}");
+            // NPE-free completion proves embedding was not reached.
+        }
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
