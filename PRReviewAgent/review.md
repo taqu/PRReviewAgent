@@ -1,336 +1,310 @@
-# Phase 3 — Reduce Rule Extraction Context Conservatively
+# Phase 5 — Validate and Harden the SLM Rule Extraction Pipeline
 
 ## Goal
 
-Reduce the amount of AST, symbol, and dependency information sent to the rule-extraction SubAgent.
+Validate the rule-extraction pipeline implemented in Phases 1–4 against realistic code changes.
 
-The rule-extraction model should primarily reason from the expanded Before/After diff.
+Do not add major new architecture or rule-learning features in this phase.
 
-AST and semantic information should be treated only as supporting context.
+The objective is to verify that the current design is good enough as an auxiliary feature for the main code-review system.
 
-The goal is not maximum extraction accuracy.
+The system does not need perfect rule extraction.
 
-The goal is to reduce irrelevant context and lower the chance that the small rule-extraction model invents a project policy from unrelated file information.
+The required standard is:
 
-Keep this phase conservative and small.
+```text
+- clearly useful changes should often produce reasonable rules
+- ambiguous changes should safely produce UNKNOWN
+- unrelated AST/context should not strongly influence the result
+- failures must not affect the main code-review pipeline
+```
+
+Prefer stability and low false-positive behavior over aggressive extraction.
 
 ---
 
-## Current Behavior
+## Scope
 
-The current pipeline produces:
+Validate the complete pipeline:
 
 ```text
-AST JSON
+Changed File
+    |
+    v
+Source Language Detection
+    |
+    v
 Expanded Diff
+    +
+Compact Relevant Context
+    |
+    v
+RuleExtractionSubAgent
+    |
+    v
+Sub LLM
+    |
+    v
+Conservative Rule Extraction
+    |
+    +-- Valid Rule -> existing persistence path
+    |
+    +-- UNKNOWN -> discard
+    |
+    +-- Invalid Output -> discard
 ```
 
-from the changed file and passes the AST context into rule extraction.
+Do not redesign this pipeline unless testing exposes a clear defect.
 
-The prompt currently contains conceptually:
+---
+
+## Preserve Model Separation
+
+The architecture from Phase 1 must remain unchanged.
+
+Main code review:
 
 ```text
-# File Dependencies
-...
-
-# AST Context
-...
-
-# Code Diff
-...
+Main LLM
+http://192.168.128.152:9090
 ```
 
-This means the SubAgent may receive information from the entire file that is unrelated to the actual code change.
-
-Phase 3 must change the input model to:
+Rule extraction:
 
 ```text
-Expanded Diff
-        +
-Relevant Structural Context
-        +
-Small Relevant Semantic Context
+Sub LLM
+http://192.168.128.152:9080
 ```
 
-instead of:
+Verify that rule extraction never falls back to the main LLM.
+
+A Sub LLM failure must only disable or skip the affected rule-extraction operation.
+
+---
+
+## Primary Validation Target
+
+Use the prepared Python test project as the main end-to-end validation target.
+
+Python is useful here because it verifies that the pipeline is no longer dependent on C/C++ assumptions.
+
+Test realistic small commits rather than artificial prompt-only inputs where possible.
+
+Recommended categories are described below.
+
+---
+
+## Test Category 1 — Clear Reusable Rule
+
+Create changes where a reusable engineering rule is clearly demonstrated.
+
+Examples include:
+
+```python
+# Before
+user.save()
+
+# After
+if user is not None:
+    user.save()
+```
+
+Expected result:
+
+A rule related to checking an optional value before using it is acceptable.
+
+Exact wording is not important.
+
+The result should be:
 
 ```text
-Expanded Diff
-        +
-Full AST
-        +
-All File Symbols
-        +
-All Dependencies
+specific
+reasonable
+supported by the change
+reusable
 ```
 
 ---
 
-## Core Principle
+## Test Category 2 — Resource Management
 
-Use this principle throughout the implementation:
+Example:
 
-```text
-Analyze broadly.
-Send narrowly.
+```python
+# Before
+f = open(path)
+data = f.read()
+f.close()
 ```
 
-The AST subsystem may continue analyzing the entire file.
+```python
+# After
+with open(path) as f:
+    data = f.read()
+```
 
-Do not weaken the parser or remove full-file analysis.
+Expected result:
 
-The reduction must happen only when constructing the context that is sent to the SubAgent.
+A rule about using deterministic/context-managed resource cleanup is acceptable.
 
-Conceptually:
+The model should not invent unrelated project policies.
+
+---
+
+## Test Category 3 — Error Handling
+
+Example:
+
+```python
+# Before
+value = int(text)
+```
+
+```python
+# After
+try:
+    value = int(text)
+except ValueError:
+    value = default_value
+```
+
+Expected result:
+
+A rule about handling expected conversion failure is acceptable.
+
+Do not require exact wording.
+
+---
+
+## Test Category 4 — Non-Rule Change
+
+Use changes that should not normally become project engineering rules.
+
+Example:
+
+```python
+# Before
+title = "foo"
+```
+
+```python
+# After
+title = "bar"
+```
+
+Expected result:
 
 ```text
-Source File
-    |
-    v
-Full AST Analysis
-    |
-    v
-Symbol / Dependency Information
-    |
-    v
-Context Selection
-    |
-    v
-Compact RuleExtractionContext
+UNKNOWN
+```
+
+or rejection by the existing conservative validator.
+
+The system must not invent rules such as:
+
+```text
+Use "bar" instead of "foo".
+```
+
+or:
+
+```text
+Prefer descriptive titles.
+```
+
+unless such a conclusion is actually supported by the change.
+
+---
+
+## Test Category 5 — Refactoring Without a Clear Policy
+
+Use a simple local refactoring that does not clearly establish a reusable engineering rule.
+
+Examples:
+
+* renaming a local variable
+* moving a statement without changing semantics
+* formatting-only changes
+* trivial literal changes
+* comment changes
+
+Expected behavior:
+
+Prefer UNKNOWN.
+
+These cases are important because the system should not learn from every merged change.
+
+---
+
+## Test Category 6 — Context Noise
+
+Construct a source file containing:
+
+```text
+many unrelated imports
+many unrelated functions
+many unrelated classes or symbols
+one small changed function
+```
+
+Verify that the SubAgent receives only the compact context selected in Phase 3.
+
+The resulting rule must be based on the actual changed code.
+
+Unrelated symbols or imports must not become the basis of the extracted rule.
+
+---
+
+## Test Category 7 — Missing Semantic Information
+
+Create or identify a case where AST/symbol resolution cannot provide useful semantic context.
+
+Expected behavior:
+
+```text
+Expanded Diff
     |
     v
 RuleExtractionSubAgent
 ```
 
----
+should still work.
 
-## Expanded Diff Is Primary Evidence
-
-The expanded Before/After diff must become the primary input to rule extraction.
-
-The prompt should be organized so that the model sees the changed code before auxiliary structural information.
-
-Recommended order:
+The system may return either:
 
 ```text
-# Language
-
-C++
-
-# Changed Code
-
-<expanded Before/After diff>
-
-# Relevant Structure
-
-<small AST-derived context>
-
-# Relevant Semantic Context
-
-<only directly related symbols/dependencies>
-```
-
-Do not place full-file metadata before the changed code.
-
----
-
-## Preserve Expanded Diff Generation
-
-Do not redesign expanded diff generation in this phase.
-
-Continue using the existing expanded diff produced by the current AST/context extraction pipeline.
-
-The existing surrounding-block expansion should remain intact.
-
-The purpose of Phase 3 is to reduce unrelated auxiliary context, not to shrink the expanded diff itself.
-
----
-
-## Introduce a Compact Context Model
-
-Replace raw full-AST strings in the rule-extraction boundary with a compact context representation.
-
-A possible shape is:
-
-```csharp
-public sealed record RuleExtractionContext
-{
-    public required SourceLanguage Language { get; init; }
-
-    public required string FilePath { get; init; }
-
-    public required string ExpandedDiff { get; init; }
-
-    public IReadOnlyList<StructuralContext> Structures { get; init; }
-        = [];
-
-    public IReadOnlyList<SymbolContext> Symbols { get; init; }
-        = [];
-
-    public IReadOnlyList<DependencyContext> Dependencies { get; init; }
-        = [];
-}
-```
-
-The exact types may differ based on the existing AST representation.
-
-Avoid building an unnecessarily complex intermediate representation in this phase.
-
----
-
-## Relevant Structural Context
-
-Include only structural information that directly contains or describes the changed code.
-
-Preferred information:
-
-```text
-changed AST node type
-containing block
-containing function or method
-containing class / struct / module / namespace
-```
-
-Examples:
-
-```text
-changed_node: if_statement
-containing_function: ProcessRequest
-containing_type: RequestHandler
+a reasonable rule
 ```
 
 or:
 
 ```text
-changed_node: with_statement
-containing_function: load_config
-module: config_loader
+UNKNOWN
 ```
 
-Do not send the entire syntax tree.
+Both are acceptable.
+
+Do not fall back to sending the complete AST.
 
 ---
 
-## Relevant Symbols
+## Test Category 8 — Multiple Changes in One File
 
-Include only symbols directly referenced by the changed code.
+Test a file containing more than one changed region.
 
-Examples:
+Observe whether each existing extraction unit remains understandable to the SubAgent.
 
-```text
-function/method called by changed expressions
-variable or field referenced by changed expressions
-type used by changed declarations
-enum referenced by changed expressions
-property accessed by changed expressions
-```
+Do not introduce sophisticated change clustering in this phase.
 
-Use direct references only in this phase.
+If the current pipeline produces an ambiguous extraction unit, UNKNOWN is acceptable.
 
-Conceptually:
-
-```text
-changed expression
-    |
-    +-- directly referenced symbol
-              |
-              +-- declaration/signature
-```
-
-Do not recursively traverse the full symbol graph.
+Document the limitation rather than introducing a large redesign.
 
 ---
 
-## One-Hop Limit
+## Cross-Language Regression
 
-Use a one-hop relevance rule by default.
-
-For example:
-
-```text
-Changed code calls Foo.Run()
-        |
-        v
-Include Foo.Run() signature
-```
-
-Do not automatically include:
-
-```text
-Foo.Run()
-    -> calls Bar()
-    -> Bar() accesses Baz
-    -> Baz depends on Qux
-```
-
-The SubAgent does not need an arbitrary call graph for rule extraction.
-
-If one-hop context is insufficient for some future cases, that can be evaluated later.
-
----
-
-## Relevant Dependencies
-
-Do not include the complete dependency list.
-
-Prefer only dependencies directly connected to the change.
-
-Examples that may be included:
-
-```text
-include/import added by this change
-include/import removed by this change
-module containing a directly referenced symbol
-paired source/header file directly involved in the change
-```
-
-Examples that should normally be excluded:
-
-```text
-all includes in the file
-all Python imports
-all Rust use declarations
-all project references
-all transitive dependencies
-```
-
----
-
-## Include/Import Handling
-
-Changed includes/imports are stronger evidence than unchanged global dependency metadata.
-
-For example:
-
-```cpp
-+#include "project/guard.h"
-```
-
-or:
-
-```python
-+from contextlib import closing
-```
-
-may be relevant to the rule.
-
-An existing unrelated include/import elsewhere in the file usually is not.
-
-Therefore:
-
-```text
-added/removed include/import
-    -> include when relevant
-
-unchanged unrelated include/import
-    -> exclude
-```
-
----
-
-## Language-Neutral Context Selection
-
-The selection mechanism should work across the supported languages introduced in Phase 2:
+Run lightweight tests for all supported language groups:
 
 ```text
 C
@@ -340,544 +314,549 @@ Python
 Rust
 ```
 
-Do not build completely separate context pipelines for every language.
+The tests do not need equivalent semantic depth for every language.
 
-Use a shared conceptual model:
+At minimum verify:
 
 ```text
-changed node
-containing scope
-direct references
-relevant dependency changes
+language is detected correctly
+prompt contains the correct language
+compact context is generated
+SubAgent is invoked
+valid JSON can be parsed
+UNKNOWN works
+main LLM is not used
 ```
-
-Language-specific extractors may provide the data where required.
 
 ---
 
-## C and C++
+## C and C++ Regression
 
-Relevant context may include:
+Keep existing C/C++ behavior functional.
+
+Use a few simple cases such as:
 
 ```text
-containing function
-containing class/struct
-direct function declarations
-directly referenced types
-directly referenced fields
-changed include directives
-relevant enum values
-relevant macro definitions
+null/pointer guard
+resource cleanup
+bounds/error check
+const-correctness change
 ```
 
-Do not include every declaration from the translation unit.
+Do not attempt to validate advanced C++ semantics comprehensively.
+
+This feature does not need to replace the main 26B reviewer.
 
 ---
 
-## C#
+## C# Smoke Tests
 
-Relevant context may include:
+Use simple cases such as:
 
 ```text
-containing method
-containing class/struct/record
-directly referenced method signature
-directly referenced property/field
-interface or base type only when directly involved
-changed using directive
+null check
+using/IDisposable
+async/await correction
+exception handling
 ```
 
-Do not include all members of the class unless they are required to describe the changed block.
+Verify that C# is not interpreted using C++ terminology.
 
 ---
 
-## Python
+## Rust Smoke Tests
 
-Relevant context may include:
+Use simple cases such as:
 
 ```text
-containing function
-containing class
-directly called function/method names
-directly referenced imported symbol
-changed import statement
+Option handling
+Result handling
+ownership/borrowing-related correction
+resource lifetime improvement
 ```
 
-Do not attempt full static type resolution for Python solely for this feature.
-
-Missing type information is acceptable.
-
-The SubAgent can still extract simple reusable rules from expanded Before/After code.
+Verify that Rust input does not trigger C/C++-specific rule wording.
 
 ---
 
-## Rust
+## Evaluate Rule Quality Conservatively
 
-Relevant context may include:
+For each extracted rule, classify it manually or in tests using a small set of categories.
 
-```text
-containing function
-containing impl block
-containing trait when directly relevant
-directly referenced type
-directly called function/method
-changed use declaration
-relevant enum variant
-```
-
-Do not recursively expand trait implementations or module dependencies.
-
----
-
-## Context Selection Must Be Deterministic
-
-Do not ask the SubAgent to select its own relevant AST context from a full AST dump.
-
-Bad:
+Recommended categories:
 
 ```text
-Here is the full AST.
-Determine which parts are relevant.
-```
-
-Preferred:
-
-```text
-Application-side AST processing
-        |
-        v
-deterministic relevance selection
-        |
-        v
-small context
-        |
-        v
-SubAgent
-```
-
-The SLM should perform rule extraction, not context retrieval.
-
----
-
-## Conservative Missing-Context Behavior
-
-If useful AST or symbol information cannot be resolved, do not compensate by sending the full AST.
-
-For example:
-
-```text
-direct declaration not found
-```
-
-should result in:
-
-```text
-omit that semantic item
-```
-
-not:
-
-```text
-send all declarations in the file
-```
-
-The expanded diff should remain sufficient for basic extraction.
-
-This feature is auxiliary, so incomplete context is preferable to large unrelated context.
-
----
-
-## Context Size Limits
-
-Introduce simple limits to prevent accidental context growth.
-
-Exact limits may be chosen based on the current AST representation, but the design should support bounds such as:
-
-```text
-maximum structural entries
-maximum symbol entries
-maximum dependency entries
-maximum serialized context length
-```
-
-For example:
-
-```text
-structures <= 8
-symbols <= 16
-dependencies <= 8
-```
-
-These values are examples, not mandatory exact defaults.
-
-Prefer deterministic truncation based on relevance rather than arbitrary unordered truncation.
-
----
-
-## Relevance Ordering
-
-When more context exists than the configured limit, prefer this order:
-
-```text
-1. changed AST node
-2. containing function/method
-3. containing type/module
-4. symbols directly referenced in changed lines
-5. symbols referenced in the expanded surrounding block
-6. changed includes/imports
-7. paired-file context
-```
-
-Drop lower-priority information first.
-
----
-
-## Do Not Change Rule Semantics Yet
-
-Phase 3 should not redesign the rule-extraction prompt into its final conservative form.
-
-Do not add:
-
-```text
+GOOD
+ACCEPTABLE
 UNKNOWN
-confidence
-evidence
-project-policy promotion
-new validation logic
+UNSUPPORTED
+GENERIC
 ```
 
-yet.
+Definitions:
 
-The main behavioral change in this phase is the context supplied to the existing extraction prompt.
+### GOOD
 
-Minor wording changes required to rename `AST Context` to `Relevant Structure` or similar are acceptable.
+The rule clearly captures the semantic lesson of the change and is reusable.
+
+### ACCEPTABLE
+
+The rule is not perfect, but it is directionally correct, supported by the change, and unlikely to harm future reviews.
+
+### UNKNOWN
+
+No useful rule was extracted.
+
+This is not a failure for ambiguous changes.
+
+### UNSUPPORTED
+
+The rule contains a conclusion that is not supported by the provided change or context.
+
+This is the most important failure category.
+
+### GENERIC
+
+The rule is technically harmless but too vague to be useful.
+
+Examples:
+
+```text
+Handle errors properly.
+Use safer code.
+Follow best practices.
+```
 
 ---
 
-## Prompt Construction
+## Success Priority
 
-Update prompt construction so it no longer expects a full AST dump.
-
-Recommended structure:
+Use the following priority when judging the system:
 
 ```text
-<existing language-neutral extraction system prompt>
-
-# Language
-Python
-
-# Changed Code
-<expanded diff>
-
-# Relevant Structure
-<selected structural context>
-
-# Relevant Semantic Context
-<selected symbols and dependencies>
+1. Minimize UNSUPPORTED rules
+2. Avoid obviously GENERIC rules
+3. Preserve reasonable GOOD/ACCEPTABLE extraction
+4. Extraction coverage is secondary
 ```
 
-Omit empty sections entirely.
+Do not optimize for extracting the maximum number of rules.
 
-Do not emit placeholders such as:
-
-```text
-# Relevant Semantic Context
-None
-```
-
-unless existing prompt conventions specifically require them.
+A high UNKNOWN rate is acceptable if the remaining learned rules are reliable.
 
 ---
 
-## Keep Full AST Available Internally
+## Simple Metrics
 
-Do not delete existing AST output solely because it is no longer sent to the SubAgent.
-
-It may still be useful for:
+Add or use lightweight diagnostics to measure:
 
 ```text
-expanded diff generation
-file pairing
-other review features
-future semantic services
-debugging
+total extraction attempts
+valid rule count
+UNKNOWN count
+invalid response count
+validator rejection count
+SubAgent failure count
 ```
 
-This phase changes the rule-extraction boundary, not the entire static-analysis architecture.
+If practical during test runs, also record manual classifications:
+
+```text
+GOOD
+ACCEPTABLE
+UNSUPPORTED
+GENERIC
+```
+
+Do not build a production analytics system in this phase.
+
+Simple test output or development logging is sufficient.
 
 ---
 
-## Logging and Diagnostics
+## Input Size Diagnostics
 
-Add lightweight diagnostics that allow context reduction to be evaluated.
+Since Phase 3 intentionally reduced context, record enough information during validation to verify that reduction is working.
 
-Useful data:
+Useful values include:
 
 ```text
-file path
-language
 expanded diff length
-number of structural entries
-number of symbol entries
-number of dependency entries
-serialized auxiliary-context length
+compact structural-context length
+number of selected symbols
+number of selected dependencies
+total prompt length
 ```
 
-Do not log complete source code or complete AST payloads in normal logs.
+Do not log complete source code in normal application logs.
 
-Example:
+Development/test-only diagnostic output is acceptable.
+
+---
+
+## Compare Compact Context Against Previous Behavior
+
+If the previous full-AST extraction path is still easy to invoke in tests, perform a small offline comparison.
+
+For a representative set of changes compare:
 
 ```text
-Rule extraction context for {Path}: structures={Structures}, symbols={Symbols}, dependencies={Dependencies}
+Old:
+Expanded Diff + Full AST/Dependencies
+
+New:
+Expanded Diff + Compact Relevant Context
 ```
 
----
-
-## Tests
-
-Add focused tests for the context-selection layer.
-
-### Expanded Diff Preservation
-
-Verify that the expanded diff sent to the SubAgent is unchanged from the existing extraction pipeline.
-
----
-
-### Full AST Exclusion
-
-Given a file containing many unrelated declarations, verify that unrelated AST nodes are not included in the SubAgent prompt.
-
-Example:
+Check:
 
 ```text
-file:
-    FunctionA
-    FunctionB
-    FunctionC
-    ChangedFunction
-    FunctionD
+input size
+response validity
+rule quality
+unsupported-rule behavior
 ```
 
-If only `ChangedFunction` is modified, the prompt should not contain unrelated `FunctionA`, `FunctionB`, `FunctionC`, or `FunctionD` AST details unless directly referenced.
+This comparison is optional.
+
+Do not retain a permanent dual production path solely for benchmarking.
+
+The production path should remain the compact Phase 3 design.
 
 ---
 
-### Direct Symbol Selection
+## Do Not Benchmark for Maximum Model Quality
 
-Given:
+Do not turn Phase 5 into a large model benchmark.
 
-```cpp
-if (resource)
-    resource->Run();
-```
+The SubAgent is intentionally an SLM/offloaded model.
 
-verify that directly relevant information about `resource` and/or `Run()` may be included.
+Do not require it to match the main review model.
 
-Verify that unrelated symbols from the file are excluded.
-
----
-
-### Dependency Filtering
-
-Given many includes/imports, verify that only directly relevant or changed dependencies are included.
-
----
-
-### Python
-
-Use the Python test project from Phase 2.
-
-Create or reuse a file containing:
+A result is good enough when:
 
 ```text
-multiple functions
-multiple imports
-one changed function
+the rule is directionally correct
+the rule is supported by the change
+the rule is not misleading
 ```
 
-Verify that rule extraction receives:
-
-```text
-expanded changed block
-containing function
-directly relevant symbols/imports
-```
-
-but not the complete module symbol list.
+The main 26B model remains responsible for actual code-review judgment.
 
 ---
 
-### C/C++ Regression
+## Failure Isolation Tests
 
-Verify that C/C++ rule extraction still receives enough structural context to produce results for existing simple test cases.
+Explicitly verify the following cases:
 
----
+### Sub LLM Unavailable
 
-### C# and Rust Smoke Tests
+Stop or make the Sub LLM endpoint unreachable.
 
-If test fixtures already exist, verify that compact context can be produced without exceptions.
-
-Do not require sophisticated language-specific semantic resolution in this phase.
-
----
-
-## Comparison Diagnostics
-
-If practical, retain an internal test/debug mechanism that can compare:
+Expected:
 
 ```text
-Old input:
-expanded diff + full AST
-
-New input:
-expanded diff + compact relevant context
+rule extraction fails/skips
+main application continues
+main reviewer remains usable
 ```
 
-Compare at least:
-
-```text
-serialized input size
-SubAgent response validity
-basic rule quality
-```
-
-Do not build a large benchmark framework for this phase.
-
-A small set of representative fixtures is sufficient.
+No fallback to the main LLM is allowed.
 
 ---
 
-## Failure Behavior
+### Timeout
 
-Context-selection failure must not break MR processing.
+Simulate or force a SubAgent timeout.
 
-If semantic context generation fails:
+Expected:
 
 ```text
-Expanded Diff
+timeout is logged
+rule extraction is skipped
+MR processing continues
+```
+
+---
+
+### Invalid JSON
+
+Return malformed output from a mocked SubAgent.
+
+Expected:
+
+```text
+no database write
+no embedding generation
+no MR failure
+```
+
+---
+
+### Empty Response
+
+Expected:
+
+```text
+skip extraction safely
+```
+
+---
+
+### UNKNOWN
+
+Expected:
+
+```text
+valid no-rule result
+no embedding
+no persistence
+```
+
+---
+
+## Persistence Regression
+
+For a valid extracted rule, verify the existing downstream flow still works:
+
+```text
+RuleExtractionResult
     |
     v
-RuleExtractionSubAgent
+LearnedRule
+    |
+    v
+Embedding
+    |
+    v
+RuleRepository
 ```
 
-should still be allowed to run with minimal context when possible.
+Do not change the database schema.
 
-Preferred degradation:
+Do not redesign existing lifecycle behavior.
+
+---
+
+## Prompt Inspection
+
+Inspect generated prompts for representative:
 
 ```text
-expanded diff + semantic context
-        ↓ failure
-expanded diff only
+C++
+Python
+C#
+Rust
 ```
 
-Do not fall back to:
+cases.
+
+Verify that:
 
 ```text
-expanded diff + full AST
+the correct programming language is explicit
+expanded changed code appears before auxiliary context
+full AST dumps are absent
+unrelated symbol lists are absent
+the prompt asks for the smallest supported reusable rule
+the prompt allows UNKNOWN
+the prompt prohibits unsupported project-policy inference
 ```
 
-because that would defeat the conservative input policy.
+---
+
+## Fix Only Clear Problems
+
+During validation, make small corrections when a clear issue is found.
+
+Acceptable examples:
+
+```text
+incorrect language mapping
+obvious prompt-format bug
+unbounded context list
+UNKNOWN accidentally persisted
+SubAgent routing bug
+full AST accidentally still included
+generic validator false implementation bug
+```
+
+Do not respond to isolated imperfect model output with major architectural changes.
+
+The SLM is not expected to produce ideal wording for every change.
+
+---
+
+## Avoid Overfitting the Prompt
+
+Do not keep adding special-case instructions for every failed test.
+
+For example, avoid accumulating rules such as:
+
+```text
+If Python uses X, always say Y.
+If Rust uses Z, never say Q.
+```
+
+unless there is a broad, repeatable issue.
+
+The prompt should remain short and general.
+
+---
+
+## No Production Model Fallback
+
+Do not add logic such as:
+
+```text
+E4B returns UNKNOWN
+    |
+    v
+send the same extraction to 26B
+```
+
+UNKNOWN is an acceptable final result.
+
+The goal of offloading would be defeated if difficult rule extraction automatically escalated to the main reviewer.
+
+---
+
+## Recommended Acceptance Threshold
+
+This phase does not require a strict statistical benchmark.
+
+For a modest representative test set, the implementation is acceptable when:
+
+```text
+- clear changes usually produce GOOD or ACCEPTABLE rules
+- ambiguous/trivial changes commonly produce UNKNOWN
+- unsupported rules are uncommon
+- no severe cross-language confusion is observed
+- SubAgent failures remain isolated
+```
+
+If a few weak rules remain but they are not dangerously misleading, do not over-engineer the system.
 
 ---
 
 ## Non-Goals
 
-Do not implement the following in Phase 3:
+Do not implement the following in Phase 5:
 
-* final conservative rule-extraction prompt
-* `UNKNOWN` support
-* confidence scoring
-* evidence fields
-* new JSON schema
-* rule candidate lifecycle
-* rule clustering redesign
-* project-policy promotion
-* multi-agent validation
-* model benchmarking
+* new model routing architecture
+* fallback to the 26B model
+* automatic model selection
+* rule candidate lifecycle redesign
+* multi-MR rule promotion
+* new database schema
+* model-generated confidence
+* evidence arrays
+* another validation LLM
+* agent voting
+* repository-wide reasoning
+* deeper AST traversal
+* full Python type analysis
+* full C++ semantic analysis
+* per-language SubAgents
 * per-language models
-* deeper than necessary call-graph traversal
-* repository-wide semantic analysis
-* full Python type inference
-* full C++ semantic resolution
-* main review-agent changes
+* production analytics infrastructure
+* large-scale benchmark tooling
 
-Keep the phase focused on context reduction.
+Phase 5 is a validation and hardening phase.
 
 ---
 
-## Expected Architecture
+## Expected Final Architecture
 
-After Phase 3:
+After Phase 5, the project-adaptation path should remain simple:
 
 ```text
-Changed File
-    |
-    v
-Full AST / Structural Analysis
-    |
-    +----------------------+
-    |                      |
-    |                 internal use
-    |
-    v
-Context Selector
-    |
-    +-- expanded diff
-    +-- containing scope
-    +-- changed AST information
-    +-- direct symbols
-    +-- relevant changed dependencies
-    |
-    v
-RuleExtractionContext
-    |
-    v
+Merged Change
+      |
+      v
+Language Detection
+      |
+      v
+Full Local AST Analysis
+      |
+      v
+Conservative Context Selection
+      |
+      +-- Expanded Diff
+      +-- Changed Structure
+      +-- Directly Relevant Symbols
+      +-- Relevant Dependency Changes
+      |
+      v
 RuleExtractionSubAgent
-    |
-    v
+      |
+      v
 Sub LLM
+      |
+      +-- Supported Rule
+      |       |
+      |       v
+      |    Validate
+      |       |
+      |       v
+      |    Persist
+      |
+      +-- UNKNOWN
+      |       |
+      |       v
+      |    Discard
+      |
+      +-- Invalid/Failure
+              |
+              v
+           Discard
 ```
 
-The SubAgent should no longer receive a complete file-level AST dump by default.
+The main review model remains separate:
+
+```text
+Code Review
+    |
+    v
+Main LLM
+```
 
 ---
 
 ## Acceptance Criteria
 
-Phase 3 is complete when all of the following are true:
+Phase 5 is complete when all of the following are true:
 
-1. Expanded diff is the primary rule-extraction input.
+1. The complete Phase 1–4 rule-extraction pipeline works end-to-end.
 
-2. Full-file AST data is no longer passed directly to the SubAgent by default.
+2. Python has been validated using the prepared test project.
 
-3. Full symbol lists are no longer passed to the SubAgent by default.
+3. C and C++ existing behavior has been regression-tested.
 
-4. Full include/import/dependency lists are no longer passed to the SubAgent by default.
+4. C# and Rust have at least basic smoke-test coverage.
 
-5. The application selects relevant context before invoking the SubAgent.
+5. Clear reusable changes can produce reasonable learned rules.
 
-6. Context includes the changed structural area and directly related symbols when available.
+6. Trivial or ambiguous changes can safely produce UNKNOWN.
 
-7. Context selection uses a conservative one-hop strategy.
+7. Full AST and unrelated file-level context are not accidentally sent to the SubAgent.
 
-8. Missing semantic information does not cause fallback to full-AST input.
+8. Rule extraction always uses the configured Sub LLM.
 
-9. C, C++, C#, Python, and Rust use the same conceptual context-selection pipeline.
+9. The main review LLM is never used as a rule-extraction fallback.
 
-10. Existing expanded diff behavior remains unchanged.
+10. Sub LLM connection failure, timeout, empty output, invalid JSON, and UNKNOWN are all handled safely.
 
-11. The rule JSON schema remains unchanged.
+11. Unsupported or clearly generic rules are uncommon in the representative test set.
 
-12. The Phase 1 SubAgent routing remains unchanged.
+12. Valid rules continue through the existing embedding and persistence path.
 
-13. The Phase 2 language detection remains unchanged.
+13. Rule extraction failures cannot break MR processing.
 
-14. Python tests demonstrate that unrelated module symbols and imports are excluded.
+14. No major new rule-learning architecture has been introduced solely to improve benchmark performance.
 
-15. Existing C/C++ extraction continues to function.
+15. The implementation is considered acceptable even if some useful rules are missed.
 
-16. Context-selection failures degrade to expanded-diff-only extraction rather than failing the MR task.
+The final objective is not perfect automatic policy discovery.
 
-Keep the implementation conservative.
-
-This rule-learning system is an auxiliary code-review feature. It does not need complete semantic understanding of every change. Prefer small, relevant, explainable input over broad context that may mislead the SubAgent.
+The objective is a lightweight, conservative project-adaptation feature that provides some useful project-specific knowledge without adding significant risk or cost to the main code-review system.

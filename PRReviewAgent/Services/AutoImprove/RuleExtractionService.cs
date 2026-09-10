@@ -9,17 +9,29 @@ namespace PRReviewAgent.Services.AutoImprove
         private readonly RuleRepository _repository;
         private readonly ILogger<RuleExtractionService> _logger;
 
+        private const string UnknownMarker = "UNKNOWN";
+
         private const string ExtractionSystemPrompt =
-            "You are a static analysis extraction system.\n\n" +
-            "Analyze the provided code change, and any structural or semantic context supplied.\n\n" +
-            "Extract the underlying engineering rule, coding standard, or bug-fix pattern applied by the developer.\n\n" +
-            "Use the programming language specified in the input when interpreting syntax and semantics.\n\n" +
+            "You are a static analysis rule-extraction system.\n\n" +
+            "Analyze the provided code change in the specified programming language.\n\n" +
+            "Extract the smallest reusable engineering rule directly demonstrated\n" +
+            "by the Before/After change.\n\n" +
+            "The changed code is the primary evidence.\n" +
+            "Structural and semantic context are supporting evidence only.\n\n" +
+            "Do not infer project-wide policy.\n" +
+            "Do not infer unsupported developer intent.\n" +
+            "Do not invent rules from unrelated surrounding context.\n\n" +
+            "Do not merely restate the textual diff.\n\n" +
+            "Generalize only enough for the rule to identify the same kind of issue\n" +
+            "elsewhere in the codebase.\n\n" +
+            "If no clear reusable rule is demonstrated by the change,\n" +
+            "return UNKNOWN.\n\n" +
             "Respond only in the following JSON format without markdown code blocks:\n" +
             "{\n" +
             "  \"ast_pattern\": \"Short description of the affected AST node/pattern\",\n" +
-            "  \"rule_description\": \"A clear, 1-sentence engineering rule applied here\",\n" +
-            "  \"bad_pattern\": \"The code pattern to avoid\",\n" +
-            "  \"good_pattern\": \"The corrected code pattern\"\n" +
+            "  \"rule_description\": \"One concise sentence, or UNKNOWN\",\n" +
+            "  \"bad_pattern\": \"Short reusable pattern to avoid\",\n" +
+            "  \"good_pattern\": \"Short corrected pattern\"\n" +
             "}";
 
         private static readonly IReadOnlyDictionary<SourceLanguage, string> LanguageHints =
@@ -41,6 +53,27 @@ namespace PRReviewAgent.Services.AutoImprove
                     "Interpret ownership, borrowing, Result/Option, traits, lifetimes, and unsafe code " +
                     "according to Rust semantics.",
             };
+
+        // Normalized lowercase deny-list (without trailing period).
+        private static readonly HashSet<string> GenericPhraseDenyList = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "follow best practices",
+            "handle errors properly",
+            "improve code quality",
+            "use proper validation",
+            "write safer code",
+            "use correct coding standards",
+            "follow coding standards",
+            "write better code",
+            "use best practices",
+            "handle exceptions properly",
+            "use proper error handling",
+            "improve performance",
+            "add proper documentation",
+            "use meaningful names",
+            "write cleaner code",
+            "apply best practices",
+        };
 
         public RuleExtractionService(PRReviewAgent.ISubAgent subAgent, LocalEmbeddingProvider embeddingProvider, RuleRepository repository, ILogger<RuleExtractionService> logger)
         {
@@ -74,7 +107,23 @@ namespace PRReviewAgent.Services.AutoImprove
                 if (string.IsNullOrWhiteSpace(response)) return;
 
                 LearnedRule? extractedRule = ParseRuleJson(response);
-                if (extractedRule == null) return;
+                if (extractedRule == null)
+                {
+                    _logger.LogWarning("Rule extraction invalid response for {Path}", context.FilePath);
+                    return;
+                }
+
+                if (IsUnknown(extractedRule))
+                {
+                    _logger.LogInformation("Rule extraction skipped for {Path}: UNKNOWN", context.FilePath);
+                    return;
+                }
+
+                if (IsGenericRule(extractedRule))
+                {
+                    _logger.LogInformation("Rule extraction skipped for {Path}: generic or low-value result", context.FilePath);
+                    return;
+                }
 
                 List<float[]> embeddings = _embeddingProvider.GetEmbedding($"{extractedRule.AstPattern} {extractedRule.RuleDescription}");
                 string currentMergeRequestId = Medo.Uuid7.NewGuid().ToString();
@@ -110,18 +159,15 @@ namespace PRReviewAgent.Services.AutoImprove
             sb.AppendLine(ExtractionSystemPrompt);
             sb.AppendLine("\n---");
 
-            // Language section (always present)
             sb.AppendLine("# Language");
             if (LanguageHints.TryGetValue(context.Language, out string? hint))
                 sb.AppendLine($"{languageName}: {hint}");
             else
                 sb.AppendLine(languageName);
 
-            // Changed code is primary evidence
             sb.AppendLine("# Changed Code");
             sb.AppendLine(context.ExpandedDiff);
 
-            // Relevant structural context (omit if empty)
             if (context.Structures.Count > 0)
             {
                 sb.AppendLine("# Relevant Structure");
@@ -136,10 +182,7 @@ namespace PRReviewAgent.Services.AutoImprove
                 }
             }
 
-            // Relevant semantic context: symbols + dependencies (omit if both empty)
-            bool hasSymbols = context.Symbols.Count > 0;
-            bool hasDeps = context.Dependencies.Count > 0;
-            if (hasSymbols || hasDeps)
+            if (context.Symbols.Count > 0 || context.Dependencies.Count > 0)
             {
                 sb.AppendLine("# Relevant Semantic Context");
                 foreach (SymbolContext sym in context.Symbols)
@@ -154,6 +197,27 @@ namespace PRReviewAgent.Services.AutoImprove
             }
 
             return sb.ToString();
+        }
+
+        public static bool IsUnknown(LearnedRule rule) =>
+            string.Equals(rule.RuleDescription.Trim(), UnknownMarker, StringComparison.OrdinalIgnoreCase);
+
+        public static bool IsGenericRule(LearnedRule rule)
+        {
+            if (IsUnknown(rule)) return false;
+
+            string desc = rule.RuleDescription.Trim().TrimEnd('.').Trim();
+            if (GenericPhraseDenyList.Contains(desc)) return true;
+
+            // Both patterns missing — no actionable guidance
+            bool badEmpty = string.IsNullOrWhiteSpace(rule.BadPattern);
+            bool goodEmpty = string.IsNullOrWhiteSpace(rule.GoodPattern);
+            if (badEmpty && goodEmpty) return true;
+
+            // Identical non-empty patterns — model found no difference
+            if (!badEmpty && !goodEmpty && rule.BadPattern == rule.GoodPattern) return true;
+
+            return false;
         }
 
         private static LearnedRule? ParseRuleJson(string jsonText)
@@ -172,7 +236,7 @@ namespace PRReviewAgent.Services.AutoImprove
                 return new LearnedRule
                 {
                     AstPattern = obj.ast_pattern ?? string.Empty,
-                    RuleDescription = obj.rule_description,
+                    RuleDescription = obj.rule_description.Trim(),
                     BadPattern = obj.bad_pattern,
                     GoodPattern = obj.good_pattern,
                 };
