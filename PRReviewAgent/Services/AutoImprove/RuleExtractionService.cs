@@ -4,15 +4,17 @@ namespace PRReviewAgent.Services.AutoImprove
 {
     public sealed class RuleExtractionService
     {
+        private readonly PRReviewAgent.ISubAgent _subAgent;
         private readonly LocalEmbeddingProvider _embeddingProvider;
         private readonly RuleRepository _repository;
         private readonly ILogger<RuleExtractionService> _logger;
 
         private const string ExtractionSystemPrompt =
-            "You are an expert static analysis bot for C/C++.\n" +
-            "Analyze the provided code diff (Before/After), its AST structure, and file dependencies.\n" +
-            "Extract the underlying engineering rule, coding standard, or bug-fix pattern that the developer applied.\n" +
-            "Respond ONLY in the following JSON format without markdown code blocks:\n" +
+            "You are a static analysis extraction system.\n\n" +
+            "Analyze the provided code change, AST structure, and relevant file dependencies.\n\n" +
+            "Extract the underlying engineering rule, coding standard, or bug-fix pattern applied by the developer.\n\n" +
+            "Use the programming language specified in the input when interpreting syntax and semantics.\n\n" +
+            "Respond only in the following JSON format without markdown code blocks:\n" +
             "{\n" +
             "  \"ast_pattern\": \"Short description of the affected AST node/pattern\",\n" +
             "  \"rule_description\": \"A clear, 1-sentence engineering rule applied here\",\n" +
@@ -20,29 +22,53 @@ namespace PRReviewAgent.Services.AutoImprove
             "  \"good_pattern\": \"The corrected code pattern\"\n" +
             "}";
 
-        public RuleExtractionService(LocalEmbeddingProvider embeddingProvider, RuleRepository repository, ILogger<RuleExtractionService> logger)
+        private static readonly IReadOnlyDictionary<SourceLanguage, string> LanguageHints =
+            new Dictionary<SourceLanguage, string>
+            {
+                [SourceLanguage.C] =
+                    "Interpret pointer lifetime, manual resource management, undefined behavior, " +
+                    "and explicit error handling according to C semantics.",
+                [SourceLanguage.Cpp] =
+                    "Interpret ownership, lifetime, RAII, pointer/reference semantics, templates, " +
+                    "and const correctness according to C++ semantics.",
+                [SourceLanguage.CSharp] =
+                    "Interpret nullability, IDisposable, async/await, exceptions, and task behavior " +
+                    "according to C# semantics.",
+                [SourceLanguage.Python] =
+                    "Interpret None handling, exceptions, context managers, iteration, and dynamic typing " +
+                    "according to Python semantics.",
+                [SourceLanguage.Rust] =
+                    "Interpret ownership, borrowing, Result/Option, traits, lifetimes, and unsafe code " +
+                    "according to Rust semantics.",
+            };
+
+        public RuleExtractionService(PRReviewAgent.ISubAgent subAgent, LocalEmbeddingProvider embeddingProvider, RuleRepository repository, ILogger<RuleExtractionService> logger)
         {
+            _subAgent = subAgent;
             _embeddingProvider = embeddingProvider;
             _repository = repository;
             _logger = logger;
         }
 
-        public async Task ExtractAndSaveRuleAsync(string astContext, string diff, string fileDependencies, CancellationToken cancellationToken = default)
+        public async Task ExtractAndSaveRuleAsync(RuleExtractionContext context, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(diff)) return;
+            if (string.IsNullOrWhiteSpace(context.Diff)) return;
+
+            if (context.Language == SourceLanguage.Unknown)
+            {
+                _logger.LogWarning("Skipping rule extraction for {Path}: language could not be determined", context.FilePath);
+                return;
+            }
+
             try
             {
-                string prompt = BuildExtractionPrompt(astContext, diff, fileDependencies);
-#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
-                string response = await Context.Instance.Agents.RunAsync(prompt, OpenAI.Chat.ChatReasoningEffortLevel.None, cancellationToken);
-#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
-                if (string.IsNullOrWhiteSpace(response)){
-                    return;
-                }
+                _logger.LogInformation("Extracting rule for {Path} as {Language}", context.FilePath, SourceLanguageDetector.DisplayName(context.Language));
+                string prompt = BuildExtractionPrompt(context);
+                string? response = await _subAgent.RunAsync(prompt, cancellationToken);
+                if (string.IsNullOrWhiteSpace(response)) return;
+
                 LearnedRule? extractedRule = ParseRuleJson(response);
-                if (extractedRule == null){
-                    return;
-                }
+                if (extractedRule == null) return;
 
                 List<float[]> embeddings = _embeddingProvider.GetEmbedding($"{extractedRule.AstPattern} {extractedRule.RuleDescription}");
                 string currentMergeRequestId = Medo.Uuid7.NewGuid().ToString();
@@ -62,31 +88,41 @@ namespace PRReviewAgent.Services.AutoImprove
                     };
                     await _repository.InsertAsync(ruleChunk, cancellationToken);
                 }
-                _logger.LogInformation($"Learned new rule: {extractedRule.RuleDescription}");
+                _logger.LogInformation("Rule extraction completed for {Path}: {Rule}", context.FilePath, extractedRule.RuleDescription);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to extract and save rule");
+                _logger.LogError(ex, "Rule extraction SubAgent failed for {Path}", context.FilePath);
             }
         }
 
-        private static string BuildExtractionPrompt(string astContext, string diff, string fileDependencies)
+        public static string BuildExtractionPrompt(RuleExtractionContext context)
         {
+            string languageName = SourceLanguageDetector.DisplayName(context.Language);
             StringBuilder sb = new StringBuilder();
             sb.AppendLine(ExtractionSystemPrompt);
             sb.AppendLine("\n---");
-            if (!string.IsNullOrEmpty(fileDependencies))
+            sb.AppendLine("# Language");
+            if (LanguageHints.TryGetValue(context.Language, out string? hint))
+            {
+                sb.AppendLine($"{languageName}: {hint}");
+            }
+            else
+            {
+                sb.AppendLine(languageName);
+            }
+            if (!string.IsNullOrEmpty(context.FileDependencies))
             {
                 sb.AppendLine("# File Dependencies");
-                sb.AppendLine(fileDependencies);
+                sb.AppendLine(context.FileDependencies);
             }
-            if (!string.IsNullOrEmpty(astContext))
+            if (!string.IsNullOrEmpty(context.AstContext))
             {
                 sb.AppendLine("# AST Context");
-                sb.AppendLine(astContext);
+                sb.AppendLine(context.AstContext);
             }
             sb.AppendLine("# Code Diff");
-            sb.AppendLine(diff);
+            sb.AppendLine(context.Diff);
             return sb.ToString();
         }
 
