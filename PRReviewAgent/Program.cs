@@ -10,14 +10,6 @@ namespace PRReviewAgent
     /// </summary>
     public class Program
     {
-        /// <summary>
-        /// Validates the remote SSL certificate based on the application configuration.
-        /// </summary>
-        /// <param name="sender">An object that contains state information for this validation.</param>
-        /// <param name="certificate">The certificate used to authenticate the remote party.</param>
-        /// <param name="chain">The chain of certificate authorities associated with the remote certificate.</param>
-        /// <param name="sslPolicyErrors">One or more errors associated with the remote certificate.</param>
-        /// <returns><c>true</c> if the certificate is valid; otherwise, <c>false</c>.</returns>
         private static RuleExtractionSubAgentSettings BuildRuleExtractionSubAgentSettings()
         {
             if (!Context.Instance.Settings.Config.TryGetValue("subagent", out object? subagentObj)

@@ -10,11 +10,12 @@ trust_certificate = false # always trust certificate
 trusted_certificates = [""]
 
 [agent]
-# Used for each review and organizing reviews, needs long context and understanding long sentences.
-reviewer = "https://api.openai.com/v1"
+# Main LLM used for code review.
+# Should use the model intended for code-review quality (long context, strong reasoning).
+reviewer = "http://localhost:9090/v1"
 reviewer_name = "Reviewer"
-reviewer_model = "gpt-5-mini"
-reviewer_instructions = "You are a orrect and strict code reviewer."
+reviewer_model = ""
+reviewer_instructions = "You are a correct and strict code reviewer."
 reviewer_max_output = 16384
 reviewer_temperature = 0.1
 reviewer_topp = 0.9
@@ -36,21 +37,26 @@ ssl_verify = false
 target_extensions = ["c","cpp", "cxx", "cc", "h", "hpp", "inl", "cs", "py", "rs"]
 
 [auto_improve]
+# Optional project-adaptation feature.
+# Stores and retrieves learned project-specific review rules from merged changes.
 enabled = false
+# Local embedding model (GGUF format) used to embed learned rules.
 model_path = "Models/granite-embedding-97M-multilingual-r2-Q8_0.gguf"
-db_path = "AppData/review_rurles.db"
+# SQLite database storing learned rules.
+db_path = "AppData/review_rules.db"
 stale_rule_months = 3
 min_confidence_score = 7
 context_size = 16384
 chunk_overlap = 128
 
 [subagent.rule_extraction]
+# Smaller auxiliary LLM used only for project-specific rule extraction.
+# Independent of the main reviewer — failures here do not affect normal code review.
 enabled = false
-endpoint = ""
+endpoint = "http://localhost:9080/v1"
 name = "RuleExtractor"
 model = ""
 max_output = 1024
 temperature = 0.0
 topp = 0.9
 timeout = 120
-
