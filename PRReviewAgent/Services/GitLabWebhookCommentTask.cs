@@ -249,9 +249,7 @@ namespace PRReviewAgent.Services
                         continue;
                     }
                     string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
-#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
-                    string reviewResponse = await context.Agents.RunAsync(promptTurn2, ChatReasoningEffortLevel.None, context.CancellationToken);
-#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+                    string reviewResponse = await context.Agents.RunAsync(promptTurn2, false, context.CancellationToken);
                     if (string.IsNullOrEmpty(reviewResponse))
                     {
                         logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
