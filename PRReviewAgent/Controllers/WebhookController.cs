@@ -1,7 +1,9 @@
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Primitives;
 using Newtonsoft.Json;
 using PRReviewAgent.Services;
+using PRReviewAgent.Services.GitLabWebhook;
 
 namespace PRReviewAgent.Controllers
 {
@@ -82,40 +84,48 @@ namespace PRReviewAgent.Controllers
                 switch (eventType)
                 {
                     case "Merge Request Hook":
+                        try
                         {
-                            Services.GitLabWebhook.PayloadMergeRequestEvent mrPayload =
-                                JsonConvert.DeserializeObject<Services.GitLabWebhook.PayloadMergeRequestEvent>(payload.ToString());
-                            if (mrPayload.object_attributes.action == "merge")
+                            // Parse the payload for merge-request-related events
+                            GitLabMergeRequestWebhook payloadMergeRequest = GitLabWebhookParser.ParseAndValidateMergeRequest(payload.ToString());
+                            if (payloadMergeRequest.ObjectAttributes.Action == "merge")
                             {
-                                GitLabMergeMRTask mergeTask = new GitLabMergeMRTask(mrPayload);
+                                GitLabMergeMRTask mergeTask = new GitLabMergeMRTask(payloadMergeRequest);
                                 await taskQueue_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
                                 return Ok();
                             }
                         }
+                        catch (Exception ex)
+                        {
+                            logger_.LogError(ex.ToString());
+                            return StatusCode(500);
+                        }
                         break;
                     case "Note Hook":
+                        try
                         {
                             // Parse the payload for comment-related events
-                            Services.GitLabWebhook.PayloadComment payloadComment = JsonConvert.DeserializeObject<Services.GitLabWebhook.PayloadComment>(payload.ToString());
-                            // Handle comments made on merge requests
-                            if (payloadComment.object_attributes.noteable_type == "MergeRequest" && null != payloadComment.merge_request)
+                            GitLabMrNoteWebhook payloadComment = GitLabWebhookParser.ParseAndValidateNoteWebhook(payload.ToString());
+                            // Get the first line of the comment
+                            ReadOnlySpan<char> line = payloadComment.ObjectAttributes.Note.AsSpan().Trim();
+                            int index = line.IndexOfAny("\n\r".AsSpan());
+                            if (0 <= index)
                             {
-                                // Get the first line of the comment
-                                ReadOnlySpan<char> line = payloadComment.object_attributes.note.AsSpan().Trim();
-                                int index = line.IndexOfAny("\n\r".AsSpan());
-                                if (0 <= index)
-                                {
-                                    line = line.Slice(0, index);
-                                }
-                                // Check if the comment contains the trigger command "/review"
-                                if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    // Enqueue a background task to perform the review
-                                    GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
-                                    await taskQueue_.QueueBackgroundWorkItemAsync(gitLabWebhookTask.RunAsync);
-                                    return Ok();
-                                }
+                                line = line.Slice(0, index);
                             }
+                            // Check if the comment contains the trigger command "/review"
+                            if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // Enqueue a background task to perform the review
+                                GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
+                                await taskQueue_.QueueBackgroundWorkItemAsync(gitLabWebhookTask.RunAsync);
+                                return Ok();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            logger_.LogError(ex.ToString());
+                            return StatusCode(500);
                         }
                         break;
                 }
@@ -154,38 +164,38 @@ namespace PRReviewAgent.Controllers
                 switch (githubEvent)
                 {
                     case "pull_request":
-                    {
-                        Services.GitHubWebhook.PayloadPullRequestEvent prPayload =
-                            JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadPullRequestEvent>(payload.ToString());
-                        if (prPayload.action == "closed" && prPayload.pull_request.merged)
                         {
-                            GitHubMergePRTask mergeTask = new GitHubMergePRTask(prPayload);
-                            await taskQueue_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
-                            return Ok();
+                            Services.GitHubWebhook.PayloadPullRequestEvent prPayload =
+                                JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadPullRequestEvent>(payload.ToString());
+                            if (prPayload.action == "closed" && prPayload.pull_request.merged)
+                            {
+                                GitHubMergePRTask mergeTask = new GitHubMergePRTask(prPayload);
+                                await taskQueue_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
+                                return Ok();
+                            }
+                            break;
                         }
-                        break;
-                    }
                     default:
-                    {
-                        // Parse the payload for issue-related comment events
-                        Services.GitHubWebhook.PayloadIssueComment payloadIssueComment =
-                            JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadIssueComment>(payload.ToString());
-                        // Get the first line of the comment
-                        ReadOnlySpan<char> line = payloadIssueComment.comment.body.AsSpan().Trim();
-                        int index = line.IndexOfAny("\n\r".AsSpan());
-                        if (0 <= index)
                         {
-                            line = line.Slice(0, index);
+                            // Parse the payload for issue-related comment events
+                            Services.GitHubWebhook.PayloadIssueComment payloadIssueComment =
+                                JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadIssueComment>(payload.ToString());
+                            // Get the first line of the comment
+                            ReadOnlySpan<char> line = payloadIssueComment.comment.body.AsSpan().Trim();
+                            int index = line.IndexOfAny("\n\r".AsSpan());
+                            if (0 <= index)
+                            {
+                                line = line.Slice(0, index);
+                            }
+                            // Check if the comment body contains the trigger command "/review"
+                            if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
+                            {
+                                GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
+                                await taskQueue_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
+                                return Ok();
+                            }
+                            break;
                         }
-                        // Check if the comment body contains the trigger command "/review"
-                        if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
-                        {
-                            GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
-                            await taskQueue_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
-                            return Ok();
-                        }
-                        break;
-                    }
                 }
             }
             catch (Exception ex)

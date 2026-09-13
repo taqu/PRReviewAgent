@@ -10,14 +10,38 @@ namespace PRReviewAgent
     /// </summary>
     public class Program
     {
-        /// <summary>
-        /// Validates the remote SSL certificate based on the application configuration.
-        /// </summary>
-        /// <param name="sender">An object that contains state information for this validation.</param>
-        /// <param name="certificate">The certificate used to authenticate the remote party.</param>
-        /// <param name="chain">The chain of certificate authorities associated with the remote certificate.</param>
-        /// <param name="sslPolicyErrors">One or more errors associated with the remote certificate.</param>
-        /// <returns><c>true</c> if the certificate is valid; otherwise, <c>false</c>.</returns>
+        private static RuleExtractionSubAgentSettings BuildRuleExtractionSubAgentSettings()
+        {
+            if (!Context.Instance.Settings.Config.TryGetValue("subagent", out object? subagentObj)
+                || subagentObj is not Tomlyn.Model.TomlTable subagentTable
+                || !subagentTable.TryGetValue("rule_extraction", out object? reObj)
+                || reObj is not Tomlyn.Model.TomlTable re)
+            {
+                return new RuleExtractionSubAgentSettings { Enabled = false };
+            }
+
+            bool subEnabled = re.TryGetValue("enabled", out object? e) && e is bool eb && eb;
+            string endpoint = re.TryGetValue("endpoint", out object? ep) ? (string)ep : string.Empty;
+            string name = re.TryGetValue("name", out object? n) ? (string)n : "RuleExtractor";
+            string model = re.TryGetValue("model", out object? m) ? (string)m : string.Empty;
+            int maxOutput = re.TryGetValue("max_output", out object? mo) ? (int)(long)mo : 1024;
+            double temperature = re.TryGetValue("temperature", out object? t) ? (double)t : 0.0;
+            double topp = re.TryGetValue("topp", out object? tp) ? (double)tp : 0.9;
+            int timeout = re.TryGetValue("timeout", out object? to) ? (int)(long)to : 120;
+
+            return new RuleExtractionSubAgentSettings
+            {
+                Enabled = subEnabled,
+                Endpoint = endpoint,
+                Name = name,
+                Model = model,
+                MaxOutput = maxOutput,
+                Temperature = temperature,
+                TopP = topp,
+                TimeoutSeconds = timeout,
+            };
+        }
+
         private static bool RemoteCertificateValidationCallback(
             Object sender,
             X509Certificate certificate,
@@ -142,8 +166,12 @@ namespace PRReviewAgent
                     RuleRepository ruleRepository = new RuleRepository(dbPath);
                     ruleRepository.InitializeAsync().GetAwaiter().GetResult();
 
+                    RuleExtractionSubAgentSettings subAgentSettings = BuildRuleExtractionSubAgentSettings();
+                    builder.Services.AddSingleton(subAgentSettings);
                     builder.Services.AddSingleton(embeddingProvider);
                     builder.Services.AddSingleton(ruleRepository);
+                    builder.Services.AddSingleton<RuleExtractionSubAgent>();
+                    builder.Services.AddSingleton<ISubAgent>(sp => sp.GetRequiredService<RuleExtractionSubAgent>());
                     builder.Services.AddSingleton<RuleExtractionService>();
                     builder.Services.AddSingleton<RuleRetrievalService>();
                     builder.Services.AddSingleton<RuleLifecycleService>();

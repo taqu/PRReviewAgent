@@ -1,6 +1,8 @@
 using PRReviewAgent.Prompt;
 using System.Text;
 using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Unicode;
 
 namespace PRReviewAgent.Services
 {
@@ -72,7 +74,11 @@ namespace PRReviewAgent.Services
         {
             stringBuilder.Clear();
             stringBuilder.Append(reviewRequest.ReviewRulesTurn2);
-            System.Text.Json.JsonSerializerOptions options = new System.Text.Json.JsonSerializerOptions();
+            System.Text.Json.JsonSerializerOptions options = new JsonSerializerOptions
+            {
+                Encoder = JavaScriptEncoder.Create(UnicodeRanges.All),
+                WriteIndented = false
+            };
             options.Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
             options.WriteIndented = true;
             string jsonText = System.Text.Json.JsonSerializer.Serialize<IssuesResponse>(issuesResponse, options);

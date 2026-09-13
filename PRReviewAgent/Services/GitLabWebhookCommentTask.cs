@@ -70,11 +70,11 @@ namespace PRReviewAgent.Services
             return string.Empty;
         }
 
-        public GitLabWebhookCommentTask(PayloadComment payloadComment)
+        public GitLabWebhookCommentTask(GitLabMrNoteWebhook payloadComment)
         {
-            payloadComment_ = payloadComment;
+            gitLabMrNoteWebhook_ = payloadComment;
 
-            language_ = FindLanguage(payloadComment_.object_attributes.note);
+            language_ = FindLanguage(gitLabMrNoteWebhook_.ObjectAttributes.Note);
             if (string.IsNullOrEmpty(language_) || !Context.Instance.Settings.HasTemplate(language_))
             {
                 Tomlyn.Model.TomlTable? commonTable = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["common"];
@@ -120,14 +120,14 @@ namespace PRReviewAgent.Services
         public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
         {
             ILogger<GitLabWebhookCommentTask>? logger = serviceProvider.GetService<ILogger<GitLabWebhookCommentTask>>();
-            logger.LogInformation($"Processing comment: {payloadComment_.object_attributes.id}");
+            logger.LogInformation($"Processing comment: {gitLabMrNoteWebhook_.ObjectAttributes.Id}");
 
             Context context = Context.Instance;
             NGitLab.GitLabClient gitLabClient = serviceProvider.GetService<GitLabClientService>().GitLabClient;
 
             // Step 1: Fetch all diffs for the merge request.
-            NGitLab.IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest(payloadComment_.project.id);
-            GitLabCollectionResponse<NGitLab.Models.Diff> response = mergeRequestClient.GetDiffsAsync(payloadComment_.merge_request.iid);
+            NGitLab.IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest((long)gitLabMrNoteWebhook_.Project.Id);
+            GitLabCollectionResponse<NGitLab.Models.Diff> response = mergeRequestClient.GetDiffsAsync((long)gitLabMrNoteWebhook_.MergeRequest.Iid);
             List<ReviewContext> reviewContexts = new List<ReviewContext>();
 
             // Step 2: Filter to files that should be reviewed.
@@ -146,8 +146,8 @@ namespace PRReviewAgent.Services
             }
 
             // Step 3: Fetch full file contents from the source branch.
-            IRepositoryClient repository = gitLabClient.GetRepository(payloadComment_.merge_request.target_project_id);
-            string sourceBranch = payloadComment_.merge_request.source_branch;
+            IRepositoryClient repository = gitLabClient.GetRepository((long)gitLabMrNoteWebhook_.MergeRequest.TargetProjectId);
+            string sourceBranch = gitLabMrNoteWebhook_.MergeRequest.SourceBranch;
             logger.LogInformation($"Fetching file contents for {reviewContexts.Count} files.");
             foreach (ReviewContext reviewContext in reviewContexts)
             {
@@ -188,8 +188,8 @@ namespace PRReviewAgent.Services
             // Step 6: Build file groups deterministically by base filename.
             logger.LogInformation($"Building file groups for {reviewContexts.Count} files.");
             ReviewRequest reviewRequest = new ReviewRequest();
-            reviewRequest.MergeRequestTitle = payloadComment_.merge_request.title ?? string.Empty;
-            reviewRequest.MergeRequestDescription = payloadComment_.merge_request.description;
+            reviewRequest.MergeRequestTitle = gitLabMrNoteWebhook_.MergeRequest.Title ?? string.Empty;
+            reviewRequest.MergeRequestDescription = gitLabMrNoteWebhook_.MergeRequest.Description ?? string.Empty;
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
@@ -210,7 +210,7 @@ namespace PRReviewAgent.Services
                     if (relevantRules.Count > 0)
                     {
                         reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules, language_);
-                        await ruleLifecycleService?.TrackReviewedRulesAsync($"gitlab/{payloadComment_.project.id}/{payloadComment_.merge_request.iid}", relevantRules, cancellationToken);
+                        await ruleLifecycleService?.TrackReviewedRulesAsync($"gitlab/{gitLabMrNoteWebhook_.Project.Id}/{gitLabMrNoteWebhook_.MergeRequest.Iid}", relevantRules, cancellationToken);
                     }
                 }
                 catch (Exception ex)
@@ -249,9 +249,7 @@ namespace PRReviewAgent.Services
                         continue;
                     }
                     string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
-#pragma warning disable OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
-                    string reviewResponse = await context.Agents.RunAsync(promptTurn2, ChatReasoningEffortLevel.None, context.CancellationToken);
-#pragma warning restore OPENAI001 // 種類は、評価の目的でのみ提供されています。将来の更新で変更または削除されることがあります。続行するには、この診断を非表示にします。
+                    string reviewResponse = await context.Agents.RunAsync(promptTurn2, false, context.CancellationToken);
                     if (string.IsNullOrEmpty(reviewResponse))
                     {
                         logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
@@ -429,12 +427,12 @@ namespace PRReviewAgent.Services
         private const int MaxLogLength = 128;
         private void PostComment(string comment, NGitLab.IMergeRequestClient mergeRequestClient, ILogger<GitLabWebhookCommentTask>? logger)
         {
-            IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments(payloadComment_.merge_request.iid);
+            IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments((long)gitLabMrNoteWebhook_.MergeRequest.Iid);
             MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
             mergeRequestCommentEdit.Body = comment;
             try
             {
-                MergeRequestComment _ = mergeRequestCommentClient.Edit(payloadComment_.object_attributes.id, mergeRequestCommentEdit);
+                MergeRequestComment _ = mergeRequestCommentClient.Edit((long)gitLabMrNoteWebhook_.ObjectAttributes.Id, mergeRequestCommentEdit);
                 if (logger.IsEnabled(LogLevel.Information))
                 {
                     ReadOnlySpan<char> span = comment.AsSpan();
@@ -453,7 +451,7 @@ namespace PRReviewAgent.Services
             }
         }
 
-        private PayloadComment payloadComment_;
+        private GitLabMrNoteWebhook gitLabMrNoteWebhook_;
         private string language_;
         private StringBuilder stringBuilder_ = new StringBuilder();
     }
