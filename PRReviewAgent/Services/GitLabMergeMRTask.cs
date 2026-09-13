@@ -9,9 +9,9 @@ namespace PRReviewAgent.Services
 {
     public class GitLabMergeMRTask
     {
-        private readonly PayloadMergeRequestEvent _payload;
+        private readonly GitLabMergeRequestWebhook _payload;
 
-        public GitLabMergeMRTask(PayloadMergeRequestEvent payload)
+        public GitLabMergeMRTask(GitLabMergeRequestWebhook payload)
         {
             _payload = payload;
         }
@@ -29,8 +29,8 @@ namespace PRReviewAgent.Services
 
             try
             {
-                long projectId = _payload.project.id;
-                long mrIid = _payload.object_attributes.iid;
+                long projectId = (long)_payload.Project.Id;
+                long mrIid = (long)_payload.ObjectAttributes.Iid;
                 string prKey = $"gitlab/{projectId}/{mrIid}";
 
                 IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest((int)projectId);
@@ -55,8 +55,8 @@ namespace PRReviewAgent.Services
 
                 if (ruleExtractionService == null || reviewContexts.Count == 0) return;
 
-                IRepositoryClient repository = gitLabClient.GetRepository(_payload.object_attributes.source_project_id);
-                string sourceBranch = _payload.object_attributes.source_branch;
+                IRepositoryClient repository = gitLabClient.GetRepository((long)_payload.ObjectAttributes.SourceProjectId);
+                string sourceBranch = _payload.ObjectAttributes.SourceBranch;
 
                 foreach (ReviewContext ctx in reviewContexts)
                 {

@@ -141,7 +141,7 @@ namespace PRReviewAgent.Services.AutoImprove
                         CreatedAt = DateTime.UtcNow,
                         LastHitAt = DateTime.UtcNow
                     };
-                    await _repository.InsertAsync(ruleChunk, cancellationToken);
+                    await _repository.InsertAsync(ruleChunk, _logger, cancellationToken);
                 }
                 _logger.LogInformation("Rule extraction completed for {Path}: {Rule}", context.FilePath, extractedRule.RuleDescription);
             }

@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using System.Data.Common;
+using TreeSitter;
 
 namespace PRReviewAgent.Services.AutoImprove
 {
@@ -58,7 +59,7 @@ namespace PRReviewAgent.Services.AutoImprove
             }
         }
 
-        public async Task InsertAsync(LearnedRule rule, CancellationToken cancellationToken = default)
+        public async Task InsertAsync(LearnedRule rule, ILogger? logger = null, CancellationToken cancellationToken = default)
         {
             await _semaphore.WaitAsync(cancellationToken);
             try
@@ -68,7 +69,7 @@ namespace PRReviewAgent.Services.AutoImprove
                 await using SqliteCommand cmd = conn.CreateCommand();
                 cmd.CommandText = @"INSERT INTO learned_rules
                     (id, merge_request_id, ast_pattern, rule_description, bad_pattern, good_pattern, embedding, confidence_score, last_hit_at, created_at)
-                    VALUES (@id, @ast_pattern, @rule_description, @bad_pattern, @good_pattern, @embedding, @confidence_score, @last_hit_at, @created_at)";
+                    VALUES (@id, @merge_request_id, @ast_pattern, @rule_description, @bad_pattern, @good_pattern, @embedding, @confidence_score, @last_hit_at, @created_at)";
                 cmd.Parameters.AddWithValue("@id", rule.Id);
                 cmd.Parameters.AddWithValue("@merge_request_id", rule.MergeRequestId);
                 cmd.Parameters.AddWithValue("@ast_pattern", rule.AstPattern);
@@ -81,13 +82,17 @@ namespace PRReviewAgent.Services.AutoImprove
                 cmd.Parameters.AddWithValue("@created_at", rule.CreatedAt.ToString("O"));
                 await cmd.ExecuteNonQueryAsync(cancellationToken);
             }
+            catch (SqliteException ex)
+            {
+                logger?.LogError(ex.Message);
+            }
             finally
             {
                 _semaphore.Release();
             }
         }
 
-        public async Task<List<LearnedRule>> GetAllActiveAsync(CancellationToken cancellationToken = default)
+        public async Task<List<LearnedRule>> GetAllActiveAsync(ILogger? logger = null, CancellationToken cancellationToken = default)
         {
             await _semaphore.WaitAsync(cancellationToken);
             try
@@ -117,6 +122,11 @@ namespace PRReviewAgent.Services.AutoImprove
                     });
                 }
                 return rules;
+            }
+            catch (Exception ex)
+            {
+                logger?.LogError(ex.Message);
+                return new List<LearnedRule>();
             }
             finally
             {

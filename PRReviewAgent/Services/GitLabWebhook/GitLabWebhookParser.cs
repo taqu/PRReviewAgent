@@ -5,7 +5,7 @@ namespace PRReviewAgent.Services.GitLabWebhook
 {
     public static class GitLabWebhookParser
     {
-        public static GitLabMrNoteWebhook ParseAndValidate(string jsonPayload)
+        public static GitLabMrNoteWebhook ParseAndValidateNoteWebhook(string jsonPayload)
         {
             // 1. Perform basic JSON deserialization with options to allow some type mismatches
             var options = new JsonSerializerOptions
@@ -65,5 +65,57 @@ namespace PRReviewAgent.Services.GitLabWebhook
 
             return payload;
         }
+
+        public static GitLabMergeRequestWebhook ParseAndValidateMergeRequest(string jsonPayload)
+        {
+            // 1. Configure JSON serializer options (allow loose type matches and case insensitivity)
+            var options = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = JsonNumberHandling.AllowReadingFromString
+            };
+
+            GitLabMergeRequestWebhook? payload;
+            try
+            {
+                payload = JsonSerializer.Deserialize<GitLabMergeRequestWebhook>(jsonPayload, options);
+            }
+            catch (JsonException ex)
+            {
+                throw new FormatException("The JSON payload syntax is invalid.", ex);
+            }
+
+            // 2. Validate root object and event type
+            if (payload == null)
+                throw new ArgumentNullException(nameof(jsonPayload), "The payload is empty.");
+
+            if (payload.ObjectKind != "merge_request")
+                throw new InvalidOperationException("The event type is not a merge_request.");
+
+            // 3. Strictly validate the presence of the required fields
+            if (payload.Project?.Id == null)
+                throw new KeyNotFoundException("The required field 'project.id' is missing or null.");
+
+            if (payload.ObjectAttributes == null)
+                throw new KeyNotFoundException("The required object 'object_attributes' is missing.");
+
+            var attrs = payload.ObjectAttributes;
+
+            if (attrs.Iid == null)
+                throw new KeyNotFoundException("The required field 'object_attributes.iid' is missing or null.");
+
+            if (attrs.SourceProjectId == null)
+                throw new KeyNotFoundException("The required field 'object_attributes.source_project_id' is missing or null.");
+
+            if (string.IsNullOrEmpty(attrs.SourceBranch))
+                throw new KeyNotFoundException("The required field 'object_attributes.source_branch' is missing, null, or empty.");
+
+            // Validate the newly added 'action' field
+            if (string.IsNullOrEmpty(attrs.Action))
+                throw new KeyNotFoundException("The required field 'object_attributes.action' is missing, null, or empty.");
+
+            return payload;
+        }
+
     }
 }

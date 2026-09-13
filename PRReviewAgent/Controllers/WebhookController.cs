@@ -86,10 +86,11 @@ namespace PRReviewAgent.Controllers
                     case "Merge Request Hook":
                         try
                         {
-                            Services.GitLabWebhook.PayloadMergeRequestEvent mrPayload = JsonConvert.DeserializeObject<Services.GitLabWebhook.PayloadMergeRequestEvent>(payload.ToString());
-                            if (mrPayload.object_attributes.action == "merge")
+                            // Parse the payload for merge-request-related events
+                            GitLabMergeRequestWebhook payloadMergeRequest = GitLabWebhookParser.ParseAndValidateMergeRequest(payload.ToString());
+                            if (payloadMergeRequest.ObjectAttributes.Action == "merge")
                             {
-                                GitLabMergeMRTask mergeTask = new GitLabMergeMRTask(mrPayload);
+                                GitLabMergeMRTask mergeTask = new GitLabMergeMRTask(payloadMergeRequest);
                                 await taskQueue_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
                                 return Ok();
                             }
@@ -104,7 +105,7 @@ namespace PRReviewAgent.Controllers
                         try
                         {
                             // Parse the payload for comment-related events
-                            GitLabMrNoteWebhook payloadComment = GitLabWebhookParser.ParseAndValidate(payload.ToString());
+                            GitLabMrNoteWebhook payloadComment = GitLabWebhookParser.ParseAndValidateNoteWebhook(payload.ToString());
                             // Get the first line of the comment
                             ReadOnlySpan<char> line = payloadComment.ObjectAttributes.Note.AsSpan().Trim();
                             int index = line.IndexOfAny("\n\r".AsSpan());

@@ -2,6 +2,7 @@ using NGitLab;
 using OpenAI;
 using OpenAI.Chat;
 using System.ClientModel;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -45,7 +46,7 @@ namespace PRReviewAgent
             Tomlyn.Model.TomlTable? config = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["agent"];
             model = (string)config[$"{name}_model"];
             long max_output = (long)config[$"{name}_max_output"];
-            if (!model.StartsWith("gpt-5"))
+            if (!model.StartsWith("gpt-"))
             {
                 double temperature = (double)config[$"{name}_temperature"];
                 double topp = (double)config[$"{name}_topp"];
@@ -112,11 +113,11 @@ namespace PRReviewAgent
         public async Task<string> RunAsync(string prompt, bool reasoning, CancellationToken cancellationToken)
         {
             // Execute the agent and return the raw response
-            OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
-            ChatCompletionOptions chatCompletionOptions = CloneChatCompletionOptions();
             ClientResult<ChatCompletion>? response;
-            if (reasoning)
+            if (reasoning || model_.StartsWith("gpt-"))
             {
+                OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
+                ChatCompletionOptions chatCompletionOptions = CloneChatCompletionOptions();
                 response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions, cancellationToken);
             }
             else
@@ -124,10 +125,14 @@ namespace PRReviewAgent
                 var requestPayload = new
                 {
                     model = model_,
-                    messages = messages,
+                    messages = new[] {
+                        new { role = "System", content = instructions_ },
+                        new { role = "User", content = prompt }
+                    },
                     chat_template_kwargs = new
                     {
-                        enable_thinking = false
+                        enable_thinking = false,
+                        tool_choice = "none",
                     }
                 };
                 try

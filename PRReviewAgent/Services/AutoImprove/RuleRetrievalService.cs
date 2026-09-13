@@ -6,11 +6,13 @@ namespace PRReviewAgent.Services.AutoImprove
     {
         private readonly LocalEmbeddingProvider _embeddingProvider;
         private readonly RuleRepository _repository;
+        private readonly ILogger<RuleRetrievalService> _logger;
 
-        public RuleRetrievalService(LocalEmbeddingProvider embeddingProvider, RuleRepository repository)
+        public RuleRetrievalService(LocalEmbeddingProvider embeddingProvider, RuleRepository repository, ILogger<RuleRetrievalService> logger)
         {
             _embeddingProvider = embeddingProvider;
             _repository = repository;
+            _logger = logger;
         }
 
         public async Task<List<LearnedRule>> GetRelevantRulesAsync(
@@ -24,7 +26,7 @@ namespace PRReviewAgent.Services.AutoImprove
             {
                 return new List<LearnedRule>();
             }
-            List<LearnedRule> allRules = await _repository.GetAllActiveAsync(cancellationToken);
+            List<LearnedRule> allRules = await _repository.GetAllActiveAsync(_logger, cancellationToken);
 
             List<(LearnedRule rule, float score)> scored = allRules.Select(r =>{
                 float maxScore = queryEmbeddings
