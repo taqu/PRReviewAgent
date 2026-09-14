@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.AutoImprove;
 using System.Net.Security;
@@ -106,8 +107,10 @@ namespace PRReviewAgent
             // Add services to the container.
 
             builder.Services.AddControllers();
-            builder.Services.AddSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>();
-            builder.Services.AddHostedService<QueuedProcessorBackgroundService>();
+            builder.Services.AddKeyedSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>(Settings.TaskQueueReview);
+            builder.Services.AddKeyedSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>(Settings.TaskQueueImprove);
+            builder.Services.AddHostedService<QueuedProcessorBackgroundServiceReview>();
+            builder.Services.AddHostedService<QueuedProcessorBackgroundServiceImprove>();
             bool ssl_verify = false;
             try
             {

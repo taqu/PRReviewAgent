@@ -5,26 +5,26 @@ namespace PRReviewAgent.Services
     /// <summary>
     /// Background service that processes work items from the <see cref="IBackgroundTaskQueue"/>.
     /// </summary>
-    public class QueuedProcessorBackgroundService : BackgroundService
+    public class QueuedProcessorBackgroundServiceBase : BackgroundService
     {
         private readonly IBackgroundTaskQueue taskQueue_;
         private readonly IServiceProvider serviceProvider_;
         private readonly ILogger logger_;
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="QueuedProcessorBackgroundService"/> class.
+        /// Initializes a new instance of the <see cref="QueuedProcessorBackgroundServiceBase"/> class.
         /// </summary>
         /// <param name="taskQueue">The background task queue instance.</param>
         /// <param name="serviceProvider">The service provider instance.</param>
         /// <param name="loggerFactory">The logger factory instance.</param>
-        public QueuedProcessorBackgroundService(
+        public QueuedProcessorBackgroundServiceBase(
             IBackgroundTaskQueue taskQueue,
             IServiceProvider serviceProvider,
             ILoggerFactory loggerFactory)
         {
             taskQueue_ = taskQueue;
             serviceProvider_ = serviceProvider;
-            logger_ = loggerFactory.CreateLogger<QueuedProcessorBackgroundService>();
+            logger_ = loggerFactory.CreateLogger<QueuedProcessorBackgroundServiceReview>();
         }
 
         /// <summary>
