@@ -15,17 +15,19 @@ namespace PRReviewAgent.Controllers
     public class WebhookController : ControllerBase
     {
         private readonly ILogger<WebhookController> logger_;
-        private readonly IBackgroundTaskQueue taskQueue_;
+        private readonly IBackgroundTaskQueue taskQueueReview_;
+        private readonly IBackgroundTaskQueue taskQueueImprove_;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="WebhookController"/> class.
         /// </summary>
         /// <param name="logger">The logger instance.</param>
         /// <param name="taskQueue">The background task queue instance.</param>
-        public WebhookController(ILogger<WebhookController> logger, IBackgroundTaskQueue taskQueue)
+        public WebhookController(ILogger<WebhookController> logger, [FromKeyedServices(Settings.TaskQueueReview)] IBackgroundTaskQueue taskQueueReview, [FromKeyedServices(Settings.TaskQueueImprove)] IBackgroundTaskQueue taskQueueImprove)
         {
             logger_ = logger;
-            taskQueue_ = taskQueue;
+            taskQueueReview_ = taskQueueReview;
+            taskQueueImprove_ = taskQueueImprove;
         }
 
         private const string GitlabTokenKey = "X-Gitlab-Token";
@@ -91,7 +93,7 @@ namespace PRReviewAgent.Controllers
                             if (payloadMergeRequest.ObjectAttributes.Action == "merge")
                             {
                                 GitLabMergeMRTask mergeTask = new GitLabMergeMRTask(payloadMergeRequest);
-                                await taskQueue_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
+                                await taskQueueImprove_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
                                 return Ok();
                             }
                         }
@@ -118,7 +120,7 @@ namespace PRReviewAgent.Controllers
                             {
                                 // Enqueue a background task to perform the review
                                 GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
-                                await taskQueue_.QueueBackgroundWorkItemAsync(gitLabWebhookTask.RunAsync);
+                                await taskQueueReview_.QueueBackgroundWorkItemAsync(gitLabWebhookTask.RunAsync);
                                 return Ok();
                             }
                         }
@@ -170,7 +172,7 @@ namespace PRReviewAgent.Controllers
                             if (prPayload.action == "closed" && prPayload.pull_request.merged)
                             {
                                 GitHubMergePRTask mergeTask = new GitHubMergePRTask(prPayload);
-                                await taskQueue_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
+                                await taskQueueImprove_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
                                 return Ok();
                             }
                             break;
@@ -191,7 +193,7 @@ namespace PRReviewAgent.Controllers
                             if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
                             {
                                 GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
-                                await taskQueue_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
+                                await taskQueueReview_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
                                 return Ok();
                             }
                             break;

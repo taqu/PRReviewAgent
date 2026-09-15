@@ -5,6 +5,9 @@ namespace PRReviewAgent
     /// </summary>
     public class Settings
     {
+        public const string TaskQueueReview = "review";
+        public const string TaskQueueImprove = "improve";
+
         /// <summary>
         /// The name of the secrets file.
         /// </summary>
