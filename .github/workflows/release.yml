@@ -61,7 +61,8 @@ jobs:
         run: |
           mkdir -p ./publish
           
-          dotnet list PRReviewAgent/PRReviewAgent.csproj package --format json --include-transitive > ./publish/packages.json
+          dotnet list PRReviewAgent/PRReviewAgent.csproj package --format json --include-transitive 2>/dev/null \
+            | awk 'BEGIN{p=0} /^\{/{p=1} p{print}' > ./publish/packages.json
           
           echo "Gathering NuGet package licenses..."
           echo -e "Generated Package License List\n==============================" > ./publish/nuget-licenses.txt
