@@ -59,8 +59,20 @@ jobs:
 
       - name: Generate and Combine Licenses
         run: |
-          dotnet-project-licenses -i PRReviewAgent/ -o --output_filename ./publish/nuget-licenses.txt
+          mkdir -p ./publish
           
+          dotnet list PRReviewAgent/PRReviewAgent.csproj package --format json --include-transitive > ./publish/packages.json
+          
+          echo "Gathering NuGet package licenses..."
+          echo -e "Generated Package License List\n==============================" > ./publish/nuget-licenses.txt
+          
+          jq -r '.projects[].frameworks[].topLevelPackages[], .projects[].frameworks[].transitivePackages[] | select(. != null) | "\(.id) \(.requestedVersion // .resolvedVersion)"' ./publish/packages.json | sort -u | while read -r id version; do
+            if [ -n "$id" ] && [ -n "$version" ]; then
+              LICENSE_INFO=$(curl -s "https://nuget.org{id,,}/${version}.json" | jq -r '.licenseExpression // .licenseUrl // "No explicit license URL found"')
+              echo -e "- $id ($version): $LICENSE_INFO" >> ./publish/nuget-licenses.txt
+            fi
+          done
+
           MY_LICENSE="LICENSE"
           if [ ! -f "LICENSE" ] && [ -f "LICENSE.txt" ]; then
             MY_LICENSE="LICENSE.txt"
@@ -77,12 +89,13 @@ jobs:
             
             if [ -f "PRReviewAgent/Models/LICENSE" ]; then
               echo -e "========================================================================\n" >> "$out_file"
-              echo -e " Embedding model's LICENSE\n" >> "$out_file"
+              echo -e "  Model's Licenses\n" >> "$out_file"
               echo -e "========================================================================\n" >> "$out_file"
               cat PRReviewAgent/Models/LICENSE >> "$out_file"
               echo -e "\n\n" >> "$out_file"
             fi
             
+            # NuGetのライセンスを追記
             if [ -f "./publish/nuget-licenses.txt" ]; then
               echo -e "========================================================================\n" >> "$out_file"
               echo -e "  NuGet Packages Licenses\n" >> "$out_file"
@@ -91,7 +104,8 @@ jobs:
             fi
           done
           
-          rm -f ./publish/nuget-licenses.txt
+          # 不要になった一時ファイルを削除
+          rm -f ./publish/packages.json ./publish/nuget-licenses.txt
 
       - name: Create Artifacts linux-x64
         run: |
