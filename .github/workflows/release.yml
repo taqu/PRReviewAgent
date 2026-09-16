@@ -14,6 +14,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Pull Git LFS objects
+        run: git lfs pull
 
       - name: Prepare config files
         run: |
@@ -34,13 +39,25 @@ jobs:
       - name: Publish linux-x64
         run: |
           dotnet publish PRReviewAgent/PRReviewAgent.csproj -c Release -r linux-x64 -o ./publish/PRReviewAgent-linux-x64
+
       - name: Publish win-x64
         run: |
           dotnet publish PRReviewAgent/PRReviewAgent.csproj -c Release -r win-x64 -o ./publish/PRReviewAgent-win-x64
 
+      - name: Copy resources into packages
+        run: |
+          for target in linux-x64 win-x64; do
+            dest=./publish/PRReviewAgent-$target
+            cp PRReviewAgent/config.template.toml  "$dest/config.template.toml"
+            cp PRReviewAgent/secrets.template.toml "$dest/secrets.template.toml"
+            cp -r PRReviewAgent/Templates          "$dest/Templates"
+            cp -r PRReviewAgent/Models             "$dest/Models"
+          done
+
       - name: Create Artifacts linux-x64
         run: |
           cd ./publish && tar -czf ../PRReviewAgent-linux-x64.tar.gz ./PRReviewAgent-linux-x64 && cd ..
+
       - name: Create Artifacts win-x64
         run: |
           cd ./publish && zip -r ../PRReviewAgent-win-x64.zip ./PRReviewAgent-win-x64 && cd ..
