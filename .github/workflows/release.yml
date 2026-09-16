@@ -54,6 +54,45 @@ jobs:
             cp -r PRReviewAgent/Models             "$dest/Models"
           done
 
+      - name: Install nuget-license tool
+        run: dotnet tool install --global nuget-license
+
+      - name: Generate and Combine Licenses
+        run: |
+          nuget-license -i PRReviewAgent/PRReviewAgent.csproj -o true --outfile ./publish/nuget-licenses.txt
+          
+          MY_LICENSE="LICENSE"
+          if [ ! -f "LICENSE" ] && [ -f "LICENSE.txt" ]; then
+            MY_LICENSE="LICENSE.txt"
+          fi
+
+          for target in linux-x64 win-x64; do
+            dest=./publish/PRReviewAgent-$target
+            out_file="$dest/THIRD-PARTY-NOTICES.txt"
+            
+            if [ -f "$MY_LICENSE" ]; then
+              cat "$MY_LICENSE" > "$out_file"
+              echo -e "\n\n" >> "$out_file"
+            fi
+            
+            if [ -f "PRReviewAgent/Models/LICENSE" ]; then
+              echo -e "========================================================================\n" >> "$out_file"
+              echo -e " Embedding model's LICENSE\n" >> "$out_file"
+              echo -e "========================================================================\n" >> "$out_file"
+              cat PRReviewAgent/Models/LICENSE >> "$out_file"
+              echo -e "\n\n" >> "$out_file"
+            fi
+            
+            if [ -f "./publish/nuget-licenses.txt" ]; then
+              echo -e "========================================================================\n" >> "$out_file"
+              echo -e "  NuGet Packages Licenses\n" >> "$out_file"
+              echo -e "========================================================================\n" >> "$out_file"
+              cat ./publish/nuget-licenses.txt >> "$out_file"
+            fi
+          done
+          
+          rm -f ./publish/nuget-licenses.txt
+
       - name: Create Artifacts linux-x64
         run: |
           cd ./publish && tar -czf ../PRReviewAgent-linux-x64.tar.gz ./PRReviewAgent-linux-x64 && cd ..
