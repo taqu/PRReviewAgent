@@ -95,7 +95,6 @@ jobs:
               echo -e "\n\n" >> "$out_file"
             fi
             
-            # NuGetのライセンスを追記
             if [ -f "./publish/nuget-licenses.txt" ]; then
               echo -e "========================================================================\n" >> "$out_file"
               echo -e "  NuGet Packages Licenses\n" >> "$out_file"
@@ -104,7 +103,6 @@ jobs:
             fi
           done
           
-          # 不要になった一時ファイルを削除
           rm -f ./publish/packages.json ./publish/nuget-licenses.txt
 
       - name: Create Artifacts linux-x64
