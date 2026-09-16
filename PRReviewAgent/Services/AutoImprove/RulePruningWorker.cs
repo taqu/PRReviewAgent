@@ -19,8 +19,8 @@ namespace PRReviewAgent.Services.AutoImprove
                 try
                 {
                     await Task.Delay(Interval, stoppingToken);
-                    await _repository.PruneStaleAsync(stoppingToken);
-                    _logger.LogInformation("Pruned stale learned rules.");
+                    int expired = await _repository.PruneStaleAsync(stoppingToken);
+                    _logger.LogInformation("Expired {ExpiredRuleCount} learned rules", expired);
                 }
                 catch (OperationCanceledException)
                 {

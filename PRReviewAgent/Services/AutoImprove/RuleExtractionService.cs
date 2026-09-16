@@ -83,7 +83,7 @@ namespace PRReviewAgent.Services.AutoImprove
             _logger = logger;
         }
 
-        public async Task ExtractAndSaveRuleAsync(RuleExtractionContext context, CancellationToken cancellationToken = default)
+        public async Task ExtractAndSaveRuleAsync(RuleExtractionContext context, long projectId, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(context.ExpandedDiff)) return;
 
@@ -132,6 +132,7 @@ namespace PRReviewAgent.Services.AutoImprove
                     LearnedRule ruleChunk = new LearnedRule
                     {
                         Id = Medo.Uuid7.NewGuid().ToString(),
+                        ProjectId = projectId,
                         MergeRequestId = currentMergeRequestId,
                         AstPattern = extractedRule.AstPattern,
                         RuleDescription = extractedRule.RuleDescription,

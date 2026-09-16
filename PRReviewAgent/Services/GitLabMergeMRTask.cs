@@ -21,6 +21,7 @@ namespace PRReviewAgent.Services
             ILogger<GitLabMergeMRTask>? logger = serviceProvider.GetService<ILogger<GitLabMergeMRTask>>();
             RuleExtractionService? ruleExtractionService = serviceProvider.GetService<RuleExtractionService>();
             RuleLifecycleService? ruleLifecycleService = serviceProvider.GetService<RuleLifecycleService>();
+            ProjectRepository? projectRepository = serviceProvider.GetService<ProjectRepository>();
 
             if (ruleExtractionService == null && ruleLifecycleService == null) return;
 
@@ -32,6 +33,19 @@ namespace PRReviewAgent.Services
                 long projectId = (long)_payload.Project.Id;
                 long mrIid = (long)_payload.ObjectAttributes.Iid;
                 string prKey = $"gitlab/{projectId}/{mrIid}";
+                string externalProjectId = $"gitlab:{projectId}";
+
+                if (projectRepository == null)
+                {
+                    logger?.LogError("ProjectRepository is not registered; cannot process merge event for {PrKey}", prKey);
+                    return;
+                }
+
+                AutoImprove.Project project = await projectRepository.GetOrCreateAsync(
+                    externalProjectId,
+                    externalProjectId,
+                    null,
+                    cancellationToken);
 
                 IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest((int)projectId);
                 GitLabCollectionResponse<NGitLab.Models.Diff> response = mergeRequestClient.GetDiffsAsync((int)mrIid);
@@ -50,7 +64,7 @@ namespace PRReviewAgent.Services
 
                 if (ruleLifecycleService != null)
                 {
-                    await ruleLifecycleService.OnPrMergedAsync(prKey, allDiffs.ToString(), cancellationToken);
+                    await ruleLifecycleService.OnPrMergedAsync(prKey, allDiffs.ToString(), project.Id, cancellationToken);
                 }
 
                 if (ruleExtractionService == null || reviewContexts.Count == 0) return;
@@ -91,7 +105,7 @@ namespace PRReviewAgent.Services
                             Symbols = symbols,
                             Dependencies = dependencies,
                         };
-                        await ruleExtractionService.ExtractAndSaveRuleAsync(ruleContext, cancellationToken);
+                        await ruleExtractionService.ExtractAndSaveRuleAsync(ruleContext, project.Id, cancellationToken);
                     }
                     catch (Exception ex)
                     {
@@ -99,7 +113,7 @@ namespace PRReviewAgent.Services
                     }
                 }
 
-                logger?.LogInformation("Rule extraction complete for MR {Iid}", mrIid);
+                logger?.LogInformation("Rule extraction complete for MR {Iid} in project {ProjectId}", mrIid, project.Id);
             }
             catch (Exception ex)
             {

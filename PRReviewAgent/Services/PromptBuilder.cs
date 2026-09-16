@@ -84,7 +84,37 @@ namespace PRReviewAgent.Services
             string jsonText = System.Text.Json.JsonSerializer.Serialize<IssuesResponse>(issuesResponse, options);
             jsonText = jsonText.Replace("\r\n", "\n");
             stringBuilder.Append(jsonText);
+            // Attribution tracking: ask the model to append a hidden metadata line listing
+            // the candidate_id values of findings it included. This is stripped before posting.
+            bool hasCandidateIds = issuesResponse.issues.Any(i => i.candidate_id != null);
+            if (hasCandidateIds)
+            {
+                stringBuilder.Append("\n\nAfter your review, append exactly one hidden metadata line on its own line at the very end in this exact format (no spaces around the colon, comma-separated, no extra text):\n");
+                stringBuilder.Append("<!-- SELECTED_CANDIDATES: c0,c1 -->\n");
+                stringBuilder.Append("Replace c0,c1 with the candidate_id values of findings you included. If you included none, omit the line entirely.");
+            }
             return stringBuilder.ToString();
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex SelectedCandidatesPattern =
+            new System.Text.RegularExpressions.Regex(
+                @"<!--\s*SELECTED_CANDIDATES:\s*([^-]+?)\s*-->",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
+        /// Extracts selected candidate IDs from Selection output and strips the metadata line.
+        /// Returns (cleanedText, selectedCandidateIds).
+        /// </summary>
+        public static (string CleanedText, IReadOnlyList<string> SelectedCandidateIds) ExtractSelectionMetadata(string selectionOutput)
+        {
+            System.Text.RegularExpressions.Match match = SelectedCandidatesPattern.Match(selectionOutput);
+            if (!match.Success)
+                return (selectionOutput, Array.Empty<string>());
+
+            string[] ids = match.Groups[1].Value
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string cleaned = SelectedCandidatesPattern.Replace(selectionOutput, string.Empty).TrimEnd();
+            return (cleaned, ids);
         }
 
         public static void AddNotFound(FileGroup fileGroup, List<string> reviews, string language, StringBuilder stringBuilder)

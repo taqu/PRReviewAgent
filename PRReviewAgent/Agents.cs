@@ -404,6 +404,86 @@ namespace PRReviewAgent
         }
 
 
+        /// <summary>The configured model identifier for the reviewer agent.</summary>
+        public string Model => model_;
+
+        /// <summary>
+        /// Runs RunJsonAsync but also returns token usage from the provider response.
+        /// Returns null Value if the response is empty or cannot be deserialized.
+        /// </summary>
+        public async Task<(T? Value, int? InputTokens, int? OutputTokens)> RunJsonWithUsageAsync<T>(string prompt, CancellationToken cancellationToken) where T : class
+        {
+            ChatCompletionOptions chatCompletionOptions = CloneChatCompletionOptions();
+            OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
+            ClientResult<ChatCompletion> response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions, cancellationToken);
+            int? inputTokens = null, outputTokens = null;
+            try
+            {
+                inputTokens = response.Value.Usage?.InputTokenCount;
+                outputTokens = response.Value.Usage?.OutputTokenCount;
+                Context.Instance.Log(LogLevel.Information, $"input tokens:{inputTokens} output tokens:{outputTokens}");
+            }
+            catch { }
+            if (response.Value.Content.Count <= 0) return (null, inputTokens, outputTokens);
+            try
+            {
+                ReadOnlySpan<char> json = CleanJson(response.Value.Content[0].Text);
+                T? value = System.Text.Json.JsonSerializer.Deserialize<T>(json);
+                return (value, inputTokens, outputTokens);
+            }
+            catch
+            {
+                return (null, inputTokens, outputTokens);
+            }
+        }
+
+        /// <summary>
+        /// Runs RunAsync(reasoning=false) but also returns token usage from the provider response.
+        /// </summary>
+        public async Task<(string Value, int? InputTokens, int? OutputTokens)> RunWithUsageAsync(string prompt, CancellationToken cancellationToken)
+        {
+            OpenAI.Chat.ChatMessage[] messages = CreateChatMessages(prompt);
+            ChatCompletionOptions chatCompletionOptions = CloneChatCompletionOptions();
+            ClientResult<ChatCompletion>? response;
+            if (model_.StartsWith("gpt-"))
+            {
+                response = await chatClient_.CompleteChatAsync(messages, chatCompletionOptions, cancellationToken);
+            }
+            else
+            {
+                var requestPayload = new
+                {
+                    model = model_,
+                    messages = new[] {
+                        new { role = "System", content = instructions_ },
+                        new { role = "User", content = prompt }
+                    },
+                    chat_template_kwargs = new
+                    {
+                        enable_thinking = false,
+                        tool_choice = "none",
+                    }
+                };
+                string jsonString = System.Text.Json.JsonSerializer.Serialize(requestPayload);
+                BinaryContent content = BinaryContent.Create(BinaryData.FromString(jsonString));
+                ClientResult clientResult = await chatClient_.CompleteChatAsync(content);
+#pragma warning disable OPENAI001
+                ChatCompletion chatCompletion = (ChatCompletion)clientResult;
+#pragma warning restore OPENAI001
+                response = ClientResult.FromValue(chatCompletion, clientResult.GetRawResponse());
+            }
+            int? inputTokens = null, outputTokens = null;
+            try
+            {
+                inputTokens = response.Value.Usage?.InputTokenCount;
+                outputTokens = response.Value.Usage?.OutputTokenCount;
+                Context.Instance.Log(LogLevel.Information, $"input tokens:{inputTokens} output tokens:{outputTokens}");
+            }
+            catch { }
+            if (response.Value.Content.Count <= 0) return (string.Empty, inputTokens, outputTokens);
+            return (response.Value.Content[0].Text, inputTokens, outputTokens);
+        }
+
         public ChatMessage[] CreateChatMessages(string message)
         {
             if (string.IsNullOrEmpty(instructions_))

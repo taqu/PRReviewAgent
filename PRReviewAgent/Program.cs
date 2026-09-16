@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.AutoImprove;
+using PRReviewAgent.Services.Statistics;
+using Statistics = PRReviewAgent.Services.Statistics;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
@@ -107,6 +109,7 @@ namespace PRReviewAgent
             // Add services to the container.
 
             builder.Services.AddControllers();
+            builder.Services.AddRazorPages();
             builder.Services.AddKeyedSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>(Settings.TaskQueueReview);
             builder.Services.AddKeyedSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>(Settings.TaskQueueImprove);
             builder.Services.AddHostedService<QueuedProcessorBackgroundServiceReview>();
@@ -168,17 +171,36 @@ namespace PRReviewAgent
                     LocalEmbeddingProvider embeddingProvider = new LocalEmbeddingProvider(modelPath, (uint)context_size, (int)chunk_overlap);
                     RuleRepository ruleRepository = new RuleRepository(dbPath);
                     ruleRepository.InitializeAsync().GetAwaiter().GetResult();
+                    ProjectRepository projectRepository = new ProjectRepository(dbPath);
 
+                    ReviewExecutionRepository reviewExecutionRepository = new ReviewExecutionRepository(dbPath);
+                    Statistics.ReviewTurnRepository reviewTurnRepository = new Statistics.ReviewTurnRepository(dbPath);
+                    RuleLearningEventRepository ruleLearningEventRepository = new RuleLearningEventRepository(dbPath);
+                    Statistics.RuleSearchExecutionRepository ruleSearchExecutionRepository = new Statistics.RuleSearchExecutionRepository(dbPath);
+                    ReviewRuleUsageRepository reviewRuleUsageRepository = new ReviewRuleUsageRepository(dbPath);
                     RuleExtractionSubAgentSettings subAgentSettings = BuildRuleExtractionSubAgentSettings();
                     builder.Services.AddSingleton(subAgentSettings);
                     builder.Services.AddSingleton(embeddingProvider);
                     builder.Services.AddSingleton(ruleRepository);
+                    builder.Services.AddSingleton(projectRepository);
+                    builder.Services.AddSingleton(reviewExecutionRepository);
+                    builder.Services.AddSingleton<IReviewExecutionRecorder>(reviewExecutionRepository);
+                    builder.Services.AddSingleton(reviewTurnRepository);
+                    builder.Services.AddSingleton<IReviewTurnRecorder>(reviewTurnRepository);
+                    builder.Services.AddSingleton(ruleSearchExecutionRepository);
+                    builder.Services.AddSingleton<IRuleSearchExecutionRecorder>(ruleSearchExecutionRepository);
+                    builder.Services.AddSingleton(reviewRuleUsageRepository);
+                    builder.Services.AddSingleton<IReviewRuleUsageRepository>(reviewRuleUsageRepository);
                     builder.Services.AddSingleton<RuleExtractionSubAgent>();
                     builder.Services.AddSingleton<ISubAgent>(sp => sp.GetRequiredService<RuleExtractionSubAgent>());
                     builder.Services.AddSingleton<RuleExtractionService>();
                     builder.Services.AddSingleton<RuleRetrievalService>();
+                    builder.Services.AddSingleton(ruleLearningEventRepository);
+                    builder.Services.AddSingleton<IRuleLearningEventRepository>(ruleLearningEventRepository);
                     builder.Services.AddSingleton<RuleLifecycleService>();
                     builder.Services.AddHostedService<RulePruningWorker>();
+                    StatisticsService statisticsService = new StatisticsService(dbPath);
+                    builder.Services.AddSingleton<IStatisticsService>(statisticsService);
                     System.Console.WriteLine("Auto-improve module initialized.");
                 }
                 catch (Exception ex)
@@ -193,7 +215,9 @@ namespace PRReviewAgent
                 app.UseAuthentication();
             }
 
+            app.UseStaticFiles();
             app.MapControllers();
+            app.MapRazorPages();
             Context.Instance.AddLogger(app.Services.GetRequiredService<ILoggerFactory>());
             app.Run();
         }

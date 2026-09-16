@@ -1,0 +1,164 @@
+@page
+@model PRReviewAgent.Pages.Statistics.ReviewsModel
+@{
+    ViewData["Title"] = "Review Statistics";
+}
+
+<h1 class="page-title">Review Statistics</h1>
+<p class="page-subtitle">Last 30 days</p>
+
+<section class="stat-section">
+    <h2>Detection Phase</h2>
+    @if (Model.Reviews.Detection != null)
+    {
+        var d = Model.Reviews.Detection;
+        <div class="stat-cards">
+            <div class="stat-card">
+                <div class="stat-card-value">@d.Calls.ToString("N0")</div>
+                <div class="stat-card-label">Calls</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@d.SuccessfulCalls.ToString("N0")</div>
+                <div class="stat-card-label">Successful</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@d.FailedCalls.ToString("N0")</div>
+                <div class="stat-card-label">Failed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@d.InputTokens.ToString("N0")</div>
+                <div class="stat-card-label">Input Tokens</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@d.OutputTokens.ToString("N0")</div>
+                <div class="stat-card-label">Output Tokens</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@ReviewsModel.FormatDuration(d.AvgDurationMs)</div>
+                <div class="stat-card-label">Avg Duration</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@(d.AvgFindingCount.HasValue ? d.AvgFindingCount.Value.ToString("F1") : "\u2014")</div>
+                <div class="stat-card-label">Avg Findings</div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <p class="stat-empty">No detection phase data available.</p>
+    }
+</section>
+
+<section class="stat-section">
+    <h2>Selection Phase</h2>
+    @if (Model.Reviews.Selection != null)
+    {
+        var s = Model.Reviews.Selection;
+        <div class="stat-cards">
+            <div class="stat-card">
+                <div class="stat-card-value">@s.Calls.ToString("N0")</div>
+                <div class="stat-card-label">Calls</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@s.SuccessfulCalls.ToString("N0")</div>
+                <div class="stat-card-label">Successful</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@s.FailedCalls.ToString("N0")</div>
+                <div class="stat-card-label">Failed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@s.InputTokens.ToString("N0")</div>
+                <div class="stat-card-label">Input Tokens</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@s.OutputTokens.ToString("N0")</div>
+                <div class="stat-card-label">Output Tokens</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@ReviewsModel.FormatDuration(s.AvgDurationMs)</div>
+                <div class="stat-card-label">Avg Duration</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-value">@(s.AvgFindingCount.HasValue ? s.AvgFindingCount.Value.ToString("F1") : "\u2014")</div>
+                <div class="stat-card-label">Avg Findings</div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <p class="stat-empty">No selection phase data available.</p>
+    }
+</section>
+
+<section class="stat-section">
+    <h2>Finding Funnel</h2>
+    <div class="stat-cards">
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Reviews.TotalCandidates.ToString("N0")</div>
+            <div class="stat-card-label">Candidate Findings</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Reviews.TotalFinalFindings.ToString("N0")</div>
+            <div class="stat-card-label">Final Findings</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@(Model.Reviews.SelectionRate.HasValue ? Model.Reviews.SelectionRate.Value.ToString("P1") : "\u2014")</div>
+            <div class="stat-card-label">Selection Rate</div>
+        </div>
+    </div>
+</section>
+
+<section class="stat-section">
+    <h2>Severity Distribution</h2>
+    <div class="stat-cards">
+        <div class="stat-card stat-card-critical">
+            <div class="stat-card-value">@Model.Reviews.CriticalCount.ToString("N0")</div>
+            <div class="stat-card-label">Critical</div>
+        </div>
+        <div class="stat-card stat-card-major">
+            <div class="stat-card-value">@Model.Reviews.MajorCount.ToString("N0")</div>
+            <div class="stat-card-label">Major</div>
+        </div>
+        <div class="stat-card stat-card-minor">
+            <div class="stat-card-value">@Model.Reviews.MinorCount.ToString("N0")</div>
+            <div class="stat-card-label">Minor</div>
+        </div>
+    </div>
+</section>
+
+<section class="stat-section">
+    <h2>Model Usage</h2>
+    @if (Model.ModelUsage.Count > 0)
+    {
+        <table class="stat-table">
+            <thead>
+                <tr>
+                    <th>Model</th>
+                    <th>Calls</th>
+                    <th>Input Tokens</th>
+                    <th>Output Tokens</th>
+                    <th>Avg Duration</th>
+                    <th>Failures</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var m in Model.ModelUsage)
+                {
+                    <tr>
+                        <td>@m.Model</td>
+                        <td>@m.Calls.ToString("N0")</td>
+                        <td>@m.InputTokens.ToString("N0")</td>
+                        <td>@m.OutputTokens.ToString("N0")</td>
+                        <td>@ReviewsModel.FormatDuration(m.AvgDurationMs)</td>
+                        <td>@m.FailureCount.ToString("N0")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+    else
+    {
+        <p class="stat-empty">No model usage data available.</p>
+    }
+</section>
