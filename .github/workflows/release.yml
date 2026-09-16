@@ -54,12 +54,12 @@ jobs:
             cp -r PRReviewAgent/Models             "$dest/Models"
           done
 
-      - name: Install nuget-license tool
-        run: dotnet tool install --global nuget-license
+      - name: Install project licenses tool
+        run: dotnet tool install --global dotnet-project-licenses
 
       - name: Generate and Combine Licenses
         run: |
-          nuget-license -i PRReviewAgent/PRReviewAgent.csproj -o true --outfile ./publish/nuget-licenses.txt
+          dotnet-project-licenses -i PRReviewAgent/ -o --output_filename ./publish/nuget-licenses.txt
           
           MY_LICENSE="LICENSE"
           if [ ! -f "LICENSE" ] && [ -f "LICENSE.txt" ]; then
