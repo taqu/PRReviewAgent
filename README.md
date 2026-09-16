@@ -104,7 +104,7 @@ trust_certificate = false
 reviewer = "http://localhost:9090/v1"
 reviewer_name = "Reviewer"
 reviewer_model = ""
-reviewer_temperature = 0.1
+reviewer_temperature = 1.0
 reviewer_timeout = 1200
 ```
 
@@ -180,7 +180,7 @@ enabled = true
 model_path = "Models/granite-embedding-97M-multilingual-r2-Q8_0.gguf"
 db_path = "AppData/review_rules.db"
 stale_rule_months = 3
-min_confidence_score = 7
+min_confidence_score = 5
 context_size = 16384
 chunk_overlap = 128
 
@@ -191,8 +191,8 @@ endpoint = "http://localhost:9080/v1"
 name = "RuleExtractor"
 model = ""
 max_output = 1024
-temperature = 0.0
-topp = 0.9
+temperature = 1.0
+topp = 0.95
 timeout = 120
 ```
 
@@ -206,6 +206,21 @@ A small local model such as Gemma 4 E4B can be used for rule extraction. Any Ope
 | Rule Extraction SubAgent | Extracts project rules from merged changes. Can use a smaller, faster local model. |
 
 The two roles use independent endpoints and are independently configurable. A Sub LLM failure only disables rule extraction — normal code review continues unaffected.
+
+## Statistics Dashboard
+
+When project adaptation is enabled, a read-only web dashboard is available for inspecting review telemetry and learned-rule behavior.
+
+The dashboard is accessible at the base URL configured in `config.toml` under `[server] url`.
+
+| Route | Description |
+| :---- | :---------- |
+| `/statistics` | **Overview** — top-level summary cards (reviews, tokens, avg review time, selection rate, error rate, candidate and final findings) and trend charts for reviews and token usage over the last 30 days. |
+| `/statistics/reviews` | **Reviews** — Detection and Selection turn statistics (calls, tokens, duration) shown side by side; candidate-to-final finding funnel; Critical/Major/Minor severity distribution; model usage table. |
+| `/statistics/rules` | **Rules** — Active rule count, rule lifecycle event counts (created, expired, confidence changes); rule-search performance averages (rules scanned, candidates, selected, embedding and search duration); per-rule usage effectiveness table (prompt uses, candidate hit rate, final hit rate, top 100 rules). |
+| `/statistics/projects` | **Projects** — Cross-project comparison table (reviews, input/output tokens, avg review time, selection rate, error rate, active rules, avg rule-search time). |
+
+The dashboard is server-rendered and read-only. All metrics are sourced from the same SQLite database used by the review pipeline. No separate data store is required.
 
 ## Limitations
 

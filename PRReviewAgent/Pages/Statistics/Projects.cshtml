@@ -1,0 +1,49 @@
+@page
+@model PRReviewAgent.Pages.Statistics.ProjectsModel
+@{
+    ViewData["Title"] = "Project Statistics";
+}
+
+<h1 class="page-title">Project Statistics</h1>
+<p class="page-subtitle">Last 30 days</p>
+
+<section class="stat-section">
+    @if (Model.Projects.Count > 0)
+    {
+        <table class="stat-table">
+            <thead>
+                <tr>
+                    <th>Project</th>
+                    <th>Reviews</th>
+                    <th>Input Tokens</th>
+                    <th>Output Tokens</th>
+                    <th>Avg Duration</th>
+                    <th>Selection Rate</th>
+                    <th>Error Rate</th>
+                    <th>Active Rules</th>
+                    <th>Avg Rule Search</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var p in Model.Projects)
+                {
+                    <tr>
+                        <td>@p.ProjectName</td>
+                        <td>@p.ReviewCount.ToString("N0")</td>
+                        <td>@p.InputTokens.ToString("N0")</td>
+                        <td>@p.OutputTokens.ToString("N0")</td>
+                        <td>@ProjectsModel.FormatDuration(p.AvgReviewDurationMs)</td>
+                        <td>@(p.SelectionRate.HasValue ? p.SelectionRate.Value.ToString("P1") : "\u2014")</td>
+                        <td>@(p.ErrorRate.HasValue ? p.ErrorRate.Value.ToString("P1") : "\u2014")</td>
+                        <td>@p.ActiveRuleCount.ToString("N0")</td>
+                        <td>@ProjectsModel.FormatDuration(p.AvgRuleSearchDurationMs)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+    else
+    {
+        <p class="stat-empty">No project data available for this period.</p>
+    }
+</section>

@@ -1,0 +1,107 @@
+@page
+@model PRReviewAgent.Pages.Statistics.RulesModel
+@{
+    ViewData["Title"] = "Rule Statistics";
+}
+
+<h1 class="page-title">Rule Statistics</h1>
+<p class="page-subtitle">Last 30 days</p>
+
+<section class="stat-section">
+    <h2>Rule Overview</h2>
+    <div class="stat-cards">
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Rules.ActiveRuleCount.ToString("N0")</div>
+            <div class="stat-card-label">Active Rules</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Rules.CreatedCount.ToString("N0")</div>
+            <div class="stat-card-label">Created</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Rules.ExpiredCount.ToString("N0")</div>
+            <div class="stat-card-label">Expired</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Rules.ConfidenceIncreaseCount.ToString("N0")</div>
+            <div class="stat-card-label">Confidence +</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Rules.ConfidenceDecreaseCount.ToString("N0")</div>
+            <div class="stat-card-label">Confidence -</div>
+        </div>
+    </div>
+</section>
+
+<section class="stat-section">
+    <h2>Rule Search Performance</h2>
+    @{
+        var ss = Model.Rules.SearchStats;
+    }
+    <div class="stat-cards">
+        <div class="stat-card">
+            <div class="stat-card-value">@(ss.AvgScannedCount.HasValue ? ss.AvgScannedCount.Value.ToString("F1") : "\u2014")</div>
+            <div class="stat-card-label">Avg Scanned</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@(ss.AvgCandidateCount.HasValue ? ss.AvgCandidateCount.Value.ToString("F1") : "\u2014")</div>
+            <div class="stat-card-label">Avg Candidates</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@(ss.AvgSelectedCount.HasValue ? ss.AvgSelectedCount.Value.ToString("F1") : "\u2014")</div>
+            <div class="stat-card-label">Avg Selected</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@RulesModel.FormatDuration(ss.AvgSearchDurationMs)</div>
+            <div class="stat-card-label">Avg Search Time</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@RulesModel.FormatDuration(ss.AvgEmbeddingDurationMs)</div>
+            <div class="stat-card-label">Avg Embedding Time</div>
+        </div>
+    </div>
+</section>
+
+<section class="stat-section">
+    <h2>Rule Usage</h2>
+    @if (Model.RuleUsage.Count > 0)
+    {
+        if (Model.RuleUsage.Count >= 100)
+        {
+            <p class="stat-note">Showing top 100 rules by prompt usage.</p>
+        }
+        <table class="stat-table">
+            <thead>
+                <tr>
+                    <th>Project</th>
+                    <th>Rule</th>
+                    <th>Candidate Matches</th>
+                    <th>Prompt Uses</th>
+                    <th>Produced Candidates</th>
+                    <th>Final Findings</th>
+                    <th>Candidate Hit Rate</th>
+                    <th>Final Hit Rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in Model.RuleUsage)
+                {
+                    <tr>
+                        <td>@r.ProjectName</td>
+                        <td title="@r.RuleId">@(r.RuleDisplayText ?? r.RuleId)</td>
+                        <td>@r.CandidateMatches.ToString("N0")</td>
+                        <td>@r.PromptUses.ToString("N0")</td>
+                        <td>@r.ProducedCandidateCount.ToString("N0")</td>
+                        <td>@r.ProducedFinalFindingCount.ToString("N0")</td>
+                        <td>@(r.CandidateHitRate.HasValue ? r.CandidateHitRate.Value.ToString("P1") : "\u2014")</td>
+                        <td>@(r.FinalHitRate.HasValue ? r.FinalHitRate.Value.ToString("P1") : "\u2014")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+    else
+    {
+        <p class="stat-empty">No rule usage data available for this period.</p>
+    }
+</section>

@@ -45,7 +45,7 @@ model_path = "Models/granite-embedding-97M-multilingual-r2-Q8_0.gguf"
 # SQLite database storing learned rules.
 db_path = "AppData/review_rules.db"
 stale_rule_months = 3
-min_confidence_score = 7
+min_confidence_score = 5
 context_size = 16384
 chunk_overlap = 128
 

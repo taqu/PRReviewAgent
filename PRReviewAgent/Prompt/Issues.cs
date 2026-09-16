@@ -16,6 +16,10 @@ namespace PRReviewAgent.Prompt
         public string suggested_fix { get; set; }
         [Required]
         public string confidence { get; set; }
+        /// <summary>ID of the learned rule that triggered this finding. Null for general findings.</summary>
+        public string? rule_id { get; set; }
+        /// <summary>Internal candidate identifier assigned after Detection for Selection attribution tracking.</summary>
+        public string? candidate_id { get; set; }
     }
 
     [LlmSchema("issues_schema", "structure of issue list")]

@@ -7,9 +7,11 @@ using PRReviewAgent.Prompt;
 using PRReviewAgent.Services.AutoImprove;
 using PRReviewAgent.Services.GitHubWebhook;
 using PRReviewAgent.Services.GitLabWebhook;
+using PRReviewAgent.Services.Statistics;
 using PRReviewAget.Prompt;
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Text;
 
 namespace PRReviewAgent.Services
@@ -198,29 +200,24 @@ namespace PRReviewAgent.Services
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template(language_);
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
-            // Retrieve learned rules via RAG and attach to request.
-            RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
-            RuleLifecycleService? ruleLifecycleService = serviceProvider.GetService<RuleLifecycleService>();
-            if (ruleRetrievalService != null)
+            // Resolve project identity (used for both learned rules and execution statistics).
+            string externalProjectId = $"github:{payloadIssueComment_.repository.id}";
+            string mergeRequestId = $"github/{payloadIssueComment_.repository.id}/{pullRequestNumber_}";
+            ProjectRepository? projectRepository = serviceProvider.GetService<ProjectRepository>();
+            AutoImprove.Project? project = null;
+            if (projectRepository != null)
             {
                 try
                 {
-                    string queryContext = string.Join("\n", reviewContexts
-                        .Where(ctx => !string.IsNullOrEmpty(ctx.AstJson))
-                        .Select(ctx => ctx.AstJson));
-                    if (string.IsNullOrEmpty(queryContext))
-                        queryContext = string.Join("\n", reviewContexts.Select(ctx => ctx.Path));
-
-                    List<LearnedRule> relevantRules = await ruleRetrievalService.GetRelevantRulesAsync(queryContext, cancellationToken: cancellationToken);
-                    if (relevantRules.Count > 0)
-                    {
-                        reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(relevantRules, language_);
-                        await ruleLifecycleService?.TrackReviewedRulesAsync($"github/{payloadIssueComment_.repository.id}/{pullRequestNumber_}", relevantRules, cancellationToken);
-                    }
+                    project = await projectRepository.GetOrCreateAsync(
+                        externalProjectId,
+                        payloadIssueComment_.repository.name ?? externalProjectId,
+                        payloadIssueComment_.repository.html_url,
+                        cancellationToken);
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Failed to retrieve learned rules");
+                    logger.LogError(ex, "Failed to resolve project");
                 }
             }
 
@@ -237,40 +234,276 @@ namespace PRReviewAgent.Services
                 group.ReviewContexts.Add(reviewContext);
             }
 
-
             // Step 7: Execute review for each file group.
-            List<string> reviews = new List<string>();
-            logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
-            foreach (FileGroup fileGroup in reviewRequest.FileGroups)
+            IReviewExecutionRecorder? recorder = serviceProvider.GetService<IReviewExecutionRecorder>();
+            IReviewTurnRecorder? turnRecorder = serviceProvider.GetService<IReviewTurnRecorder>();
+            IRuleSearchExecutionRecorder? searchRecorder = serviceProvider.GetService<IRuleSearchExecutionRecorder>();
+            IReviewRuleUsageRepository? usageRepo = serviceProvider.GetService<IReviewRuleUsageRepository>();
+            long? executionId = null;
+            DateTimeOffset reviewStartedAt = DateTimeOffset.UtcNow;
+            Stopwatch reviewStopwatch = Stopwatch.StartNew();
+            if (recorder != null && project != null)
             {
-                string promptTurn1 = PromptBuilder.BuildTurn1(reviewRequest, fileGroup, stringBuilder_);
-                if (string.IsNullOrEmpty(promptTurn1)) continue;
+                try { executionId = await recorder.StartAsync(project.Id, mergeRequestId, reviewStartedAt, cancellationToken); }
+                catch (Exception ex) { logger.LogError(ex, "Failed to start review execution record"); }
+            }
+
+            // Retrieve learned rules via RAG and attach to request (after execution start so executionId is available).
+            RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
+            RuleLifecycleService? ruleLifecycleService = serviceProvider.GetService<RuleLifecycleService>();
+            // selectedRuleIds: IDs of rules included in the prompt (for Detection validation).
+            HashSet<string> selectedRuleIds = new HashSet<string>();
+            // candidateToRuleId: maps candidate_id ("c0", "c1"...) to rule_id for Selection attribution.
+            Dictionary<string, string> candidateToRuleId = new Dictionary<string, string>();
+            if (ruleRetrievalService != null && project != null)
+            {
                 try
                 {
-                    IssuesResponse? issuesResponse = await context.Agents.RunJsonAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
-                    if (null == issuesResponse || issuesResponse.issues.Length <= 0)
+                    string queryContext = string.Join("\n", reviewContexts
+                        .Where(ctx => !string.IsNullOrEmpty(ctx.AstJson))
+                        .Select(ctx => ctx.AstJson));
+                    if (string.IsNullOrEmpty(queryContext))
+                        queryContext = string.Join("\n", reviewContexts.Select(ctx => ctx.Path));
+
+                    RuleSearchResult searchResult = await ruleRetrievalService.GetRelevantRulesAsync(
+                        queryContext, project.Id,
+                        reviewExecutionId: executionId,
+                        searchRecorder: searchRecorder,
+                        cancellationToken: cancellationToken);
+                    if (searchResult.Selected.Count > 0)
                     {
-                        logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
-                        PromptBuilder.AddNotFound(fileGroup, reviews, language_, stringBuilder_);
-                        continue;
+                        reviewRequest.LearnedRules = RuleRetrievalService.FormatRulesForPrompt(searchResult.Selected, language_);
+                        await ruleLifecycleService?.TrackReviewedRulesAsync(mergeRequestId, searchResult.Selected, cancellationToken);
+                        selectedRuleIds = searchResult.Selected.Select(r => r.Id).ToHashSet();
                     }
-                    string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
-                    string reviewResponse = await context.Agents.RunAsync(promptTurn2, false, context.CancellationToken);
-                    if (string.IsNullOrEmpty(reviewResponse))
+
+                    // Persist per-rule usage rows for all candidates (threshold survivors).
+                    if (usageRepo != null && executionId.HasValue && project != null && searchResult.Candidates.Count > 0)
                     {
-                        logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
-                        continue;
+                        try
+                        {
+                            DateTimeOffset now = DateTimeOffset.UtcNow;
+                            List<ReviewRuleUsage> usageRows = searchResult.Candidates.Select(c => new ReviewRuleUsage
+                            {
+                                ReviewExecutionId = executionId.Value,
+                                ProjectId = project.Id,
+                                RuleId = c.Rule.Id,
+                                SimilarityScore = c.Score,
+                                UsedInPrompt = selectedRuleIds.Contains(c.Rule.Id),
+                                ProducedCandidate = false,
+                                ProducedFinalFinding = false,
+                                CreatedAt = now,
+                            }).ToList();
+                            await usageRepo.AddRangeAsync(usageRows, cancellationToken);
+                            logger.LogDebug("Recorded usage for {RuleCount} learned rules in review {ReviewExecutionId}",
+                                usageRows.Count, executionId.Value);
+                        }
+                        catch (Exception ex) { logger.LogError(ex, "Failed to persist rule usage rows"); }
                     }
-                    stringBuilder_.Clear();
-                    stringBuilder_.Append($"# {fileGroup.Topic}\n\n");
-                    stringBuilder_.Append(reviewResponse);
-                    reviews.Add(stringBuilder_.ToString());
-                    logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.");
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex.ToString());
+                    logger.LogError(ex, "Failed to retrieve learned rules");
                 }
+            }
+
+            List<string> reviews = new List<string>();
+            int totalCandidates = 0, totalSelected = 0, totalCritical = 0, totalMajor = 0, totalMinor = 0;
+            logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
+            try
+            {
+                foreach (FileGroup fileGroup in reviewRequest.FileGroups)
+                {
+                    string promptTurn1 = PromptBuilder.BuildTurn1(reviewRequest, fileGroup, stringBuilder_);
+                    if (string.IsNullOrEmpty(promptTurn1)) continue;
+                    try
+                    {
+                        // Detection turn
+                        DateTimeOffset detectionStart = DateTimeOffset.UtcNow;
+                        Stopwatch detectionSw = Stopwatch.StartNew();
+                        long? detectionTurnId = null;
+                        if (turnRecorder != null && executionId.HasValue)
+                        {
+                            try { detectionTurnId = await turnRecorder.StartAsync(executionId.Value, ReviewTurnType.Detection, context.Agents.Model, detectionStart, cancellationToken); }
+                            catch (Exception ex) { logger.LogError(ex, "Failed to start Detection turn record"); }
+                        }
+
+                        IssuesResponse? issuesResponse = null;
+                        int? detInputTokens = null, detOutputTokens = null;
+                        Exception? detException = null;
+                        try
+                        {
+                            (issuesResponse, detInputTokens, detOutputTokens) = await context.Agents.RunJsonWithUsageAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
+                        }
+                        catch (Exception ex) { detException = ex; throw; }
+                        finally
+                        {
+                            detectionSw.Stop();
+                            if (turnRecorder != null && detectionTurnId.HasValue)
+                            {
+                                try
+                                {
+                                    if (detException != null)
+                                        await turnRecorder.CompleteFailureAsync(detectionTurnId.Value, detInputTokens, detOutputTokens, ClassifyError(detException), DateTimeOffset.UtcNow, detectionSw.ElapsedMilliseconds, cancellationToken);
+                                    else
+                                        await turnRecorder.CompleteSuccessAsync(detectionTurnId.Value, detInputTokens, detOutputTokens, issuesResponse?.issues.Length ?? 0, DateTimeOffset.UtcNow, detectionSw.ElapsedMilliseconds, cancellationToken);
+                                }
+                                catch (Exception rex) { logger.LogError(rex, "Failed to complete Detection turn record"); }
+                            }
+                        }
+
+                        if (null == issuesResponse || issuesResponse.issues.Length <= 0)
+                        {
+                            logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
+                            PromptBuilder.AddNotFound(fileGroup, reviews, language_, stringBuilder_);
+                            continue;
+                        }
+
+                        // Assign candidate IDs and validate rule attribution from Detection.
+                        for (int ci = 0; ci < issuesResponse.issues.Length; ci++)
+                        {
+                            issuesResponse.issues[ci].candidate_id = $"c{ci}";
+                            // Validate rule_id: ignore attributions not in the allowed set.
+                            string? rid = issuesResponse.issues[ci].rule_id;
+                            if (rid != null && !selectedRuleIds.Contains(rid))
+                                issuesResponse.issues[ci].rule_id = null;
+                            if (issuesResponse.issues[ci].rule_id != null)
+                                candidateToRuleId[$"c{ci}"] = issuesResponse.issues[ci].rule_id!;
+                        }
+
+                        // Mark produced_candidate for rules that appeared in Detection output.
+                        if (usageRepo != null && executionId.HasValue && project != null)
+                        {
+                            string[] detectedRuleIds = issuesResponse.issues
+                                .Where(i => i.rule_id != null)
+                                .Select(i => i.rule_id!)
+                                .Distinct()
+                                .ToArray();
+                            if (detectedRuleIds.Length > 0)
+                            {
+                                try { await usageRepo.MarkProducedCandidateAsync(executionId.Value, project.Id, detectedRuleIds, cancellationToken); }
+                                catch (Exception ex) { logger.LogError(ex, "Failed to mark produced_candidate"); }
+                            }
+                        }
+
+                        int fileGroupCandidates = issuesResponse.issues.Length;
+                        int fileGroupSelected = 0, fileGroupCritical = 0, fileGroupMajor = 0, fileGroupMinor = 0;
+                        foreach (Prompt.Issue issue in issuesResponse.issues)
+                        {
+                            string conf = issue.confidence?.Trim() ?? string.Empty;
+                            if (string.Equals(conf, "Critical", StringComparison.OrdinalIgnoreCase)) { fileGroupCritical++; fileGroupSelected++; }
+                            else if (string.Equals(conf, "Major", StringComparison.OrdinalIgnoreCase)) { fileGroupMajor++; fileGroupSelected++; }
+                            else if (string.Equals(conf, "Minor", StringComparison.OrdinalIgnoreCase)) { fileGroupMinor++; fileGroupSelected++; }
+                        }
+                        totalCandidates += fileGroupCandidates;
+                        totalCritical += fileGroupCritical;
+                        totalMajor += fileGroupMajor;
+                        totalMinor += fileGroupMinor;
+                        totalSelected += fileGroupSelected;
+
+                        // Selection turn
+                        string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
+                        DateTimeOffset selectionStart = DateTimeOffset.UtcNow;
+                        Stopwatch selectionSw = Stopwatch.StartNew();
+                        long? selectionTurnId = null;
+                        if (turnRecorder != null && executionId.HasValue)
+                        {
+                            try { selectionTurnId = await turnRecorder.StartAsync(executionId.Value, ReviewTurnType.Selection, context.Agents.Model, selectionStart, cancellationToken); }
+                            catch (Exception ex) { logger.LogError(ex, "Failed to start Selection turn record"); }
+                        }
+
+                        string reviewResponse = string.Empty;
+                        int? selInputTokens = null, selOutputTokens = null;
+                        Exception? selException = null;
+                        try
+                        {
+                            (reviewResponse, selInputTokens, selOutputTokens) = await context.Agents.RunWithUsageAsync(promptTurn2, context.CancellationToken);
+                        }
+                        catch (Exception ex) { selException = ex; throw; }
+                        finally
+                        {
+                            selectionSw.Stop();
+                            if (turnRecorder != null && selectionTurnId.HasValue)
+                            {
+                                try
+                                {
+                                    if (selException != null)
+                                        await turnRecorder.CompleteFailureAsync(selectionTurnId.Value, selInputTokens, selOutputTokens, ClassifyError(selException), DateTimeOffset.UtcNow, selectionSw.ElapsedMilliseconds, cancellationToken);
+                                    else
+                                        await turnRecorder.CompleteSuccessAsync(selectionTurnId.Value, selInputTokens, selOutputTokens, fileGroupSelected, DateTimeOffset.UtcNow, selectionSw.ElapsedMilliseconds, cancellationToken);
+                                }
+                                catch (Exception rex) { logger.LogError(rex, "Failed to complete Selection turn record"); }
+                            }
+                        }
+
+                        if (string.IsNullOrEmpty(reviewResponse))
+                        {
+                            logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
+                            continue;
+                        }
+
+                        // Extract selection metadata and strip hidden tracking comment before posting.
+                        (string cleanedResponse, IReadOnlyList<string> selectedCandidateIds) =
+                            PromptBuilder.ExtractSelectionMetadata(reviewResponse);
+
+                        // Mark produced_final_finding for rules whose candidates survived Selection.
+                        if (usageRepo != null && executionId.HasValue && project != null && selectedCandidateIds.Count > 0)
+                        {
+                            string[] finalRuleIds = selectedCandidateIds
+                                .Where(cid => candidateToRuleId.ContainsKey(cid))
+                                .Select(cid => candidateToRuleId[cid])
+                                .Distinct()
+                                .ToArray();
+                            if (finalRuleIds.Length > 0)
+                            {
+                                try { await usageRepo.MarkProducedFinalFindingAsync(executionId.Value, project.Id, finalRuleIds, cancellationToken); }
+                                catch (Exception ex) { logger.LogError(ex, "Failed to mark produced_final_finding"); }
+                            }
+                        }
+
+                        stringBuilder_.Clear();
+                        stringBuilder_.Append($"# {fileGroup.Topic}\n\n");
+                        stringBuilder_.Append(cleanedResponse);
+                        reviews.Add(stringBuilder_.ToString());
+                        logger.LogInformation($"Generated review for {fileGroup.ReviewContexts.Count} files.");
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex.ToString());
+                    }
+                }
+
+                if (recorder != null && executionId.HasValue)
+                {
+                    try
+                    {
+                        reviewStopwatch.Stop();
+                        await recorder.CompleteSuccessAsync(executionId.Value, new ReviewExecutionResult(
+                            CompletedAt: DateTimeOffset.UtcNow,
+                            DurationMs: reviewStopwatch.ElapsedMilliseconds,
+                            CandidateFindingCount: totalCandidates,
+                            SelectedFindingCount: totalSelected,
+                            CriticalCount: totalCritical,
+                            MajorCount: totalMajor,
+                            MinorCount: totalMinor), cancellationToken);
+                    }
+                    catch (Exception ex) { logger.LogError(ex, "Failed to complete review execution record"); }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex.ToString());
+                if (recorder != null && executionId.HasValue)
+                {
+                    try
+                    {
+                        reviewStopwatch.Stop();
+                        await recorder.CompleteFailureAsync(executionId.Value, ex.GetType().Name, DateTimeOffset.UtcNow, reviewStopwatch.ElapsedMilliseconds, cancellationToken);
+                    }
+                    catch (Exception rex) { logger.LogError(rex, "Failed to record review execution failure"); }
+                }
+                await PostCommentAsync("No reviews are generated.", gitHubClient, logger);
+                return;
             }
 
             // Step 8: Merge reviews and post comment.
@@ -289,6 +522,13 @@ namespace PRReviewAgent.Services
             await PostCommentAsync(organizedReview, gitHubClient, logger);
             logger.LogInformation($"Final review:\n{organizedReview}");
         }
+
+        private static string ClassifyError(Exception ex) => ex switch
+        {
+            OperationCanceledException => "Cancellation",
+            TimeoutException => "Timeout",
+            _ => ex.GetType().Name,
+        };
 
         private static async Task FindPairAsync(List<ReviewContext> reviewContexts, GitHubClient client, long repositoryId, string reference, CancellationToken cancellationToken)
         {

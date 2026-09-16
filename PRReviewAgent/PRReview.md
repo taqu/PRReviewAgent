@@ -21,7 +21,7 @@ public async Task PruneStaleAsync(CancellationToken cancellationToken = default)
         await using SqliteConnection conn = new SqliteConnection(_connectionString);
         await conn.OpenAsync(cancellationToken);
         await using SqliteCommand cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM learned_rules WHERE last_hit_at < DATE('now', '-3 months') AND confidence_score < 7";
+        cmd.CommandText = "DELETE FROM learned_rules WHERE last_hit_at < DATE('now', '-3 months') AND confidence_score < 5";
         await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
     finally

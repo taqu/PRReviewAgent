@@ -1,0 +1,150 @@
+@page
+@model PRReviewAgent.Pages.Statistics.IndexModel
+@{
+    ViewData["Title"] = "Statistics Overview";
+}
+
+<h1 class="page-title">Statistics Overview</h1>
+<p class="page-subtitle">Last 30 days</p>
+
+<section class="stat-section">
+    <div class="stat-cards">
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Overview.ReviewCount.ToString("N0")</div>
+            <div class="stat-card-label">Reviews</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Overview.InputTokens.ToString("N0")</div>
+            <div class="stat-card-label">Input Tokens</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Overview.OutputTokens.ToString("N0")</div>
+            <div class="stat-card-label">Output Tokens</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@IndexModel.FormatDuration(Model.Overview.AvgReviewDurationMs)</div>
+            <div class="stat-card-label">Avg Review Duration</div>
+        </div>
+    </div>
+    <div class="stat-cards">
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Overview.TotalCandidates.ToString("N0")</div>
+            <div class="stat-card-label">Candidate Findings</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@Model.Overview.TotalFinalFindings.ToString("N0")</div>
+            <div class="stat-card-label">Final Findings</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@(Model.Overview.SelectionRate.HasValue ? Model.Overview.SelectionRate.Value.ToString("P1") : "\u2014")</div>
+            <div class="stat-card-label">Selection Rate</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-value">@(Model.Overview.ErrorRate.HasValue ? Model.Overview.ErrorRate.Value.ToString("P1") : "\u2014")</div>
+            <div class="stat-card-label">Error Rate</div>
+        </div>
+    </div>
+</section>
+
+<section class="stat-section">
+    <h2>Reviews over Time</h2>
+    @if (Model.ReviewTrend.Count > 0)
+    {
+        <div class="stat-chart-container">
+            <canvas id="reviewTrendChart"></canvas>
+        </div>
+    }
+    else
+    {
+        <p class="stat-empty">No review data available for this period.</p>
+    }
+</section>
+
+<section class="stat-section">
+    <h2>Token Usage over Time</h2>
+    @if (Model.TokenTrend.Count > 0)
+    {
+        <div class="stat-chart-container">
+            <canvas id="tokenTrendChart"></canvas>
+        </div>
+    }
+    else
+    {
+        <p class="stat-empty">No token data available for this period.</p>
+    }
+</section>
+
+@section Scripts {
+    @if (Model.ReviewTrend.Count > 0)
+    {
+        <script>
+        (function() {
+            var reviewData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
+                Model.ReviewTrend.Select(p => new { p.Date, p.ReviewCount, p.SuccessCount, p.FailureCount })));
+            var ctx = document.getElementById('reviewTrendChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: reviewData.map(function(d) { return d.Date; }),
+                    datasets: [
+                        {
+                            label: 'Success',
+                            data: reviewData.map(function(d) { return d.SuccessCount; }),
+                            backgroundColor: 'rgba(34, 139, 34, 0.7)'
+                        },
+                        {
+                            label: 'Failure',
+                            data: reviewData.map(function(d) { return d.FailureCount; }),
+                            backgroundColor: 'rgba(178, 34, 34, 0.7)'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } }
+                }
+            });
+        })();
+        </script>
+    }
+    @if (Model.TokenTrend.Count > 0)
+    {
+        <script>
+        (function() {
+            var tokenData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
+                Model.TokenTrend.Select(p => new { p.Date, p.InputTokens, p.OutputTokens })));
+            var ctx = document.getElementById('tokenTrendChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: tokenData.map(function(d) { return d.Date; }),
+                    datasets: [
+                        {
+                            label: 'Input Tokens',
+                            data: tokenData.map(function(d) { return d.InputTokens; }),
+                            borderColor: 'rgba(70, 130, 180, 1)',
+                            backgroundColor: 'rgba(70, 130, 180, 0.1)',
+                            fill: true,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Output Tokens',
+                            data: tokenData.map(function(d) { return d.OutputTokens; }),
+                            borderColor: 'rgba(255, 140, 0, 1)',
+                            backgroundColor: 'rgba(255, 140, 0, 0.1)',
+                            fill: true,
+                            tension: 0.3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: true } }
+                }
+            });
+        })();
+        </script>
+    }
+}

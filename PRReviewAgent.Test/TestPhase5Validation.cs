@@ -196,7 +196,7 @@ public class TestPhase5Validation
             FilePath = "app.py",
             ExpandedDiff = "-user.save()\n+if user is not None:\n+    user.save()",
             // No Structures, Symbols, or Dependencies
-        }, CancellationToken.None);
+        }, 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled, "SubAgent must be called even without AST context");
         StringAssert.Contains(stub.LastPrompt!, "user.save()");
@@ -367,7 +367,7 @@ public class TestPhase5Validation
 
         // Must not throw — Sub LLM failure must not propagate to caller
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -382,7 +382,7 @@ public class TestPhase5Validation
         RuleExtractionService service = CreateService(stub);
 
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -395,7 +395,7 @@ public class TestPhase5Validation
 
         // embeddingProvider is null — NPE-free completion proves it was not called
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -407,7 +407,7 @@ public class TestPhase5Validation
         RuleExtractionService service = CreateService(stub);
 
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -419,7 +419,7 @@ public class TestPhase5Validation
         RuleExtractionService service = CreateService(stub);
 
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -431,7 +431,7 @@ public class TestPhase5Validation
         RuleExtractionService service = CreateService(stub);
 
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -443,7 +443,7 @@ public class TestPhase5Validation
         RuleExtractionService service = CreateService(stub);
 
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -456,7 +456,7 @@ public class TestPhase5Validation
         RuleExtractionService service = CreateService(stub);
 
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -476,7 +476,7 @@ public class TestPhase5Validation
 
         await service.ExtractAndSaveRuleAsync(
             MakePythonContext("-user.save()\n+if user is not None:\n+    user.save()"),
-            CancellationToken.None);
+            0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled, "SubAgent must be used");
     }
@@ -492,7 +492,7 @@ public class TestPhase5Validation
 
         // Context.Instance.Agents is not initialized — if main LLM were used it would NPE.
         await service.ExtractAndSaveRuleAsync(
-            MakePythonContext("-old\n+new"), CancellationToken.None);
+            MakePythonContext("-old\n+new"), 0, CancellationToken.None);
     }
 
     // =========================================================================
@@ -565,7 +565,7 @@ public class TestPhase5Validation
             Structures = structures,
             Symbols = symbols,
             Dependencies = deps,
-        }, CancellationToken.None);
+        }, 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
         Assert.IsFalse(stub.LastPrompt!.Contains("\"functions\""),
@@ -615,7 +615,7 @@ public class TestPhase5Validation
                 Language = lang,
                 FilePath = "file",
                 ExpandedDiff = "-title = \"foo\"\n+title = \"bar\"",
-            }, CancellationToken.None);
+            }, 0, CancellationToken.None);
 
             Assert.IsTrue(stub.WasCalled, $"SubAgent called for {lang}");
             // Null embeddingProvider proves embedding path was not reached

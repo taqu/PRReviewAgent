@@ -24,6 +24,7 @@ namespace PRReviewAgent.Services
             ILogger<GitHubMergePRTask>? logger = serviceProvider.GetService<ILogger<GitHubMergePRTask>>();
             RuleExtractionService? ruleExtractionService = serviceProvider.GetService<RuleExtractionService>();
             RuleLifecycleService? ruleLifecycleService = serviceProvider.GetService<RuleLifecycleService>();
+            ProjectRepository? projectRepository = serviceProvider.GetService<ProjectRepository>();
 
             if (ruleExtractionService == null && ruleLifecycleService == null) return;
 
@@ -32,6 +33,21 @@ namespace PRReviewAgent.Services
 
             try
             {
+                string prKey = $"github/{_repositoryId}/{_prNumber}";
+                string externalProjectId = $"github:{_repositoryId}";
+
+                if (projectRepository == null)
+                {
+                    logger?.LogError("ProjectRepository is not registered; cannot process merge event for {PrKey}", prKey);
+                    return;
+                }
+
+                AutoImprove.Project project = await projectRepository.GetOrCreateAsync(
+                    externalProjectId,
+                    _payload.repository.name ?? externalProjectId,
+                    _payload.repository.html_url,
+                    cancellationToken);
+
                 IReadOnlyList<PullRequestFile> files = await gitHubClient.PullRequest.Files(_repositoryId, _prNumber);
                 List<ReviewContext> reviewContexts = new List<ReviewContext>();
                 StringBuilder allDiffs = new StringBuilder();
@@ -45,10 +61,9 @@ namespace PRReviewAgent.Services
                         allDiffs.AppendLine(file.Patch);
                 }
 
-                string prKey = $"github/{_repositoryId}/{_prNumber}";
                 if (ruleLifecycleService != null)
                 {
-                    await ruleLifecycleService.OnPrMergedAsync(prKey, allDiffs.ToString(), cancellationToken);
+                    await ruleLifecycleService.OnPrMergedAsync(prKey, allDiffs.ToString(), project.Id, cancellationToken);
                 }
 
                 if (ruleExtractionService == null || reviewContexts.Count == 0) return;
@@ -90,7 +105,7 @@ namespace PRReviewAgent.Services
                             Symbols = symbols,
                             Dependencies = dependencies,
                         };
-                        await ruleExtractionService.ExtractAndSaveRuleAsync(ruleContext, cancellationToken);
+                        await ruleExtractionService.ExtractAndSaveRuleAsync(ruleContext, project.Id, cancellationToken);
                     }
                     catch (Exception ex)
                     {
@@ -98,7 +113,7 @@ namespace PRReviewAgent.Services
                     }
                 }
 
-                logger?.LogInformation("Rule extraction complete for PR {Number}", _prNumber);
+                logger?.LogInformation("Rule extraction complete for PR {Number} in project {ProjectId}", _prNumber, project.Id);
             }
             catch (Exception ex)
             {

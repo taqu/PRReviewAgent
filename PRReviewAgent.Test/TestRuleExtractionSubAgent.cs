@@ -108,7 +108,7 @@ public class TestRuleExtractionSubAgent
         RuleExtractionService service = new RuleExtractionService(
             stub, null!, null!, NullLogger<RuleExtractionService>.Instance);
 
-        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), CancellationToken.None);
+        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -121,7 +121,7 @@ public class TestRuleExtractionSubAgent
             stub, null!, null!, NullLogger<RuleExtractionService>.Instance);
 
         // If production code still called Context.Instance.Agents it would throw here.
-        await service.ExtractAndSaveRuleAsync(MakeCppContext("- removed\n+ added"), CancellationToken.None);
+        await service.ExtractAndSaveRuleAsync(MakeCppContext("- removed\n+ added"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -140,7 +140,7 @@ public class TestRuleExtractionSubAgent
         RuleExtractionService service = new RuleExtractionService(
             stub, null!, null!, NullLogger<RuleExtractionService>.Instance);
 
-        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), CancellationToken.None);
+        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), 0, CancellationToken.None);
     }
 
     // =========================================================================
@@ -239,7 +239,7 @@ public class TestRuleExtractionSubAgent
             Language = SourceLanguage.Unknown,
             FilePath = "build.gradle",
             ExpandedDiff = "- old\n+ new",
-        }, CancellationToken.None).GetAwaiter().GetResult();
+        }, 0, CancellationToken.None).GetAwaiter().GetResult();
 
         Assert.IsFalse(stub.WasCalled);
     }
@@ -260,7 +260,7 @@ public class TestRuleExtractionSubAgent
                 Language = language,
                 FilePath = "file",
                 ExpandedDiff = "- old\n+ new",
-            }, CancellationToken.None);
+            }, 0, CancellationToken.None);
 
             Assert.IsTrue(stub.WasCalled, $"SubAgent must be called for {language}");
         }
@@ -485,7 +485,7 @@ public class TestRuleExtractionSubAgent
             FilePath = "app.py",
             ExpandedDiff = expandedDiff,
             // No structures, symbols, or dependencies
-        }, CancellationToken.None).GetAwaiter().GetResult();
+        }, 0, CancellationToken.None).GetAwaiter().GetResult();
 
         Assert.IsTrue(stub.WasCalled);
         Assert.IsTrue(stub.LastPrompt!.Contains(expandedDiff), "Expanded diff must still be in prompt");
@@ -626,7 +626,7 @@ public class TestRuleExtractionSubAgent
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RuleExtractionService>.Instance);
 
         // Must complete without NPE; UNKNOWN must stop before embedding.
-        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), CancellationToken.None);
+        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled);
     }
@@ -715,7 +715,7 @@ public class TestRuleExtractionSubAgent
             stub, null!, null!,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RuleExtractionService>.Instance);
 
-        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), CancellationToken.None);
+        await service.ExtractAndSaveRuleAsync(MakeCppContext("- old\n+ new"), 0, CancellationToken.None);
 
         Assert.IsTrue(stub.WasCalled, "SubAgent must be called");
         // embeddingProvider is null; if it were reached it would NPE.
@@ -764,7 +764,7 @@ public class TestRuleExtractionSubAgent
                 Language = language,
                 FilePath = "file",
                 ExpandedDiff = "- old\n+ new",
-            }, CancellationToken.None);
+            }, 0, CancellationToken.None);
 
             Assert.IsTrue(stub.WasCalled, $"SubAgent must be called for {language}");
             // NPE-free completion proves embedding was not reached.

@@ -38,7 +38,9 @@ namespace PRReviewAgent.Test
             {
                 string json = System.IO.File.ReadAllText("TestData\\payload_comment.json");
                 payloadComment = Newtonsoft.Json.JsonConvert.DeserializeObject<PayloadComment>(json);
-                Services.GitLabWebhookCommentTask gitLabWebhookCommentTask = new Services.GitLabWebhookCommentTask(payloadComment);
+                GitLabMrNoteWebhook? noteWebhook = System.Text.Json.JsonSerializer.Deserialize<GitLabMrNoteWebhook>(json,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                Services.GitLabWebhookCommentTask gitLabWebhookCommentTask = new Services.GitLabWebhookCommentTask(noteWebhook!);
                 await gitLabWebhookCommentTask.RunAsync(null, Context.Instance.CancellationToken);
             }
         }

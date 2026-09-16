@@ -23,10 +23,11 @@ namespace PRReviewAgent.Services.AutoImprove
             }
         }
 
-        public async Task OnPrMergedAsync(string prKey, string mergedDiff, CancellationToken cancellationToken = default)
+        public async Task OnPrMergedAsync(string prKey, string mergedDiff, long projectId, CancellationToken cancellationToken = default)
         {
             List<(string RuleId, string? BadPattern)> trackedRules = await _repository.GetPendingReviewsAsync(prKey, cancellationToken);
-            if (trackedRules.Count<=0){
+            if (trackedRules.Count <= 0)
+            {
                 return;
             }
             try
@@ -35,11 +36,13 @@ namespace PRReviewAgent.Services.AutoImprove
                 {
                     bool patternStillPresent = !string.IsNullOrEmpty(badPattern) && mergedDiff.Contains(badPattern, StringComparison.OrdinalIgnoreCase);
 
-                    if (patternStillPresent) {
-                        await _repository.DecrementConfidenceByChunkIdAsync(ruleId, cancellationToken);
+                    if (patternStillPresent)
+                    {
+                        await _repository.DecrementConfidenceByChunkIdAsync(projectId, ruleId, prKey, cancellationToken);
                     }
-                    else {
-                        await _repository.IncrementConfidenceByChunkIdAsync(ruleId, cancellationToken);
+                    else
+                    {
+                        await _repository.IncrementConfidenceByChunkIdAsync(projectId, ruleId, prKey, cancellationToken);
                     }
                 }
             }
