@@ -55,25 +55,18 @@ jobs:
           done
 
       - name: Install project licenses tool
-        run: dotnet tool install --global dotnet-project-licenses
+        run: dotnet tool install --global nuget-license
 
       - name: Generate and Combine Licenses
         run: |
           mkdir -p ./publish
           
-          dotnet list PRReviewAgent/PRReviewAgent.csproj package --format json --include-transitive 2>/dev/null \
-            | awk 'BEGIN{p=0} /^\{/{p=1} p{print}' > ./publish/packages.json
+          nuget-license -i PRReviewAgent/PRReviewAgent.csproj --output json --include-transitive > ./publish/packages.json
           
           echo "Gathering NuGet package licenses..."
           echo -e "Generated Package License List\n==============================" > ./publish/nuget-licenses.txt
+          nuget-license -i PRReviewAgent/PRReviewAgent.csproj -o Json | jq -r '.[] | "# \(.PackageId)\nCopyright: \(.Copyright)\nLicense: \(.License)\n"' >> ./publish/nuget-licenses.txt
           
-          jq -r '.projects[].frameworks[].topLevelPackages[], .projects[].frameworks[].transitivePackages[] | select(. != null) | "\(.id) \(.requestedVersion // .resolvedVersion)"' ./publish/packages.json | sort -u | while read -r id version; do
-            if [ -n "$id" ] && [ -n "$version" ]; then
-              LICENSE_INFO=$(curl -s "https://api.nuget.org/v3/registration5/${id,,}/${version}.json" | jq -r '.catalogEntry.licenseExpression // .catalogEntry.licenseUrl // "No explicit license URL found"')
-              echo -e "- $id ($version): $LICENSE_INFO" >> ./publish/nuget-licenses.txt
-            fi
-          done
-
           MY_LICENSE="LICENSE"
           if [ ! -f "LICENSE" ] && [ -f "LICENSE.txt" ]; then
             MY_LICENSE="LICENSE.txt"
@@ -114,14 +107,3 @@ jobs:
         run: |
           cd ./publish && zip -r ../PRReviewAgent-win-x64.zip ./PRReviewAgent-win-x64 && cd ..
 
-      - name: Create GitHub Release
-        id: create_release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            PRReviewAgent-linux-x64.tar.gz
-            PRReviewAgent-win-x64.zip
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
