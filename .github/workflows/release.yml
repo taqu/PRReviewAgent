@@ -55,7 +55,9 @@ jobs:
           done
 
       - name: Install project licenses tool
-        run: dotnet tool install --global nuget-license
+        run: |
+            dotnet tool install --global nuget-license
+            echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
       - name: Generate and Combine Licenses
         run: |
