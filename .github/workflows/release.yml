@@ -109,3 +109,15 @@ jobs:
         run: |
           cd ./publish && zip -r ../PRReviewAgent-win-x64.zip ./PRReviewAgent-win-x64 && cd ..
 
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            PRReviewAgent-linux-x64.tar.gz
+            PRReviewAgent-win-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
