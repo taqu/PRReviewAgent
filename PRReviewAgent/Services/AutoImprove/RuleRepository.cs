@@ -236,6 +236,38 @@ namespace PRReviewAgent.Services.AutoImprove
                     await cmd.ExecuteNonQueryAsync(cancellationToken);
                 }
 
+                // Create review_status_comments table
+                {
+                    await using SqliteCommand cmd = conn.CreateCommand();
+                    cmd.CommandText = @"
+                    CREATE TABLE IF NOT EXISTS review_status_comments (
+                        project_id          INTEGER NOT NULL,
+                        merge_request_id    TEXT NOT NULL,
+                        comment_id          TEXT NOT NULL,
+                        created_at          TEXT NOT NULL,
+                        updated_at          TEXT NOT NULL,
+                        PRIMARY KEY(project_id, merge_request_id),
+                        FOREIGN KEY(project_id) REFERENCES projects(id)
+                    );";
+                    await cmd.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                // Create auto_review_user_settings table
+                {
+                    await using SqliteCommand cmd = conn.CreateCommand();
+                    cmd.CommandText = @"
+                    CREATE TABLE IF NOT EXISTS auto_review_user_settings (
+                        project_id  INTEGER NOT NULL,
+                        user_id     TEXT NOT NULL,
+                        enabled     INTEGER NOT NULL,
+                        created_at  TEXT NOT NULL,
+                        updated_at  TEXT NOT NULL,
+                        PRIMARY KEY(project_id, user_id),
+                        FOREIGN KEY(project_id) REFERENCES projects(id)
+                    );";
+                    await cmd.ExecuteNonQueryAsync(cancellationToken);
+                }
+
                 // Create review_rule_usage table
                 {
                     await using SqliteCommand cmd = conn.CreateCommand();

@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Primitives;
 using Newtonsoft.Json;
 using PRReviewAgent.Services;
+using PRReviewAgent.Services.AutoReview;
+using PRReviewAgent.Services.GitHubWebhook;
 using PRReviewAgent.Services.GitLabWebhook;
 
 namespace PRReviewAgent.Controllers
@@ -96,6 +98,12 @@ namespace PRReviewAgent.Controllers
                                 await taskQueueImprove_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
                                 return Ok();
                             }
+                            if (payloadMergeRequest.ObjectAttributes.Action == "open")
+                            {
+                                GitLabMROpenedTask openedTask = new GitLabMROpenedTask(payloadMergeRequest);
+                                await taskQueueReview_.QueueBackgroundWorkItemAsync(openedTask.RunAsync);
+                                return Ok();
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -109,19 +117,29 @@ namespace PRReviewAgent.Controllers
                             // Parse the payload for comment-related events
                             GitLabMrNoteWebhook payloadComment = GitLabWebhookParser.ParseAndValidateNoteWebhook(payload.ToString());
                             // Get the first line of the comment
-                            ReadOnlySpan<char> line = payloadComment.ObjectAttributes.Note.AsSpan().Trim();
-                            int index = line.IndexOfAny("\n\r".AsSpan());
-                            if (0 <= index)
+                            string noteLine = payloadComment.ObjectAttributes.Note ?? string.Empty;
+                            int noteLineEnd = noteLine.IndexOfAny(new[] { '\n', '\r' });
+                            string firstLine = noteLineEnd >= 0 ? noteLine.Substring(0, noteLineEnd).Trim() : noteLine.Trim();
+                            ReviewCommand? command = ReviewCommandParser.Parse(firstLine);
+                            if (command != null)
                             {
-                                line = line.Slice(0, index);
-                            }
-                            // Check if the comment contains the trigger command "/review"
-                            if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
-                            {
-                                // Enqueue a background task to perform the review
-                                GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
-                                await taskQueueReview_.QueueBackgroundWorkItemAsync(gitLabWebhookTask.RunAsync);
-                                return Ok();
+                                if (command.Type == ReviewCommandType.Review)
+                                {
+                                    GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
+                                    await taskQueueReview_.QueueBackgroundWorkItemAsync(gitLabWebhookTask.RunAsync);
+                                    return Ok();
+                                }
+                                else if (command.Type == ReviewCommandType.AutoReviewOn || command.Type == ReviewCommandType.AutoReviewOff)
+                                {
+                                    GitLabAutoReviewCommandTask autoReviewTask = new GitLabAutoReviewCommandTask(payloadComment, command.Type);
+                                    await taskQueueReview_.QueueBackgroundWorkItemAsync(autoReviewTask.RunAsync);
+                                    if (command.Type == ReviewCommandType.AutoReviewOn)
+                                    {
+                                        GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
+                                        await taskQueueReview_.QueueBackgroundWorkItemAsync(gitLabWebhookTask.RunAsync);
+                                    }
+                                    return Ok();
+                                }
                             }
                         }
                         catch (Exception ex)
@@ -175,6 +193,12 @@ namespace PRReviewAgent.Controllers
                                 await taskQueueImprove_.QueueBackgroundWorkItemAsync(mergeTask.RunAsync);
                                 return Ok();
                             }
+                            if (prPayload.action == "opened")
+                            {
+                                GitHubMROpenedTask openedTask = new GitHubMROpenedTask(prPayload);
+                                await taskQueueReview_.QueueBackgroundWorkItemAsync(openedTask.RunAsync);
+                                return Ok();
+                            }
                             break;
                         }
                     default:
@@ -183,18 +207,29 @@ namespace PRReviewAgent.Controllers
                             Services.GitHubWebhook.PayloadIssueComment payloadIssueComment =
                                 JsonConvert.DeserializeObject<Services.GitHubWebhook.PayloadIssueComment>(payload.ToString());
                             // Get the first line of the comment
-                            ReadOnlySpan<char> line = payloadIssueComment.comment.body.AsSpan().Trim();
-                            int index = line.IndexOfAny("\n\r".AsSpan());
-                            if (0 <= index)
+                            string commentLine = payloadIssueComment.comment.body ?? string.Empty;
+                            int commentLineEnd = commentLine.IndexOfAny(new[] { '\n', '\r' });
+                            string firstLine = commentLineEnd >= 0 ? commentLine.Substring(0, commentLineEnd).Trim() : commentLine.Trim();
+                            ReviewCommand? command = ReviewCommandParser.Parse(firstLine);
+                            if (command != null)
                             {
-                                line = line.Slice(0, index);
-                            }
-                            // Check if the comment body contains the trigger command "/review"
-                            if (line.Contains("/review", StringComparison.OrdinalIgnoreCase))
-                            {
-                                GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
-                                await taskQueueReview_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
-                                return Ok();
+                                if (command.Type == ReviewCommandType.Review)
+                                {
+                                    GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
+                                    await taskQueueReview_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
+                                    return Ok();
+                                }
+                                else if (command.Type == ReviewCommandType.AutoReviewOn || command.Type == ReviewCommandType.AutoReviewOff)
+                                {
+                                    GitHubAutoReviewCommandTask autoReviewTask = new GitHubAutoReviewCommandTask(payloadIssueComment, command.Type, command.Language);
+                                    await taskQueueReview_.QueueBackgroundWorkItemAsync(autoReviewTask.RunAsync);
+                                    if (command.Type == ReviewCommandType.AutoReviewOn)
+                                    {
+                                        GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
+                                        await taskQueueReview_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
+                                    }
+                                    return Ok();
+                                }
                             }
                             break;
                         }

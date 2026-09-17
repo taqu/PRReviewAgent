@@ -5,8 +5,10 @@ using OpenAI.Chat;
 using PRReviewAgent.Prompt;
 using PRReviewAgent.Services.AutoImprove;
 using PRReviewAgent.Services.GitLabWebhook;
+using PRReviewAgent.Services.ReviewStatus;
 using PRReviewAgent.Services.Statistics;
 using PRReviewAget.Prompt;
+using PRReviewAgent.Services.AutoReview;
 using System;
 using System.Diagnostics;
 using System.Text;
@@ -84,6 +86,39 @@ namespace PRReviewAgent.Services
             }
         }
 
+        public static GitLabWebhookCommentTask FromMROpened(GitLabMergeRequestWebhook mrEvent, string language)
+        {
+            var synthetic = new GitLabMrNoteWebhook
+            {
+                ObjectKind = "note",
+                User = mrEvent.User,
+                Project = mrEvent.Project,
+                ObjectAttributes = new WebhookObjectAttributes
+                {
+                    Id = 0,
+                    Note = string.Empty,
+                    NoteableType = "MergeRequest",
+                },
+                MergeRequest = new WebhookMergeRequest
+                {
+                    Iid = mrEvent.ObjectAttributes?.Iid,
+                    TargetProjectId = mrEvent.ObjectAttributes?.TargetProjectId ?? mrEvent.Project?.Id,
+                    SourceBranch = mrEvent.ObjectAttributes?.SourceBranch,
+                    Title = mrEvent.ObjectAttributes?.Title,
+                    Description = mrEvent.ObjectAttributes?.Description,
+                },
+            };
+
+            var task = new GitLabWebhookCommentTask(synthetic);
+            task.language_ = language;
+            if (string.IsNullOrEmpty(task.language_) || !Context.Instance.Settings.HasTemplate(task.language_))
+            {
+                Tomlyn.Model.TomlTable? commonTable = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["common"];
+                task.language_ = (string)commonTable["default_language"];
+            }
+            return task;
+        }
+
         /// <summary>
         /// Determines if a diff should be reviewed. Returns null for deleted/renamed/empty files or non-target extensions.
         /// </summary>
@@ -127,8 +162,37 @@ namespace PRReviewAgent.Services
             Context context = Context.Instance;
             NGitLab.GitLabClient gitLabClient = serviceProvider.GetService<GitLabClientService>().GitLabClient;
 
+            // Resolve project identity early — needed for status comment service.
+            string externalProjectId = $"gitlab:{gitLabMrNoteWebhook_.Project.Id}";
+            string mergeRequestId = $"gitlab/{gitLabMrNoteWebhook_.Project.Id}/{gitLabMrNoteWebhook_.MergeRequest.Iid}";
+            ProjectRepository? projectRepository = serviceProvider.GetService<ProjectRepository>();
+            AutoImprove.Project? project = null;
+            if (projectRepository != null)
+            {
+                try
+                {
+                    project = await projectRepository.GetOrCreateAsync(externalProjectId, externalProjectId, null, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to resolve project");
+                }
+            }
+
             // Step 1: Fetch all diffs for the merge request.
             NGitLab.IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest((long)gitLabMrNoteWebhook_.Project.Id);
+
+            IReviewStatusCommentService? statusService = serviceProvider.GetService<IReviewStatusCommentService>();
+            GitLabReviewCommentProvider? statusProvider = project != null
+                ? new GitLabReviewCommentProvider(mergeRequestClient.Comments((long)gitLabMrNoteWebhook_.MergeRequest.Iid))
+                : null;
+
+            if (statusService != null && statusProvider != null)
+            {
+                try { await statusService.BeginReviewAsync(statusProvider, project!.Id, mergeRequestId, cancellationToken); }
+                catch (Exception ex) { logger.LogError(ex, "Failed to post review begin status comment"); }
+            }
+
             GitLabCollectionResponse<NGitLab.Models.Diff> response = mergeRequestClient.GetDiffsAsync((long)gitLabMrNoteWebhook_.MergeRequest.Iid);
             List<ReviewContext> reviewContexts = new List<ReviewContext>();
 
@@ -143,7 +207,11 @@ namespace PRReviewAgent.Services
             }
             if (reviewContexts.Count <= 0)
             {
-                PostComment("No reviews are generated. There are no diffs to review.", mergeRequestClient, logger);
+                if (statusService != null && statusProvider != null)
+                {
+                    try { await statusService.CompleteReviewAsync(statusProvider, project!.Id, mergeRequestId, "No reviews are generated. There are no diffs to review.", cancellationToken); }
+                    catch (Exception ex) { logger.LogError(ex, "Failed to post review complete status comment"); }
+                }
                 return;
             }
 
@@ -194,23 +262,6 @@ namespace PRReviewAgent.Services
             reviewRequest.MergeRequestDescription = gitLabMrNoteWebhook_.MergeRequest.Description ?? string.Empty;
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
-
-            // Resolve project identity (used for both learned rules and execution statistics).
-            string externalProjectId = $"gitlab:{gitLabMrNoteWebhook_.Project.Id}";
-            string mergeRequestId = $"gitlab/{gitLabMrNoteWebhook_.Project.Id}/{gitLabMrNoteWebhook_.MergeRequest.Iid}";
-            ProjectRepository? projectRepository = serviceProvider.GetService<ProjectRepository>();
-            AutoImprove.Project? project = null;
-            if (projectRepository != null)
-            {
-                try
-                {
-                    project = await projectRepository.GetOrCreateAsync(externalProjectId, externalProjectId, null, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Failed to resolve project");
-                }
-            }
 
             Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
             foreach (ReviewContext reviewContext in reviewContexts)
@@ -494,24 +545,41 @@ namespace PRReviewAgent.Services
                     }
                     catch (Exception rex) { logger.LogError(rex, "Failed to record review execution failure"); }
                 }
-                PostComment("No reviews are generated.", mergeRequestClient, logger);
+                if (statusService != null && statusProvider != null)
+                {
+                    try { await statusService.FailReviewAsync(statusProvider, project!.Id, mergeRequestId, cancellationToken); }
+                    catch (Exception rex) { logger.LogError(rex, "Failed to post review fail status comment"); }
+                }
                 return;
             }
 
             // Step 8: Merge reviews and post comment.
+            string organizedReview;
             if (reviews.Count <= 0)
             {
-                PostComment("No reviews are generated.", mergeRequestClient, logger);
-                return;
+                organizedReview = "No reviews are generated.";
+            }
+            else
+            {
+                stringBuilder_.Clear();
+                foreach (string review in reviews)
+                {
+                    stringBuilder_.Append(review).Append("\n\n---\n\n");
+                }
+                organizedReview = stringBuilder_.ToString();
             }
 
-            stringBuilder_.Clear();
-            foreach (string review in reviews)
+            if (statusService != null && statusProvider != null)
             {
-                stringBuilder_.Append(review).Append("\n\n---\n\n");
+                try
+                {
+                    await statusService.CompleteReviewAsync(statusProvider, project!.Id, mergeRequestId, organizedReview, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to post review complete status comment");
+                }
             }
-            string organizedReview = stringBuilder_.ToString();
-            PostComment(organizedReview, mergeRequestClient, logger);
             logger.LogInformation($"Final review:\n{organizedReview}");
         }
 
@@ -524,10 +592,12 @@ namespace PRReviewAgent.Services
 
         private static async Task<FileData?> GetFileAsync(IFilesClient filesClient, string path, string sourceBranch, CancellationToken cancellationToken)
         {
-            try {
+            try
+            {
                 return await filesClient.GetAsync(path, sourceBranch, cancellationToken);
             }
-            catch {
+            catch
+            {
                 return null;
             }
         }
@@ -536,16 +606,17 @@ namespace PRReviewAgent.Services
         {
             foreach (ReviewContext reviewContext in reviewContexts)
             {
-                if(!string.IsNullOrEmpty(reviewContext.PairPath))
+                if (!string.IsNullOrEmpty(reviewContext.PairPath))
                 {
                     continue;
                 }
                 string? pairPath = GuessPair1(reviewContext.Path);
-                if (pairPath == null){
+                if (pairPath == null)
+                {
                     continue;
                 }
                 FileData? file = null;
-                if(null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
+                if (null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
                 {
                     reviewContext.PairPath = file.Path;
                     reviewContext.PairFile = file.DecodedContent;
@@ -553,10 +624,11 @@ namespace PRReviewAgent.Services
                 }
 
                 pairPath = GuessPair2(reviewContext.Path);
-                if (pairPath == null){
+                if (pairPath == null)
+                {
                     continue;
                 }
-                if(null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
+                if (null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
                 {
                     reviewContext.PairPath = file.Path;
                     reviewContext.PairFile = file.DecodedContent;
@@ -564,10 +636,11 @@ namespace PRReviewAgent.Services
                 }
 
                 pairPath = GuessPair3(reviewContext.Path);
-                if (pairPath == null){
+                if (pairPath == null)
+                {
                     continue;
                 }
-                if(null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
+                if (null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
                 {
                     reviewContext.PairPath = file.Path;
                     reviewContext.PairFile = file.DecodedContent;
@@ -575,10 +648,11 @@ namespace PRReviewAgent.Services
                 }
 
                 pairPath = GuessPair4(reviewContext.Path);
-                if (pairPath == null){
+                if (pairPath == null)
+                {
                     continue;
                 }
-                if(null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
+                if (null != (file = await GetFileAsync(filesClient, pairPath, sourceBranch, cancellationToken)))
                 {
                     reviewContext.PairPath = file.Path;
                     reviewContext.PairFile = file.DecodedContent;
@@ -658,33 +732,6 @@ namespace PRReviewAgent.Services
                     return Path.ChangeExtension(path, ".cpp").Replace("include", "source");
                 default:
                     return null;
-            }
-        }
-
-        private const int MaxLogLength = 128;
-        private void PostComment(string comment, NGitLab.IMergeRequestClient mergeRequestClient, ILogger<GitLabWebhookCommentTask>? logger)
-        {
-            IMergeRequestCommentClient mergeRequestCommentClient = mergeRequestClient.Comments((long)gitLabMrNoteWebhook_.MergeRequest.Iid);
-            MergeRequestCommentEdit mergeRequestCommentEdit = new MergeRequestCommentEdit();
-            mergeRequestCommentEdit.Body = comment;
-            try
-            {
-                MergeRequestComment _ = mergeRequestCommentClient.Edit((long)gitLabMrNoteWebhook_.ObjectAttributes.Id, mergeRequestCommentEdit);
-                if (logger.IsEnabled(LogLevel.Information))
-                {
-                    ReadOnlySpan<char> span = comment.AsSpan();
-                    int length;
-                    for (length = 0; length < span.Length && length < MaxLogLength; ++length)
-                    {
-                        if (span[length] == '\n' || span[length] == '\r') break;
-                    }
-                    span = span.Slice(0, length);
-                    logger.LogInformation($"Comment is updated. {span}");
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex.Message);
             }
         }
 

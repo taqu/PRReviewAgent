@@ -2,6 +2,7 @@ using NGitLab;
 using NGitLab.Models;
 using PRReviewAgent.Services.AutoImprove;
 using PRReviewAgent.Services.GitLabWebhook;
+using PRReviewAgent.Services.ReviewStatus;
 using PRReviewAget.Prompt;
 using System.Text;
 
@@ -9,11 +10,11 @@ namespace PRReviewAgent.Services
 {
     public class GitLabMergeMRTask
     {
-        private readonly GitLabMergeRequestWebhook _payload;
+        private readonly GitLabMergeRequestWebhook payload_;
 
         public GitLabMergeMRTask(GitLabMergeRequestWebhook payload)
         {
-            _payload = payload;
+            payload_ = payload;
         }
 
         public async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
@@ -22,6 +23,7 @@ namespace PRReviewAgent.Services
             RuleExtractionService? ruleExtractionService = serviceProvider.GetService<RuleExtractionService>();
             RuleLifecycleService? ruleLifecycleService = serviceProvider.GetService<RuleLifecycleService>();
             ProjectRepository? projectRepository = serviceProvider.GetService<ProjectRepository>();
+            IReviewStatusCommentService? statusService = serviceProvider.GetService<IReviewStatusCommentService>();
 
             if (ruleExtractionService == null && ruleLifecycleService == null) return;
 
@@ -30,8 +32,8 @@ namespace PRReviewAgent.Services
 
             try
             {
-                long projectId = (long)_payload.Project.Id;
-                long mrIid = (long)_payload.ObjectAttributes.Iid;
+                long projectId = (long)payload_.Project.Id;
+                long mrIid = (long)payload_.ObjectAttributes.Iid;
                 string prKey = $"gitlab/{projectId}/{mrIid}";
                 string externalProjectId = $"gitlab:{projectId}";
 
@@ -69,8 +71,8 @@ namespace PRReviewAgent.Services
 
                 if (ruleExtractionService == null || reviewContexts.Count == 0) return;
 
-                IRepositoryClient repository = gitLabClient.GetRepository((long)_payload.ObjectAttributes.SourceProjectId);
-                string sourceBranch = _payload.ObjectAttributes.SourceBranch;
+                IRepositoryClient repository = gitLabClient.GetRepository((long)payload_.ObjectAttributes.SourceProjectId);
+                string sourceBranch = payload_.ObjectAttributes.SourceBranch;
 
                 foreach (ReviewContext ctx in reviewContexts)
                 {
