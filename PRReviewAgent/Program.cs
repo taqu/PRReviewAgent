@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.AutoImprove;
+using PRReviewAgent.Services.AutoReview;
+using PRReviewAgent.Services.ReviewStatus;
 using PRReviewAgent.Services.Statistics;
 using Statistics = PRReviewAgent.Services.Statistics;
 using System.Net.Security;
@@ -155,34 +157,74 @@ namespace PRReviewAgent
                 builder.Services.AddHostedService<WarmUpTask>();
             }
 
+            // Determine database path (used by both status comment services and auto-improve).
+            string reviewDbPath = "AppData/review_rules.db";
+            Tomlyn.Model.TomlTable? autoImproveSection = null;
+            if (Context.Instance.Settings.Config.TryGetValue("auto_improve", out object? aiCfgObj)
+                && aiCfgObj is Tomlyn.Model.TomlTable aiCfgTbl)
+            {
+                autoImproveSection = aiCfgTbl;
+                if (aiCfgTbl.TryGetValue("db_path", out object? dpObj)) reviewDbPath = (string)dpObj;
+            }
+
+            // Always register project repository and review status comment services.
+            ProjectRepository sharedProjectRepository = new ProjectRepository(reviewDbPath);
+            ReviewStatusCommentRepository reviewStatusCommentRepository = new ReviewStatusCommentRepository(reviewDbPath);
+            reviewStatusCommentRepository.InitializeAsync().GetAwaiter().GetResult();
+            builder.Services.AddSingleton(sharedProjectRepository);
+            builder.Services.AddSingleton<IReviewStatusCommentRepository>(reviewStatusCommentRepository);
+            builder.Services.AddSingleton<IReviewStatusCommentService, ReviewStatusCommentService>();
+            System.Console.WriteLine("Review status comment service initialized.");
+
+            // Register auto-review services.
+            {
+                bool arEnabled = false;
+                AutoReviewMode arMode = AutoReviewMode.OptOut;
+                if (Context.Instance.Settings.Config.TryGetValue("auto_review", out object? arCfgObj)
+                    && arCfgObj is Tomlyn.Model.TomlTable arCfgTbl)
+                {
+                    arEnabled = arCfgTbl.TryGetValue("enabled", out object? arEnabledObj) && arEnabledObj is bool arEnabledBool && arEnabledBool;
+                    if (arCfgTbl.TryGetValue("mode", out object? arModeObj) && arModeObj is string arModeStr)
+                    {
+                        arMode = string.Equals(arModeStr, "opt_in", StringComparison.OrdinalIgnoreCase)
+                            ? AutoReviewMode.OptIn
+                            : AutoReviewMode.OptOut;
+                    }
+                }
+                AutoReviewOptions autoReviewOptions = new AutoReviewOptions { Enabled = arEnabled, Mode = arMode };
+                AutoReviewUserSettingRepository autoReviewRepository = new AutoReviewUserSettingRepository(reviewDbPath);
+                autoReviewRepository.InitializeAsync().GetAwaiter().GetResult();
+                builder.Services.AddSingleton(autoReviewOptions);
+                builder.Services.AddSingleton<IAutoReviewUserSettingRepository>(autoReviewRepository);
+                builder.Services.AddSingleton<IAutoReviewPolicy, AutoReviewPolicy>();
+                System.Console.WriteLine($"Auto-review service initialized (enabled={arEnabled}, mode={arMode}).");
+            }
+
             // Register auto-improve services if configured.
-            if (Context.Instance.Settings.Config.TryGetValue("auto_improve", out object? autoImproveObj)
-                && autoImproveObj is Tomlyn.Model.TomlTable autoImprove
-                && autoImprove.TryGetValue("enabled", out object? enabledObj)
+            if (autoImproveSection != null
+                && autoImproveSection.TryGetValue("enabled", out object? enabledObj)
                 && enabledObj is bool enabled && enabled)
             {
                 try
                 {
-                    string modelPath = autoImprove.TryGetValue("model_path", out object? mp) ? (string)mp : "Models/granite-embedding-97M-multilingual-r2-Q8_0.gguf";
-                    string dbPath = autoImprove.TryGetValue("db_path", out object? dp) ? (string)dp : "AppData/review_rules.db";
-                    long context_size = autoImprove.TryGetValue("context_size", out object? cs) ? (long)cs : 512;
-                    long chunk_overlap = autoImprove.TryGetValue("chunk_overlap", out object? co) ? (long)co : 64;
+                    string modelPath = autoImproveSection.TryGetValue("model_path", out object? mp) ? (string)mp : "Models/granite-embedding-97M-multilingual-r2-Q8_0.gguf";
+                    long context_size = autoImproveSection.TryGetValue("context_size", out object? cs) ? (long)cs : 512;
+                    long chunk_overlap = autoImproveSection.TryGetValue("chunk_overlap", out object? co) ? (long)co : 64;
 
                     LocalEmbeddingProvider embeddingProvider = new LocalEmbeddingProvider(modelPath, (uint)context_size, (int)chunk_overlap);
-                    RuleRepository ruleRepository = new RuleRepository(dbPath);
+                    RuleRepository ruleRepository = new RuleRepository(reviewDbPath);
                     ruleRepository.InitializeAsync().GetAwaiter().GetResult();
-                    ProjectRepository projectRepository = new ProjectRepository(dbPath);
 
-                    ReviewExecutionRepository reviewExecutionRepository = new ReviewExecutionRepository(dbPath);
-                    Statistics.ReviewTurnRepository reviewTurnRepository = new Statistics.ReviewTurnRepository(dbPath);
-                    RuleLearningEventRepository ruleLearningEventRepository = new RuleLearningEventRepository(dbPath);
-                    Statistics.RuleSearchExecutionRepository ruleSearchExecutionRepository = new Statistics.RuleSearchExecutionRepository(dbPath);
-                    ReviewRuleUsageRepository reviewRuleUsageRepository = new ReviewRuleUsageRepository(dbPath);
+                    ReviewExecutionRepository reviewExecutionRepository = new ReviewExecutionRepository(reviewDbPath);
+                    Statistics.ReviewTurnRepository reviewTurnRepository = new Statistics.ReviewTurnRepository(reviewDbPath);
+                    RuleLearningEventRepository ruleLearningEventRepository = new RuleLearningEventRepository(reviewDbPath);
+                    Statistics.RuleSearchExecutionRepository ruleSearchExecutionRepository = new Statistics.RuleSearchExecutionRepository(reviewDbPath);
+                    ReviewRuleUsageRepository reviewRuleUsageRepository = new ReviewRuleUsageRepository(reviewDbPath);
                     RuleExtractionSubAgentSettings subAgentSettings = BuildRuleExtractionSubAgentSettings();
                     builder.Services.AddSingleton(subAgentSettings);
                     builder.Services.AddSingleton(embeddingProvider);
                     builder.Services.AddSingleton(ruleRepository);
-                    builder.Services.AddSingleton(projectRepository);
+                    // sharedProjectRepository already registered above
                     builder.Services.AddSingleton(reviewExecutionRepository);
                     builder.Services.AddSingleton<IReviewExecutionRecorder>(reviewExecutionRepository);
                     builder.Services.AddSingleton(reviewTurnRepository);
@@ -199,7 +241,7 @@ namespace PRReviewAgent
                     builder.Services.AddSingleton<IRuleLearningEventRepository>(ruleLearningEventRepository);
                     builder.Services.AddSingleton<RuleLifecycleService>();
                     builder.Services.AddHostedService<RulePruningWorker>();
-                    StatisticsService statisticsService = new StatisticsService(dbPath);
+                    StatisticsService statisticsService = new StatisticsService(reviewDbPath);
                     builder.Services.AddSingleton<IStatisticsService>(statisticsService);
                     System.Console.WriteLine("Auto-improve module initialized.");
                 }

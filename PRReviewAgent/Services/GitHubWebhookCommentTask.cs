@@ -7,8 +7,10 @@ using PRReviewAgent.Prompt;
 using PRReviewAgent.Services.AutoImprove;
 using PRReviewAgent.Services.GitHubWebhook;
 using PRReviewAgent.Services.GitLabWebhook;
+using PRReviewAgent.Services.ReviewStatus;
 using PRReviewAgent.Services.Statistics;
 using PRReviewAget.Prompt;
+using PRReviewAgent.Services.AutoReview;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -28,7 +30,7 @@ namespace PRReviewAgent.Services
         public GitHubWebhookCommentTask(PayloadIssueComment payloadIssueComment)
         {
             payloadIssueComment_ = payloadIssueComment;
-            
+
             // Determine the language for the review based on the comment body.
             // If no language is specified or supported, fall back to the default language from settings.
             language_ = GitLabWebhookCommentTask.FindLanguage(payloadIssueComment_.comment.body);
@@ -48,6 +50,28 @@ namespace PRReviewAgent.Services
             string json = Newtonsoft.Json.JsonConvert.SerializeObject(payload_, Newtonsoft.Json.Formatting.Indented);
             System.IO.File.WriteAllText("payload_comment.json", json);
 #endif
+        }
+
+        public GitHubWebhookCommentTask(PayloadPullRequestEvent prEvent, string language)
+        {
+            pullRequestNumber_ = prEvent.number;
+            language_ = language;
+            if (string.IsNullOrEmpty(language_) || !Context.Instance.Settings.HasTemplate(language_))
+            {
+                Tomlyn.Model.TomlTable? commonTable = (Tomlyn.Model.TomlTable)Context.Instance.Settings.Config["common"];
+                language_ = (string)commonTable["default_language"];
+            }
+            payloadIssueComment_ = new GitHubWebhook.PayloadIssueComment
+            {
+                repository = prEvent.repository,
+                issue = new GitHubWebhook.PayloadIssue
+                {
+                    title = prEvent.pull_request.title,
+                    body = prEvent.pull_request.body ?? string.Empty,
+                    pull_request = new GitHubWebhook.PayloadPullRequest { url = string.Empty },
+                },
+                comment = new GitHubWebhook.PayloadComment { id = 0, body = string.Empty },
+            };
         }
 
         /// <summary>
@@ -128,6 +152,38 @@ namespace PRReviewAgent.Services
 
             Context context = Context.Instance;
 
+            // Resolve project identity early — needed for status comment service.
+            string externalProjectId = $"github:{payloadIssueComment_.repository.id}";
+            string mergeRequestId = $"github/{payloadIssueComment_.repository.id}/{pullRequestNumber_}";
+            ProjectRepository? projectRepository = serviceProvider.GetService<ProjectRepository>();
+            AutoImprove.Project? project = null;
+            if (projectRepository != null)
+            {
+                try
+                {
+                    project = await projectRepository.GetOrCreateAsync(
+                        externalProjectId,
+                        payloadIssueComment_.repository.name ?? externalProjectId,
+                        payloadIssueComment_.repository.html_url,
+                        cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to resolve project");
+                }
+            }
+
+            IReviewStatusCommentService? statusService = serviceProvider.GetService<IReviewStatusCommentService>();
+            GitHubReviewCommentProvider? statusProvider = project != null
+                ? new GitHubReviewCommentProvider(gitHubClient, payloadIssueComment_.repository.id, pullRequestNumber_)
+                : null;
+
+            if (statusService != null && statusProvider != null)
+            {
+                try { await statusService.BeginReviewAsync(statusProvider, project!.Id, mergeRequestId, cancellationToken); }
+                catch (Exception ex) { logger.LogError(ex, "Failed to post review begin status comment"); }
+            }
+
             // Step 1: Fetch the list of files included in this pull request.
             IReadOnlyList<PullRequestFile> files = await gitHubClient.PullRequest.Files(payloadIssueComment_.repository.id, pullRequestNumber_);
             List<ReviewContext> reviewContexts = new List<ReviewContext>();
@@ -143,7 +199,11 @@ namespace PRReviewAgent.Services
             }
             if (reviewContexts.Count <= 0)
             {
-                await PostCommentAsync("No reviews are generated. There are no diffs to review.", gitHubClient, logger);
+                if (statusService != null && statusProvider != null)
+                {
+                    try { await statusService.CompleteReviewAsync(statusProvider, project!.Id, mergeRequestId, "No reviews are generated. There are no diffs to review.", cancellationToken); }
+                    catch (Exception ex) { logger.LogError(ex, "Failed to post review complete status comment"); }
+                }
                 return;
             }
 
@@ -199,27 +259,6 @@ namespace PRReviewAgent.Services
             reviewRequest.MergeRequestDescription = payloadIssueComment_.issue.body?? string.Empty;
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template(language_);
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
-
-            // Resolve project identity (used for both learned rules and execution statistics).
-            string externalProjectId = $"github:{payloadIssueComment_.repository.id}";
-            string mergeRequestId = $"github/{payloadIssueComment_.repository.id}/{pullRequestNumber_}";
-            ProjectRepository? projectRepository = serviceProvider.GetService<ProjectRepository>();
-            AutoImprove.Project? project = null;
-            if (projectRepository != null)
-            {
-                try
-                {
-                    project = await projectRepository.GetOrCreateAsync(
-                        externalProjectId,
-                        payloadIssueComment_.repository.name ?? externalProjectId,
-                        payloadIssueComment_.repository.html_url,
-                        cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Failed to resolve project");
-                }
-            }
 
             Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
             foreach (ReviewContext reviewContext in reviewContexts)
@@ -502,24 +541,35 @@ namespace PRReviewAgent.Services
                     }
                     catch (Exception rex) { logger.LogError(rex, "Failed to record review execution failure"); }
                 }
-                await PostCommentAsync("No reviews are generated.", gitHubClient, logger);
+                if (statusService != null && statusProvider != null)
+                {
+                    try { await statusService.FailReviewAsync(statusProvider, project!.Id, mergeRequestId, cancellationToken); }
+                    catch (Exception rex) { logger.LogError(rex, "Failed to post review fail status comment"); }
+                }
                 return;
             }
 
             // Step 8: Merge reviews and post comment.
+            string organizedReview;
             if (reviews.Count <= 0)
             {
-                await PostCommentAsync("No reviews are generated.", gitHubClient, logger);
-                return;
+                organizedReview = "No reviews are generated.";
+            }
+            else
+            {
+                stringBuilder_.Clear();
+                foreach (string review in reviews)
+                {
+                    stringBuilder_.Append(review).Append("\n\n---\n\n");
+                }
+                organizedReview = stringBuilder_.ToString();
             }
 
-            stringBuilder_.Clear();
-            foreach (string review in reviews)
+            if (statusService != null && statusProvider != null)
             {
-                stringBuilder_.Append(review).Append("\n\n---\n\n");
+                try { await statusService.CompleteReviewAsync(statusProvider, project!.Id, mergeRequestId, organizedReview, cancellationToken); }
+                catch (Exception ex) { logger.LogError(ex, "Failed to post review complete status comment"); }
             }
-            string organizedReview = stringBuilder_.ToString();
-            await PostCommentAsync(organizedReview, gitHubClient, logger);
             logger.LogInformation($"Final review:\n{organizedReview}");
         }
 
@@ -656,34 +706,6 @@ namespace PRReviewAgent.Services
                     return Path.ChangeExtension(path, ".cpp").Replace("include", "source");
                 default:
                     return null;
-            }
-        }
-
-        private const int MaxLogLength = 128;
-        private async Task PostCommentAsync(string comment, Octokit.GitHubClient gitHubClient, ILogger<GitHubWebhookCommentTask>? logger)
-        {
-            PullRequestReviewCommentEdit pullRequestReviewCommentEdit = new PullRequestReviewCommentEdit(comment);
-            try
-            {
-                await gitHubClient.PullRequest.ReviewComment.Edit(payloadIssueComment_.repository.id, payloadIssueComment_.comment.id, pullRequestReviewCommentEdit);
-                if (logger.IsEnabled(LogLevel.Information))
-                {
-                    ReadOnlySpan<char> span = comment.AsSpan();
-                    int length;
-                    for (length = 0; length < span.Length && length < MaxLogLength; ++length)
-                    {
-                        if (span[length] == '\n' || span[length] == '\r')
-                        {
-                            break;
-                        }
-                    }
-                    span = span.Slice(0, length);
-                    logger.LogInformation($"Comment is updated. {span}");
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex.Message);
             }
         }
 

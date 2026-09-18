@@ -1,1797 +1,1698 @@
-# Phase 9 Implementation Instructions — ASP.NET Statistics Dashboard
+# Implementation Instructions — Per-User Auto Review Opt-In/Opt-Out
 
 ## Objective
 
-Implement Phase 9 of the usage statistics roadmap by adding an ASP.NET web dashboard for the telemetry and aggregate statistics exposed by Phase 8.
+Add a provider-neutral automatic review preference system that allows each user to enable or disable automatic review per project.
 
-Phase 8 already provides a dedicated `IStatisticsService` and reporting DTOs.
+The feature must work consistently for both GitHub pull requests and GitLab merge requests.
 
-Phase 9 must build a lightweight, maintainable web UI over that service without duplicating SQL or aggregation logic in controllers, Razor Pages, or views.
+The system must support:
+
+```text
+/auto_review on
+/auto_review on /ja
+/auto_review on /en
+/auto_review off
+```
+
+and reuse the existing review pipeline already triggered by:
+
+```text
+/review
+/review /ja
+/review /en
+```
 
 The main outcome must be:
 
-> Operators can inspect review usage, model/token usage, review quality signals, learned-rule behavior, rule-search performance, and project-level comparisons from ASP.NET web pages.
-
-Do not redesign the statistics service.
-
-Do not add new telemetry collection in this phase.
+> Automatic review behavior is controlled by server configuration plus a persistent per-project/per-user override stored in SQLite, while all actual reviews continue to use the existing review execution sequence.
 
 ---
 
-# 1. Prerequisites
+# 1. Existing Review Command Behavior
 
-Phases 1 through 8 are assumed to be complete.
-
-The application should already have:
-
-* `projects`
-* `learned_rules`
-* `review_executions`
-* `review_turns`
-* `rule_learning_events`
-* `rule_search_executions`
-* `review_rule_usage`
-* `IStatisticsService`
-* Statistics DTOs
-* Project-aware statistics queries
-* Time-range-aware statistics queries
-* Overview aggregation
-* Review aggregation
-* Rule aggregation
-* Project comparison aggregation
-* Trend/time-series aggregation
-
-The dashboard must consume these existing APIs.
-
----
-
-# 2. Scope
-
-Implement only the following:
-
-1. Add ASP.NET statistics routes/pages.
-2. Add a shared statistics layout/navigation entry if appropriate.
-3. Add an overview page.
-4. Add a review statistics page.
-5. Add a learned-rule statistics page.
-6. Add a project comparison page.
-7. Add summary metric cards.
-8. Add charts for key time-series and category metrics.
-9. Add tables for detailed statistics.
-10. Add empty/error states.
-11. Add responsive styling consistent with the existing application.
-12. Add automated tests for page routing and service integration.
-13. Keep all aggregation logic inside `IStatisticsService`.
-
-Phase 10 will add richer global project/date filters if they are not already naturally required by the current page implementation.
-
----
-
-# 3. Technology Choice
-
-Use the existing ASP.NET UI style already used by the project.
-
-Prefer:
-
-* Razor Pages if the application already uses Razor Pages.
-* MVC views if the application already uses MVC.
-
-Do not introduce a separate SPA framework solely for statistics.
-
-Do not add React, Vue, Angular, or another frontend application unless the existing project already uses it.
-
-Keep the dashboard part of the current ASP.NET application.
-
----
-
-# 4. Recommended Routes
-
-Add the following routes or their equivalent using existing routing conventions:
+The application already supports:
 
 ```text
-/statistics
-/statistics/reviews
-/statistics/rules
-/statistics/projects
+/review
+/review /ja
+/review /en
 ```
 
-Suggested meanings:
+The configured default language comes from:
 
-```text
-/statistics
-    Overall system summary
-
-/statistics/reviews
-    Detection / Selection review pipeline statistics
-
-/statistics/rules
-    Learned-rule lifecycle, search, and effectiveness statistics
-
-/statistics/projects
-    Multi-project comparison
+```toml
+[common]
+default_language = "ja"
 ```
 
-Use route naming conventions already established in the application.
+The new auto-review commands must reuse the same language parsing and review execution logic.
+
+Do not build a second review pipeline specifically for automatic review.
 
 ---
 
-# 5. Shared Dashboard Navigation
+# 2. New Commands
 
-Provide a simple statistics navigation element.
-
-Recommended tabs or links:
+Support:
 
 ```text
-Overview
-Reviews
-Rules
-Projects
+/auto_review on
+/auto_review on /ja
+/auto_review on /en
+/auto_review off
 ```
 
-The active page should be visually clear.
+Semantics:
 
-Do not build a separate navigation framework if the application already has one.
+## `/auto_review on`
 
-Integrate with the existing layout where appropriate.
+* Persist automatic review as enabled for the current `(ProjectId, UserId)`.
+* Resolve language using `config.toml` `default_language`.
+* Immediately start the normal review sequence for the current PR/MR.
+
+## `/auto_review on /ja`
+
+* Persist automatic review as enabled.
+* Start the normal review sequence immediately.
+* Use Japanese for this review.
+
+## `/auto_review on /en`
+
+* Persist automatic review as enabled.
+* Start the normal review sequence immediately.
+* Use English for this review.
+
+## `/auto_review off`
+
+* Persist automatic review as disabled.
+* Do not start a review.
+* Return a confirmation response.
 
 ---
 
-# 6. No SQL in the Web Layer
+# 3. Language Scope
 
-Controllers, Razor PageModels, and views must not query telemetry tables directly.
+The language argument on:
 
-Incorrect:
+```text
+/auto_review on /ja
+/auto_review on /en
+```
+
+applies only to the review triggered by that command.
+
+Do not persist a user-specific language preference in SQLite.
+
+Future automatic reviews triggered by a newly opened PR/MR must use:
+
+```text
+[common].default_language
+```
+
+from `config.toml`.
+
+The persistence model should therefore remain:
+
+```text
+ProjectId
+UserId
+Enabled
+```
+
+and should not add:
+
+```text
+PreferredLanguage
+```
+
+in this phase.
+
+---
+
+# 4. Shared Language Resolution
+
+Reuse the same language parser and validation logic used by `/review`.
+
+Preferred behavior:
+
+```text
+command language specified
+    -> use command language
+
+command language missing
+    -> use config.toml default_language
+```
+
+Conceptually:
 
 ```csharp
-SELECT ...
-FROM review_executions
+string language =
+    command.Language
+    ?? _commonOptions.DefaultLanguage;
 ```
 
-inside a controller or page model.
+Do not implement separate language parsing for `/auto_review`.
 
-Required:
+Unknown or unsupported language arguments must behave consistently with `/review`.
+
+---
+
+# 5. Configuration
+
+Add a new section to `config.toml`.
+
+Recommended:
+
+```toml
+[auto_review]
+enabled = true
+mode = "opt_in"
+```
+
+Supported modes:
+
+```text
+opt_in
+opt_out
+```
+
+---
+
+# 6. Meaning of `enabled`
+
+`enabled` is the global master switch for automatic review.
+
+## `enabled = false`
+
+Automatic review is completely disabled.
+
+Required behavior:
+
+* PR/MR opened events do not trigger review.
+* `/auto_review on` does not enable automatic review.
+* `/auto_review off` does not need to modify behavior.
+* The command should return a clear message that automatic review is disabled by server configuration.
+* Manual `/review` must continue to work normally.
+
+## `enabled = true`
+
+Per-user auto-review configuration is active.
+
+---
+
+# 7. Meaning of `mode`
+
+`mode` defines the default state for users without a stored preference.
+
+## `mode = "opt_in"`
+
+Default:
+
+```text
+automatic review OFF
+```
+
+Only users who explicitly use:
+
+```text
+/auto_review on
+```
+
+receive automatic reviews.
+
+## `mode = "opt_out"`
+
+Default:
+
+```text
+automatic review ON
+```
+
+Users receive automatic reviews unless they explicitly use:
+
+```text
+/auto_review off
+```
+
+---
+
+# 8. Configuration vs User Override
+
+Use this precedence:
+
+```text
+1. auto_review.enabled
+2. stored per-user setting
+3. auto_review.mode default
+```
+
+Conceptually:
 
 ```csharp
-var statistics =
-    await _statisticsService.GetOverviewAsync(
-        query,
+if (!options.Enabled)
+    return false;
+
+bool? userSetting =
+    await repository.GetAsync(
+        projectId,
+        userId,
         cancellationToken);
+
+if (userSetting.HasValue)
+    return userSetting.Value;
+
+return options.Mode switch
+{
+    AutoReviewMode.OptIn => false,
+    AutoReviewMode.OptOut => true,
+    _ => false
+};
 ```
 
-All metric definitions must remain owned by Phase 8.
+This distinction is important.
+
+`config.toml` defines the default policy.
+
+SQLite stores explicit user choice.
 
 ---
 
-# 7. Page Models / View Models
+# 9. Configuration Changes Must Preserve Explicit User Choice
 
-The web layer may introduce display-oriented view models, but they should wrap Phase 8 DTOs rather than reproduce business calculations.
+Example:
 
-Good:
+Initial configuration:
+
+```toml
+[auto_review]
+enabled = true
+mode = "opt_in"
+```
+
+User A has never configured auto review:
+
+```text
+effective state = OFF
+```
+
+User B executes:
+
+```text
+/auto_review on
+```
+
+SQLite stores:
+
+```text
+User B = ON
+```
+
+Later the administrator changes:
+
+```toml
+mode = "opt_out"
+```
+
+Expected:
+
+```text
+User A -> ON
+User B -> ON
+```
+
+If User C previously executed:
+
+```text
+/auto_review off
+```
+
+then:
+
+```text
+User C -> OFF
+```
+
+Explicit DB state always overrides the default mode.
+
+---
+
+# 10. SQLite Persistence
+
+Add a dedicated table.
+
+Recommended name:
+
+```text
+auto_review_user_settings
+```
+
+Recommended schema:
+
+```sql
+CREATE TABLE auto_review_user_settings (
+    project_id      INTEGER NOT NULL,
+    user_id         TEXT NOT NULL,
+    enabled         INTEGER NOT NULL,
+
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+
+    PRIMARY KEY(project_id, user_id),
+
+    FOREIGN KEY(project_id)
+        REFERENCES projects(id)
+);
+```
+
+Follow existing naming and timestamp conventions.
+
+---
+
+# 11. Why the Composite Key Is Required
+
+User preference is project-specific.
+
+The same user may want:
+
+```text
+Project A -> auto review ON
+Project B -> auto review OFF
+```
+
+Therefore the logical key must be:
+
+```text
+(ProjectId, UserId)
+```
+
+Do not key preferences by UserId alone.
+
+---
+
+# 12. Stable User Identity
+
+Use the stable provider user ID supplied by GitHub or GitLab.
+
+Do not use:
+
+* Display name
+* Username if a more stable numeric/provider ID exists
+* Email address
+* Comment author text
+
+The provider adapter must expose a stable user identifier.
+
+Normalize it into the common application model as a string if needed.
+
+---
+
+# 13. GitHub/GitLab Neutral Event Model
+
+Auto-review logic must not depend on GitHub- or GitLab-specific event payload types.
+
+Normalize opened PR/MR events into a common representation.
+
+Example:
 
 ```csharp
-public sealed class StatisticsOverviewViewModel
+public sealed record MergeRequestOpenedEvent(
+    string ExternalProjectId,
+    string MergeRequestId,
+    string AuthorUserId);
+```
+
+The actual type/name may follow existing conventions.
+
+The important fields are:
+
+```text
+Project identity
+Merge/Pull Request identity
+Author User ID
+```
+
+---
+
+# 14. Repository API
+
+Introduce a focused persistence abstraction.
+
+Example:
+
+```csharp
+public interface IAutoReviewUserSettingRepository
 {
-    public OverviewStatistics Statistics { get; init; }
+    Task<bool?> GetAsync(
+        long projectId,
+        string userId,
+        CancellationToken cancellationToken);
 
-    public IReadOnlyList<ReviewTrendPoint> ReviewTrend { get; init; }
-
-    public IReadOnlyList<TokenTrendPoint> TokenTrend { get; init; }
+    Task SetAsync(
+        long projectId,
+        string userId,
+        bool enabled,
+        CancellationToken cancellationToken);
 }
 ```
 
-Avoid:
+Returning `bool?` is useful:
+
+```text
+true  -> explicit ON
+false -> explicit OFF
+null  -> no user override exists
+```
+
+Do not collapse `null` into the config default inside the repository.
+
+The policy layer owns that decision.
+
+---
+
+# 15. Upsert Behavior
+
+Use an atomic SQLite upsert.
+
+Conceptually:
+
+```sql
+INSERT INTO auto_review_user_settings (
+    project_id,
+    user_id,
+    enabled,
+    created_at,
+    updated_at
+)
+VALUES (
+    @projectId,
+    @userId,
+    @enabled,
+    @now,
+    @now
+)
+ON CONFLICT(project_id, user_id)
+DO UPDATE SET
+    enabled = excluded.enabled,
+    updated_at = excluded.updated_at;
+```
+
+Preserve `created_at` according to existing conventions.
+
+---
+
+# 16. Add AutoReview Options
+
+Introduce typed configuration.
+
+Example:
 
 ```csharp
-public double CalculateSelectionRate()
+public sealed class AutoReviewOptions
+{
+    public bool Enabled { get; init; }
+
+    public AutoReviewMode Mode { get; init; }
+}
 ```
 
-if that rate already comes from `IStatisticsService`.
+Example enum:
+
+```csharp
+public enum AutoReviewMode
+{
+    OptIn,
+    OptOut
+}
+```
+
+Validate configuration at startup if the application already uses options validation.
+
+Unknown values must not silently become an unsafe default.
+
+Prefer failing configuration validation or explicitly defaulting to `OptIn` according to existing conventions.
 
 ---
 
-# 8. Default Reporting Range
+# 17. Add AutoReview Policy
 
-The dashboard needs a deterministic initial time range.
+Introduce a provider-neutral policy service.
 
-Use a simple default such as:
+Example:
 
-```text
-Last 30 days
+```csharp
+public interface IAutoReviewPolicy
+{
+    Task<bool> IsEnabledAsync(
+        long projectId,
+        string userId,
+        CancellationToken cancellationToken);
+}
 ```
 
-unless the current application already has a standard reporting period.
+Responsibilities:
 
-Do not hardcode local-time assumptions inconsistently.
+```text
+global feature switch
++
+user override
++
+opt-in/opt-out default
+```
 
-The PageModel/controller should construct a `StatisticsQuery` and pass it to the service.
-
-Phase 10 may expand the filter experience.
+Do not put this decision logic inside GitHub/GitLab event handlers.
 
 ---
 
-# 9. Overview Page
+# 18. Command Parsing
 
-Route:
+Extend the existing command parser rather than creating an unrelated parser.
 
-```text
-/statistics
+A suitable internal model may be:
+
+```csharp
+public enum ReviewCommandType
+{
+    Review,
+    AutoReviewOn,
+    AutoReviewOff
+}
 ```
 
-This should be the primary entry point.
+with:
 
-Display top-level cards for:
-
-```text
-Projects
-Reviews
-Merge Requests
-Input Tokens
-Output Tokens
-Average Review Duration
-Error Rate
-Candidates
-Final Findings
-Selection Rate
+```csharp
+public sealed record ReviewCommand(
+    ReviewCommandType Type,
+    string? Language);
 ```
 
-Do not overload the first page with every available metric.
+Expected parse results:
 
-Prioritize system health and usage.
+```text
+/review
+    -> Review, null
+
+/review /ja
+    -> Review, ja
+
+/review /en
+    -> Review, en
+
+/auto_review on
+    -> AutoReviewOn, null
+
+/auto_review on /ja
+    -> AutoReviewOn, ja
+
+/auto_review on /en
+    -> AutoReviewOn, en
+
+/auto_review off
+    -> AutoReviewOff, null
+```
+
+Adapt this to the actual command architecture.
 
 ---
 
-# 10. Overview Metric Cards
+# 19. Do Not Duplicate Existing Review Command Logic
 
-A recommended first row:
-
-```text
-Reviews
-Input Tokens
-Output Tokens
-Avg Review Time
-```
-
-A second row may contain:
+If `/review` parsing currently has reusable components for:
 
 ```text
-Candidate Findings
-Final Findings
-Selection Rate
-Error Rate
+command recognition
+language validation
+language normalization
+review invocation
 ```
 
-If project count is important, place it near the page heading or first row.
+reuse them.
 
-Use the existing design system or CSS conventions.
+Do not create a parallel implementation for `/auto_review on`.
 
 ---
 
-# 11. Numeric Formatting
+# 20. `/auto_review on` Command Flow
 
-The view layer may format raw DTO values for readability.
-
-Examples:
+Required flow:
 
 ```text
-28400000 -> 28.4M
-12400 ms -> 12.4 s
-0.376 -> 37.6%
+Receive comment command
+      |
+      v
+Parse /auto_review on [language]
+      |
+      v
+Check auto_review.enabled
+      |
+      +-- false
+      |      |
+      |      v
+      |  return feature-disabled message
+      |
+      +-- true
+             |
+             v
+Resolve Project
+             |
+             v
+Resolve command author User ID
+             |
+             v
+Persist Enabled = true
+             |
+             v
+Resolve review language
+             |
+             v
+Enter existing normal review sequence
 ```
 
-Do not change the underlying numeric values.
-
-Formatting belongs in the web layer.
-
-Reuse existing formatting helpers if available.
+The actual review must be the same sequence used by `/review`.
 
 ---
 
-# 12. Duration Formatting
+# 21. `/auto_review off` Command Flow
 
-Use clear human-readable formatting.
-
-Examples:
+Required flow:
 
 ```text
-840 ms
-1.8 s
-12.4 s
+Receive /auto_review off
+      |
+      v
+Check auto_review.enabled
+      |
+      +-- disabled
+      |      |
+      |      v
+      |  return feature-disabled message
+      |
+      +-- enabled
+             |
+             v
+Resolve Project
+             |
+             v
+Resolve command author User ID
+             |
+             v
+Persist Enabled = false
+             |
+             v
+Return confirmation
 ```
 
-Avoid unnecessary precision.
-
-The raw service value remains milliseconds.
+Do not start a review.
 
 ---
 
-# 13. Percentage Formatting
+# 22. Manual `/review` Remains Independent
 
-Display rates such as:
+A user with automatic review disabled must still be able to run:
 
 ```text
-Selection Rate
-Error Rate
-Candidate Hit Rate
-Final Hit Rate
+/review
+/review /ja
+/review /en
 ```
 
-as percentages.
+Manual review does not consult auto-review preference.
+
+Conceptually:
+
+```text
+auto_review preference
+    -> controls only automatic triggering
+
+/review
+    -> explicit user request
+    -> always uses normal review pipeline
+```
+
+Do not couple the two.
+
+---
+
+# 23. PR/MR Open Event Flow
+
+When a new pull request or merge request is created:
+
+```text
+PR/MR Opened
+      |
+      v
+Resolve Project
+      |
+      v
+Get author User ID
+      |
+      v
+IAutoReviewPolicy.IsEnabledAsync(...)
+      |
+   +--+--+
+   |     |
+ false  true
+   |     |
+   v     v
+ stop   Resolve default language
+             |
+             v
+       Existing review pipeline
+```
+
+Do not create a dedicated "auto review pipeline."
+
+---
+
+# 24. Which User Controls Open-Event Auto Review
+
+Use the PR/MR author's user ID.
+
+Do not use:
+
+* Webhook sender if different from the author
+* Reviewer
+* Assignee
+* Person who last edited the MR
+* Repository owner
+
+The auto-review preference belongs to the author whose newly opened PR/MR is being evaluated.
+
+---
+
+# 25. Automatic Review Language
+
+For PR/MR opened events, use:
+
+```text
+[common].default_language
+```
+
+because there is no command language argument.
+
+Do not read a persisted per-user language preference because this phase does not store one.
+
+---
+
+# 26. `/auto_review on /ja` Does Two Things
+
+This command is intentionally both:
+
+```text
+settings command
++
+review trigger
+```
+
+Required semantics:
+
+```text
+1. Store AutoReview = ON
+2. Resolve current review language = ja
+3. Execute normal review
+```
+
+Do not require the user to then separately enter:
+
+```text
+/review /ja
+```
+
+---
+
+# 27. `/auto_review on` Without Language
+
+This command must:
+
+```text
+1. Store AutoReview = ON
+2. Resolve current review language from config.toml
+3. Execute normal review
+```
+
+Equivalent review-language behavior to:
+
+```text
+/review
+```
+
+---
+
+# 28. `/auto_review off /ja`
+
+Do not support language arguments for `off` unless there is an existing generic parser reason to accept and ignore them.
+
+Preferred valid syntax:
+
+```text
+/auto_review off
+```
+
+Preferred invalid syntax:
+
+```text
+/auto_review off /ja
+```
+
+Handle invalid syntax consistently with the current command parser.
+
+---
+
+# 29. Command Confirmation Behavior
+
+For `/auto_review on`, because the command immediately starts a normal review, avoid creating unnecessary extra persistent comments if the current review-status-comment system already shows:
+
+```text
+Review in progress
+```
+
+The stored review-status comment can serve as the visible confirmation that the command was accepted.
+
+If command acknowledgment already exists elsewhere, keep it concise.
+
+For `/auto_review off`, return a clear confirmation such as:
+
+```text
+Automatic review disabled for this project.
+```
+
+Follow the application's existing response style.
+
+---
+
+# 30. Global Feature Disabled Response
+
+If:
+
+```toml
+[auto_review]
+enabled = false
+```
+
+then:
+
+```text
+/auto_review on
+/auto_review off
+```
+
+should not silently succeed.
+
+Return a message equivalent to:
+
+```text
+Automatic review is disabled by server configuration.
+```
+
+Manual `/review` remains available.
+
+---
+
+# 31. Interaction with Persistent Review Status Comment
+
+The recently introduced owned review-status-comment mechanism must be reused.
+
+When `/auto_review on` triggers a review:
+
+```text
+AutoReview setting saved
+      |
+      v
+normal review starts
+      |
+      v
+Ensure owned status comment
+      |
+      v
+Reviewing...
+      |
+      v
+Detection
+      |
+      v
+Selection
+      |
+      v
+Update same comment with result
+```
+
+The same applies to a PR/MR opened event.
+
+Do not create a separate auto-review comment type.
+
+---
+
+# 32. Repeated Commands
+
+If a user repeatedly executes:
+
+```text
+/auto_review on
+```
+
+the state remains:
+
+```text
+Enabled = true
+```
+
+and each valid command may trigger the normal review sequence again.
+
+The existing per-MR owned comment should be reused.
+
+Similarly:
+
+```text
+/auto_review off
+```
+
+should be idempotent.
+
+---
+
+# 33. Auto Review Open Event Must Not Duplicate an Already-Running Review
+
+Inspect the existing per-MR review concurrency behavior.
+
+A PR/MR open event and a user command could occur close together.
 
 Example:
 
 ```text
-0.376
-```
+MR opened -> auto review starts
 
-becomes:
-
-```text
-37.6%
-```
-
-If the service returns `NULL`, display something like:
-
-```text
-—
+immediately afterward:
+/auto_review on
 ```
 
 or:
 
 ```text
-N/A
+/review
 ```
 
-Do not display `0%` for an undefined denominator.
+Reuse the existing per-MR review lock or duplicate-execution prevention mechanism.
+
+Do not create a separate global lock.
+
+The automatic trigger should enter the same concurrency boundary as manual review.
 
 ---
 
-# 14. Overview Charts
+# 34. Provider-Neutral User Preference
 
-Add a small number of useful charts.
+The preference system must remain common across GitHub and GitLab.
 
-Recommended:
+Provider adapters are responsible only for extracting:
 
 ```text
-Reviews over time
-Token usage over time
+project ID
+MR/PR ID
+user ID
+event type
+command text
 ```
 
-Optionally:
+The following must remain provider-neutral:
 
 ```text
-Findings over time
+AutoReviewOptions
+IAutoReviewUserSettingRepository
+IAutoReviewPolicy
+command semantics
+review trigger logic
 ```
 
-Do not turn the overview page into a dense analytics console.
-
 ---
 
-# 15. Chart Library
+# 35. Do Not Share Preferences Across Providers Accidentally
 
-If the application already has a chart library, reuse it.
-
-Otherwise, a lightweight library such as Chart.js is acceptable.
-
-Do not introduce a heavyweight visualization framework.
-
-Keep chart setup simple and local to the statistics pages.
-
----
-
-# 16. Chart Data Flow
-
-Pass chart data from the PageModel/controller into the view.
-
-Avoid making the browser reconstruct business statistics.
-
-Good:
+Because `project_id` is already provider/project-specific, the composite key:
 
 ```text
-ReviewTrendPoint[]
-TokenTrendPoint[]
+(ProjectId, UserId)
 ```
 
-Avoid requiring the browser to fetch raw review telemetry and aggregate it.
+is sufficient if internal project identity is globally unique.
+
+Do not assume that GitHub user ID `123` and GitLab user ID `123` represent the same human.
+
+Their settings remain isolated because they belong to different project records/provider contexts.
 
 ---
 
-# 17. Reviews Page
+# 36. Migration
 
-Route:
+Add a migration that:
+
+1. Creates `auto_review_user_settings`.
+2. Adds the project foreign key.
+3. Adds the composite primary key.
+4. Adds any genuinely necessary index not already covered by the primary key.
+
+Do not backfill user settings.
+
+Existing users should have:
 
 ```text
-/statistics/reviews
+no explicit DB override
 ```
 
-This page should focus on the two-turn review pipeline.
-
-Clearly separate:
+and therefore inherit:
 
 ```text
-Detection
-Selection
+auto_review.mode
 ```
-
-The page should make it easy to compare them.
 
 ---
 
-# 18. Detection Section
+# 37. Configuration Template
 
-Display:
+Update `config.template.toml` with:
+
+```toml
+[auto_review]
+# Enables automatic review on newly opened pull/merge requests.
+enabled = false
+
+# Default policy for users without an explicit per-project preference.
+# "opt_in": automatic review is disabled until the user runs /auto_review on.
+# "opt_out": automatic review is enabled until the user runs /auto_review off.
+mode = "opt_in"
+```
+
+Choose the default according to the product's desired rollout policy.
+
+For a conservative rollout, prefer:
 
 ```text
-Calls
-Successful Calls
-Failed Calls
-Input Tokens
-Output Tokens
-Average Duration
-Average Candidate Findings
+enabled = false
+mode = "opt_in"
 ```
 
-Use the Phase 8 `ReviewTurnStatistics`.
+unless the existing requirements specify otherwise.
 
 ---
 
-# 19. Selection Section
+# 38. README Update
 
-Display:
+Update README configuration documentation to describe:
 
 ```text
-Calls
-Successful Calls
-Failed Calls
-Input Tokens
-Output Tokens
-Average Duration
-Average Selected Findings
+[auto_review]
+enabled
+mode
 ```
 
-Use the same visual structure as Detection so comparison is easy.
-
----
-
-# 20. Candidate-to-Final Funnel
-
-Display:
+and commands:
 
 ```text
-Candidate Findings
-Final Findings
-Selection Rate
+/auto_review on
+/auto_review on /ja
+/auto_review on /en
+/auto_review off
 ```
 
-This may be represented as:
+Document clearly that:
 
-* Metric cards
-* A simple funnel-like visual
-* A compact horizontal comparison
-
-Do not introduce a complex chart solely for decoration.
-
----
-
-# 21. Severity Distribution
-
-Display final finding totals by severity:
-
-```text
-Critical
-Major
-Minor
-```
-
-A bar or doughnut chart is acceptable.
-
-The data must come from Phase 8 statistics.
-
-Do not recalculate from raw findings in the browser.
+* `/auto_review on` immediately runs a review.
+* Language arguments apply only to that review.
+* Future automatic reviews use `default_language`.
+* Preferences are stored per project/user.
+* Manual `/review` remains available regardless of auto-review setting.
 
 ---
 
-# 22. Model Usage Section
+# 39. Logging
 
-If Phase 8 exposes model usage statistics, add a table such as:
-
-```text
-Model
-Calls
-Input Tokens
-Output Tokens
-Avg Duration
-Failures
-```
-
-This is useful even if both turns currently use the same regular model.
-
-The system should remain ready for future model configuration changes.
-
----
-
-# 23. Rules Page
-
-Route:
-
-```text
-/statistics/rules
-```
-
-This page should focus on three distinct areas:
-
-1. Current learned-rule state
-2. Rule lifecycle activity
-3. Rule search/effectiveness
-
-Do not mix these concepts without labels.
-
----
-
-# 24. Rule Summary Cards
-
-Recommended cards:
-
-```text
-Active Rules
-Rules Created
-Rules Expired
-Confidence Increases
-Confidence Decreases
-```
-
-Remember:
-
-```text
-Active Rules
-```
-
-is current-state data.
-
-The event counts are time-range data.
-
-If the page displays both, label them clearly.
-
----
-
-# 25. Rule Search Performance Section
-
-Display:
-
-```text
-Average Rules Scanned
-Average Candidate Rules
-Average Selected Rules
-Average Search Duration
-Average Embedding Duration
-```
-
-If embedding duration is unavailable/null, display:
-
-```text
-—
-```
-
-Do not imply zero work.
-
----
-
-# 26. Rule Search Funnel
-
-A compact representation may show:
-
-```text
-Rules Scanned
-    ↓
-Candidates
-    ↓
-Selected for Prompt
-```
-
-Use average counts for the requested period if that is what the Phase 8 DTO exposes.
-
-Clearly label them as averages.
-
----
-
-# 27. Rule Usage Table
-
-Display a rule-level table using Phase 8 rule usage statistics.
-
-Recommended columns:
-
-```text
-Project
-Rule
-Candidate Matches
-Prompt Uses
-Produced Candidate
-Produced Final
-Candidate Hit Rate
-Final Hit Rate
-```
-
-For a single-project context, the Project column may be omitted.
-
-For all-project context, project identity must remain visible.
-
----
-
-# 28. Expired Rule Display
-
-Historical rule usage may exist for rules no longer present in `learned_rules`.
-
-The page must tolerate:
-
-```text
-RuleDisplayText = null
-```
-
-Use a fallback such as:
-
-```text
-rule-123
-```
-
-or another canonical rule ID.
-
-Do not hide historical records simply because the active rule expired.
-
----
-
-# 29. Rule Text Length
-
-Do not display very long rule content unbounded in a table.
-
-Use:
-
-* Truncation
-* CSS line clamp
-* Details/expand interaction if the existing UI supports it
-
-Always keep the canonical rule ID available.
-
----
-
-# 30. Projects Page
-
-Route:
-
-```text
-/statistics/projects
-```
-
-This page should provide cross-project operational comparison.
-
-Recommended columns:
-
-```text
-Project
-Reviews
-Input Tokens
-Output Tokens
-Avg Review Time
-Selection Rate
-Error Rate
-Active Rules
-Avg Rule Search Time
-```
-
-Use `ProjectStatistics` from Phase 8.
-
----
-
-# 31. Project Table Behavior
-
-The table should be:
-
-* Readable
-* Responsive
-* Deterministically ordered
-* Usable with more than a handful of projects
-
-If the current application already has table components, reuse them.
-
-Do not introduce advanced client-side table libraries unless needed.
-
----
-
-# 32. Avoid Misleading Rankings
-
-The project page is a comparison view, not a scoring system.
-
-Do not introduce labels such as:
-
-```text
-Best Project
-Worst Project
-Healthy
-Unhealthy
-```
-
-unless those concepts already exist formally in the application.
-
-Present measured statistics only.
-
----
-
-# 33. Empty States
-
-Each page must handle no data gracefully.
-
-Examples:
-
-```text
-No reviews recorded in this period.
-No learned-rule search data is available.
-No rule usage has been recorded yet.
-```
-
-Do not render broken charts or empty HTML tables.
-
----
-
-# 34. Partial Legacy Data
-
-The UI must tolerate legacy records where some telemetry is missing.
-
-Examples:
-
-```text
-ReviewExecution exists
-ReviewTurn missing
-
-Rule usage missing
-Search telemetry missing
-```
-
-Display available data and use `—` for unavailable values.
-
-Do not throw page-level errors because one metric is unavailable.
-
----
-
-# 35. Service Failure Handling
-
-If `IStatisticsService` throws due to a database/query failure:
-
-* Follow the existing ASP.NET error-handling conventions.
-* Avoid exposing SQL, stack traces, or internal schema details to users.
-* Log the error through existing structured logging.
-* Render a useful generic error state where appropriate.
-
-Do not swallow failures silently.
-
----
-
-# 36. Loading Behavior
-
-For a normal SQLite-backed local dashboard, server-rendered pages are sufficient.
-
-Do not add asynchronous client-side loading unless necessary.
-
-Prefer:
-
-```text
-Request
-   |
-   v
-PageModel/Controller
-   |
-   v
-IStatisticsService
-   |
-   v
-Rendered HTML
-```
-
-This keeps the implementation simple.
-
----
-
-# 37. Responsive Layout
-
-The dashboard should work on typical desktop widths and remain usable on narrower screens.
-
-Recommended approach:
-
-* CSS grid/flex for metric cards
-* Horizontally scrollable tables if needed
-* Charts that resize to container width
-* Avoid fixed pixel page widths
-
-Follow the existing application stylesheet.
-
----
-
-# 38. Accessibility
-
-Use semantic HTML.
-
-Ensure:
-
-* Tables have headers.
-* Charts have visible titles.
-* Color is not the only way to distinguish severity.
-* Navigation can be used with keyboard.
-* Important data remains available in text form even if charts fail.
-
-Do not rely on chart tooltips as the only way to access metrics.
-
----
-
-# 39. Severity Styling
-
-Use restrained styling for:
-
-```text
-Critical
-Major
-Minor
-```
-
-Follow any existing severity color conventions.
-
-If none exist, do not create overly aggressive visual styling.
-
-Text labels must remain visible.
-
----
-
-# 40. Security / Authorization
-
-Inspect the existing application's authorization model.
-
-If the application already restricts administrative/configuration pages, statistics pages should follow the appropriate existing policy.
-
-Do not invent a new authentication system.
-
-Do not expose dashboard pages publicly if the rest of the administrative UI is protected.
-
-Document the chosen authorization behavior.
-
----
-
-# 41. Project Names and URLs
-
-Treat project names and repository URLs as untrusted display data.
-
-Use Razor/MVC's normal HTML encoding.
-
-Do not render repository metadata through raw HTML.
-
-Avoid XSS vulnerabilities.
-
----
-
-# 42. No Raw Review Content
-
-The statistics dashboard should not display:
-
-* Source code
-* Full prompts
-* Full model responses
-* Merge request diff contents
-
-unless the application already explicitly supports such a detail view.
-
-Phase 9 is aggregate reporting.
-
----
-
-# 43. No Full Error Messages
-
-If error categories are displayed later, use stable categories such as:
-
-```text
-Timeout
-ModelRequestFailed
-ModelResponseInvalid
-```
-
-Do not expose stored exception payloads or stack traces.
-
----
-
-# 44. Page Query Construction
-
-Each page should create one consistent `StatisticsQuery`.
+Add useful structured logs.
 
 Example:
 
 ```csharp
-var query = new StatisticsQuery(
-    ProjectId: null,
-    From: from,
-    To: to);
+_logger.LogInformation(
+    "Auto review {EnabledState} for project {ProjectId}, user {UserId}",
+    enabled,
+    projectId,
+    userId);
 ```
 
-Reuse that query for all service calls on the page where possible.
+On automatic trigger:
 
-This prevents inconsistent date windows between cards and charts.
+```csharp
+_logger.LogInformation(
+    "Starting automatic review for project {ProjectId}, merge request {MergeRequestId}, author {UserId}",
+    projectId,
+    mergeRequestId,
+    userId);
+```
+
+Do not log secrets or access tokens.
 
 ---
 
-# 45. Current Phase Filter Scope
+# 40. Do Not Use Logs as Preference Storage
 
-If Phase 10 is reserved for the full filter UI, Phase 9 may use a fixed default period and all-project view.
+SQLite is authoritative.
 
-However, structure PageModels/controllers so that adding:
+Preferences must survive application restart.
+
+Do not reconstruct state from past commands or logs.
+
+---
+
+# 41. Cancellation
+
+Propagate `CancellationToken` through:
 
 ```text
-projectId
-from
-to
+setting lookup
+setting upsert
+policy evaluation
+command handling
+opened-event handling
+review invocation
 ```
 
-query parameters in Phase 10 is straightforward.
-
-Do not hardwire service calls deep into views.
+Do not weaken the existing review cancellation semantics.
 
 ---
 
-# 46. Overview Page Service Calls
+# 42. Tests
 
-A reasonable implementation may call:
+Add focused automated tests.
 
-```csharp
-GetOverviewAsync(...)
-GetReviewTrendAsync(...)
-GetTokenTrendAsync(...)
+At minimum implement the following.
+
+## Test 1 — Opt-In Default Is Off
+
+Given:
+
+```toml
+enabled = true
+mode = "opt_in"
 ```
 
-in parallel if the project's async/data-access conventions make this safe.
+and no DB row:
 
-Do not complicate the implementation solely to optimize a few local SQLite reads.
-
-Correctness and clarity come first.
+```text
+IsEnabled = false
+```
 
 ---
 
-# 47. Reviews Page Service Calls
+## Test 2 — Opt-Out Default Is On
 
-Expected primary call:
+Given:
 
-```csharp
-GetReviewStatisticsAsync(...)
+```toml
+enabled = true
+mode = "opt_out"
 ```
 
-and optionally:
+and no DB row:
 
-```csharp
-GetModelUsageAsync(...)
+```text
+IsEnabled = true
 ```
-
-if model usage is exposed separately.
-
-Do not query `review_turns` directly.
 
 ---
 
-# 48. Rules Page Service Calls
+## Test 3 — Global Disabled Always Wins
 
-Expected calls may include:
+Given:
 
-```csharp
-GetRuleStatisticsAsync(...)
+```toml
+enabled = false
 ```
 
-and, if Phase 8 separated the table query:
+and DB:
 
-```csharp
-GetRuleUsageAsync(...)
+```text
+Enabled = true
 ```
 
-Reuse the actual Phase 8 API.
+verify:
 
-Do not modify service contracts unnecessarily solely for the page layout.
+```text
+effective auto review = false
+```
 
 ---
 
-# 49. Projects Page Service Call
+## Test 4 — Explicit ON Overrides Opt-In Default
+
+Store:
+
+```text
+Enabled = true
+```
+
+under opt-in.
+
+Verify effective state is true.
+
+---
+
+## Test 5 — Explicit OFF Overrides Opt-Out Default
+
+Store:
+
+```text
+Enabled = false
+```
+
+under opt-out.
+
+Verify effective state is false.
+
+---
+
+## Test 6 — Preferences Are Project-Specific
+
+Create:
+
+```text
+Project A / User 123 = ON
+Project B / User 123 = OFF
+```
+
+Verify independent results.
+
+---
+
+## Test 7 — `/auto_review on`
+
+Run:
+
+```text
+/auto_review on
+```
+
+Verify:
+
+* DB setting becomes true.
+* Existing review pipeline is invoked.
+* Language equals `default_language`.
+
+---
+
+## Test 8 — `/auto_review on /ja`
+
+Verify:
+
+```text
+DB setting = true
+review invoked
+language = ja
+```
+
+---
+
+## Test 9 — `/auto_review on /en`
+
+Verify:
+
+```text
+DB setting = true
+review invoked
+language = en
+```
+
+---
+
+## Test 10 — `/auto_review off`
+
+Verify:
+
+```text
+DB setting = false
+review pipeline not invoked
+```
+
+---
+
+## Test 11 — Manual `/review` Ignores Auto-Review OFF
+
+Store:
+
+```text
+auto review = false
+```
+
+Run:
+
+```text
+/review
+```
+
+Verify the review still starts.
+
+---
+
+## Test 12 — Manual `/review /ja`
+
+Verify existing behavior remains unchanged.
+
+---
+
+## Test 13 — Open Event with Enabled Preference
+
+Create an opened PR/MR from a user whose effective auto-review setting is true.
+
+Verify:
+
+* Existing normal review pipeline starts.
+* Language equals `default_language`.
+
+---
+
+## Test 14 — Open Event with Disabled Preference
+
+Verify no review starts.
+
+---
+
+## Test 15 — Open Event Uses Author User ID
+
+Create an event where webhook sender and PR/MR author differ.
+
+Verify policy lookup uses the PR/MR author.
+
+---
+
+## Test 16 — GitHub and GitLab Use Same Policy
+
+Provide equivalent normalized opened events from both providers.
+
+Verify the same `IAutoReviewPolicy` behavior is used.
+
+---
+
+## Test 17 — Same Numeric User ID Across Providers Is Not Shared Globally
+
+Ensure project/provider isolation prevents accidental preference sharing.
+
+---
+
+## Test 18 — Invalid Language Handling
+
+Run:
+
+```text
+/auto_review on /invalid
+```
+
+Verify behavior matches existing `/review /invalid` validation semantics.
+
+Do not silently persist ON and then fail review in an inconsistent state unless that ordering is explicitly intended.
+
+Prefer validating command syntax/language before mutating persistent state.
+
+---
+
+# 43. Important Ordering for `/auto_review on /lang`
+
+Validate the entire command before persisting the setting.
+
+Preferred flow:
+
+```text
+Parse command
+      |
+      v
+Validate on/off
+      |
+      v
+Validate optional language
+      |
+      v
+Check feature enabled
+      |
+      v
+Persist ON
+      |
+      v
+Start review
+```
+
+This prevents malformed input such as:
+
+```text
+/auto_review on /invalid
+```
+
+from unexpectedly changing user preference.
+
+---
+
+# 44. Review Failure Does Not Roll Back Preference
+
+Once a valid:
+
+```text
+/auto_review on
+```
+
+command successfully persists the setting, a later review failure must not revert it.
+
+These are separate operations:
+
+```text
+preference update
+review execution
+```
+
+Example:
+
+```text
+AutoReview ON saved successfully
+review model later fails
+```
 
 Expected:
 
-```csharp
-GetProjectStatisticsAsync(...)
+```text
+AutoReview remains ON
 ```
 
-This should supply the entire table.
-
-Do not issue one service/database call per project from the web layer.
-
-Avoid N+1 page rendering.
-
 ---
 
-# 50. Chart Serialization
+# 45. Open-Event Review Failure Does Not Change Preference
 
-If charts need JSON embedded into Razor:
-
-* Use the application's normal JSON serializer.
-* Avoid manually concatenating JavaScript strings.
-* HTML/JS encode safely.
-* Keep data objects small and specific.
-
-Do not serialize full service DTO graphs when only a few chart fields are needed.
-
----
-
-# 51. JavaScript Scope
-
-Keep dashboard JavaScript small.
-
-Use JavaScript only for:
-
-* Chart rendering
-* Minor interaction
-* Optional table enhancements
-
-Do not reimplement server-side statistics formulas in JavaScript.
-
----
-
-# 52. Progressive Enhancement
-
-Core numbers and tables should still be visible if chart JavaScript fails.
-
-Charts are supplementary visualizations.
-
-The user should still see:
+If an automatically triggered review fails, do not change:
 
 ```text
-Reviews
-Tokens
-Findings
-Rule statistics
-Project comparison
+Enabled
 ```
 
-as normal HTML.
+in the user setting.
+
+Review success/failure is unrelated to preference state.
 
 ---
 
-# 53. Styling
+# 46. Existing Review Telemetry
 
-Follow existing site styles.
-
-If no dashboard card system exists, add a small reusable statistics style set for:
+Automatically triggered reviews should flow through the same normal review execution path and therefore produce normal telemetry:
 
 ```text
-metric cards
-section headings
-chart containers
-tables
-empty states
+ReviewExecution
+ReviewTurn
+RuleSearchExecution
+ReviewRuleUsage
 ```
 
-Avoid creating a completely separate visual design language.
+where applicable.
+
+Do not create a parallel telemetry path.
+
+If the system already records trigger source, it may distinguish manual/automatic review.
+
+Do not add a new telemetry field solely for this feature unless genuinely required.
 
 ---
 
-# 54. Suggested Overview Layout
-
-A simple desktop layout could be:
-
-```text
-Statistics
-
-[ Reviews ] [ Input Tokens ] [ Output Tokens ] [ Avg Review ]
-
-[ Candidates ] [ Final Findings ] [ Selection Rate ] [ Error Rate ]
-
-Reviews Over Time
-------------------------------------------------
-
-Token Usage Over Time
-------------------------------------------------
-```
-
-Keep it readable and low-density.
-
----
-
-# 55. Suggested Reviews Layout
-
-```text
-Review Statistics
-
-Detection
-[ Calls ] [ Input Tokens ] [ Output Tokens ] [ Avg Time ]
-
-Selection
-[ Calls ] [ Input Tokens ] [ Output Tokens ] [ Avg Time ]
-
-Candidate -> Final
-[ Candidates ] -> [ Final Findings ]    Selection Rate
-
-Severity Distribution
-Critical / Major / Minor
-
-Model Usage
-------------------------------------------------
-```
-
----
-
-# 56. Suggested Rules Layout
-
-```text
-Learned Rules
-
-[ Active ] [ Created ] [ Expired ] [ Confidence + ] [ Confidence - ]
-
-Rule Search
-[ Avg Scanned ] [ Avg Candidates ] [ Avg Selected ] [ Avg Search Time ]
-
-Rule Usage
---------------------------------------------------------------
-Project | Rule | Prompt Uses | Candidate | Final | Hit Rates
-```
-
----
-
-# 57. Suggested Projects Layout
-
-```text
-Projects
-
-Project | Reviews | Tokens | Avg Review | Selection | Errors | Rules | Search
---------------------------------------------------------------------------------
-A       | ...
-B       | ...
-C       | ...
-```
-
-Keep sorting deterministic.
-
----
-
-# 58. Testing Strategy
-
-Add automated tests at the web layer without duplicating Phase 8 aggregation tests.
-
-The goal is to verify:
-
-* Routes work.
-* Pages call the statistics service correctly.
-* Values are rendered.
-* Empty/null states are safe.
-* No direct database access has leaked into the page layer.
-
----
-
-# 59. Test 1 — Statistics Overview Route
-
-Request:
-
-```text
-/statistics
-```
-
-Verify:
-
-```text
-HTTP success
-```
-
-and the page renders the expected overview sections.
-
----
-
-# 60. Test 2 — Reviews Route
-
-Request:
-
-```text
-/statistics/reviews
-```
-
-Verify:
-
-```text
-Detection
-Selection
-```
-
-sections are rendered.
-
----
-
-# 61. Test 3 — Rules Route
-
-Request:
-
-```text
-/statistics/rules
-```
-
-Verify summary, search, and rule usage sections render.
-
----
-
-# 62. Test 4 — Projects Route
-
-Request:
-
-```text
-/statistics/projects
-```
-
-Verify project comparison rows are rendered from a mocked/test statistics service.
-
----
-
-# 63. Test 5 — Overview Values
-
-Provide a test `IStatisticsService` result with known values.
-
-Verify the HTML contains the expected formatted values.
-
-Do not test aggregation formulas here.
-
-Those belong to Phase 8 tests.
-
----
-
-# 64. Test 6 — Null Rate Rendering
-
-Return:
-
-```text
-SelectionRate = null
-ErrorRate = null
-```
-
-Verify the page renders a safe fallback such as:
-
-```text
-—
-```
-
-and does not display:
-
-```text
-NaN
-Infinity
-```
-
----
-
-# 65. Test 7 — Empty Trends
-
-Return empty trend arrays.
-
-Verify chart sections render an empty state rather than failing.
-
----
-
-# 66. Test 8 — Empty Rule Usage
-
-Return zero rule usage rows.
-
-Verify:
-
-```text
-No rule usage data...
-```
-
-or equivalent is rendered.
-
----
-
-# 67. Test 9 — Expired Historical Rule
-
-Return rule usage with:
-
-```text
-RuleDisplayText = null
-RuleId = "rule-123"
-```
-
-Verify the page still renders a meaningful identifier.
-
----
-
-# 68. Test 10 — Multiple Projects
-
-Return multiple project rows.
-
-Verify each appears exactly once.
-
----
-
-# 69. Test 11 — HTML Encoding
-
-Use a project name containing HTML-like characters.
-
-Verify output is encoded and not rendered as arbitrary markup.
-
----
-
-# 70. Test 12 — Authorization
-
-If the statistics pages are protected by an existing authorization policy, add an integration test consistent with existing application tests.
-
-Verify unauthorized users cannot access the pages where appropriate.
-
----
-
-# 71. Test 13 — No Direct DB Dependency
-
-Where the architecture/test setup allows it, verify PageModels/controllers depend on:
-
-```text
-IStatisticsService
-```
-
-rather than telemetry repositories or SQLite connection objects.
-
-This can be enforced through code review if not easily automated.
-
----
-
-# 72. Test 14 — Existing App Navigation
-
-If adding a Statistics link to the existing navigation, verify the link points to the correct route and existing navigation remains intact.
-
----
-
-# 73. Performance
-
-The dashboard should remain lightweight.
-
-Avoid:
-
-* Loading raw telemetry into the page
-* Returning thousands of rule rows by default
-* Massive embedded JSON blobs
-* Repeated calls for identical metrics
-* Client-side aggregation
-
-Use the compact aggregate DTOs from Phase 8.
-
----
-
-# 74. Rule Table Size
-
-If Phase 8 exposes a bounded rule list, honor that limit.
-
-If it does not, consider adding a conservative display limit in cooperation with the existing Phase 8 contract.
-
-Do not load an unbounded historical rule table into HTML if the dataset can become large.
-
-If a limit is added, indicate that the table is limited.
-
-Do not silently imply completeness.
-
----
-
-# 75. Project Table Size
-
-The project count is expected to be smaller than rule history.
-
-A normal server-rendered table is sufficient initially.
-
-Do not add pagination unless real project counts justify it.
-
----
-
-# 76. Charts Must Not Block Page Rendering
-
-If Chart.js or equivalent fails to initialize:
-
-* Text metrics remain visible.
-* Tables remain visible.
-* The page remains usable.
-
-Do not make the dashboard depend entirely on canvas output.
-
----
-
-# 77. No Data Export Yet
+# 47. No User-Language Persistence
 
 Do not add:
 
 ```text
-CSV export
-JSON export
-PDF reports
-Excel export
+preferred_language
+review_language
+default_language_override
 ```
 
-in Phase 9.
+to `auto_review_user_settings`.
 
-These may be added later if useful.
-
----
-
-# 78. No Auto Refresh
-
-Do not add polling or real-time refresh.
-
-The statistics pages can reflect the database state at request time.
-
-Manual browser refresh is sufficient initially.
-
----
-
-# 79. No WebSocket / SignalR Requirement
-
-Do not introduce SignalR or live telemetry updates.
-
-The usage statistics are not operationally time-critical enough to justify it in this phase.
-
----
-
-# 80. No Daily Summary Tables
-
-Continue using Phase 8 raw-telemetry aggregation.
-
-Do not create dashboard-specific summary tables.
-
-If page performance is poor, report the measured issue instead of silently introducing Phase 13 work.
-
----
-
-# 81. No New Metric Definitions
-
-The web layer must not invent new statistics such as:
+The desired model is:
 
 ```text
-Quality Score
-Rule Score
-Project Health Score
-Efficiency Score
+SQLite:
+    explicit enabled/disabled choice
+
+config.toml:
+    default review language
+
+command:
+    one-review language override
 ```
 
-unless they already exist in `IStatisticsService`.
-
-Phase 9 presents trusted metrics; it does not define new ones.
+Keep these responsibilities separate.
 
 ---
 
-# 82. Do Not Recompute Rates in Razor
-
-Avoid:
-
-```csharp
-@((selected / candidates) * 100)
-```
-
-if Phase 8 already provides:
-
-```text
-SelectionRate
-```
-
-Likewise for:
-
-```text
-ErrorRate
-CandidateHitRate
-FinalHitRate
-```
-
-Use service values.
-
----
-
-# 83. Logging
-
-Use existing request/error logging.
-
-Do not log every rendered statistic.
-
-Do not log:
-
-* Full rule content
-* Source code
-* Prompts
-* Embeddings
-
-The dashboard is read-only.
-
----
-
-# 84. Dependency Injection
-
-Register any new PageModel/controller dependencies through the existing DI setup.
-
-Reuse the Phase 8 `IStatisticsService` registration.
-
-Do not create ad hoc service locators or static accessors.
-
----
-
-# 85. Cancellation
-
-Pass request cancellation tokens into statistics service calls where the current ASP.NET style supports it.
-
-For example:
-
-```csharp
-HttpContext.RequestAborted
-```
-
-or PageModel/controller cancellation parameters.
-
-Do not intentionally ignore request cancellation for long-running reporting queries.
-
----
-
-# 86. Error Boundaries for Charts
-
-Invalid or missing chart data must not break the full page.
-
-Validate chart inputs before serialization.
-
-For no data, show a text empty state instead of constructing an invalid chart.
-
----
-
-# 87. Future Phase 10 Compatibility
-
-Structure pages so Phase 10 can add:
-
-```text
-Project
-Period
-From
-To
-```
-
-filters without rewriting the whole dashboard.
-
-A page model should already have one place where it creates:
-
-```csharp
-StatisticsQuery
-```
-
-Do not scatter date-range construction across sections.
-
----
-
-# 88. Recommended Page Structure
-
-A useful organization may be:
-
-```text
-Statistics/
-    Index
-    Reviews
-    Rules
-    Projects
-```
-
-for Razor Pages, or equivalent MVC controller/view structure.
-
-If partial views/components are already standard, reuse them for:
-
-```text
-MetricCard
-StatisticsNavigation
-EmptyState
-```
-
-Do not introduce unnecessary component abstractions.
-
----
-
-# 89. Expected Architecture After Phase 9
-
-The target architecture becomes:
-
-```text
-Review / Learning Pipelines
-          |
-          v
-        SQLite
-          |
-          v
-   IStatisticsService
-          |
-          v
-  ASP.NET Statistics UI
-      /      |       \
-     /       |        \
-Overview   Reviews    Rules
-     \
-      \
-     Projects
-```
-
-More explicitly:
-
-```text
-/statistics
-        |
-        +-- OverviewStatistics
-        +-- ReviewTrend
-        +-- TokenTrend
-
-/statistics/reviews
-        |
-        +-- ReviewStatistics
-        +-- ModelUsage
-
-/statistics/rules
-        |
-        +-- RuleStatistics
-        +-- RuleUsageStatistics
-
-/statistics/projects
-        |
-        +-- ProjectStatistics
-```
-
----
-
-# 90. Relationship to Phase 10
-
-Phase 10 will add richer filtering and navigation semantics, especially:
-
-```text
-All Projects
-Project A
-Project B
-...
-
-Last 7 Days
-Last 30 Days
-Custom Range
-```
-
-Phase 9 should therefore keep query construction centralized and avoid assumptions that every page will always display all projects.
-
-Do not begin the full Phase 10 filter implementation unless a minimal default period is needed to render Phase 9.
-
----
-
-# 91. Out of Scope
+# 48. Out of Scope
 
 Do not implement:
 
-* Full project filter UI
-* Custom date-range picker
-* Saved dashboard filters
-* CSV export
-* Excel export
-* PDF export
-* Live refresh
-* SignalR
-* Telemetry retention
-* Daily summary/materialized tables
-* Cost/billing dashboard
-* Developer acceptance/rejection analytics
-* Automated rule quality scoring
-* Rule-confidence changes from dashboard metrics
-* Vector-search optimization
-* External analytics platform integration
+* User-specific persistent language preferences
+* Organization-wide user preferences
+* Global cross-project user profiles
+* Auto-review schedules
+* Branch-specific auto-review policies
+* File-path-specific policies
+* Automatic reviewer assignment
+* Per-user model selection
+* Auto-review billing/quota logic
+* New review pipeline
+* New result-comment mechanism
+* New statistics dashboard changes unrelated to this feature
 
-Do not begin Phase 10.
+Keep the implementation focused on automatic trigger preference and command integration.
 
 ---
 
-# 92. Implementation Order
+# 49. Recommended Implementation Order
 
-Use the following order unless the existing application structure strongly suggests a small adjustment.
+Use the following order unless the existing architecture strongly suggests a small adjustment.
 
 ```text
-1. Inspect existing ASP.NET UI architecture
-2. Inspect layout/navigation conventions
-3. Inspect authorization conventions
-4. Confirm Phase 8 IStatisticsService APIs
-5. Add Statistics navigation/routes
-6. Add overview PageModel/controller
-7. Add overview summary cards
-8. Add overview trend charts
-9. Add Reviews page
-10. Add Detection/Selection sections
-11. Add severity/model usage display
-12. Add Rules page
-13. Add rule lifecycle summary
-14. Add rule-search performance display
-15. Add rule usage table
-16. Add Projects page
-17. Add project comparison table
-18. Add shared formatting helpers
-19. Add empty/null states
-20. Add responsive styling
-21. Add chart integration if needed
-22. Add web-layer automated tests
-23. Run existing tests
-24. Manually inspect dashboard pages
-25. Fix regressions without expanding scope
+1. Inspect existing /review command parser
+2. Inspect language parsing/validation
+3. Inspect GitHub/GitLab opened-event normalization
+4. Identify stable user ID in both providers
+5. Inspect existing per-MR review concurrency controls
+6. Add [auto_review] configuration options
+7. Add configuration validation
+8. Add auto_review_user_settings migration
+9. Add repository model/API
+10. Implement SQLite Get/Set
+11. Add IAutoReviewPolicy
+12. Extend command parser for /auto_review
+13. Implement /auto_review on
+14. Reuse existing language resolution
+15. Invoke existing review pipeline from /auto_review on
+16. Implement /auto_review off
+17. Integrate policy into PR/MR opened events
+18. Ensure opened event uses author User ID
+19. Reuse persistent review-status-comment flow
+20. Reuse existing per-MR review lock
+21. Update config.template.toml
+22. Update README
+23. Add repository/policy tests
+24. Add command tests
+25. Add GitHub opened-event tests
+26. Add GitLab opened-event tests
+27. Run full existing test suite
+28. Fix regressions without expanding scope
 ```
 
 ---
 
-# 93. Acceptance Criteria
+# 50. Acceptance Criteria
 
-Phase 9 is complete when all of the following are true:
+This change is complete when all of the following are true:
 
-* `/statistics` exists.
-* `/statistics/reviews` exists.
-* `/statistics/rules` exists.
-* `/statistics/projects` exists.
-* Statistics navigation is available.
-* All pages consume `IStatisticsService`.
-* No statistics SQL exists in controllers/PageModels/views.
-* Overview cards render trusted Phase 8 metrics.
-* Review trend is visualized.
-* Token trend is visualized.
-* Detection and Selection are shown separately.
-* Candidate-to-final selection information is shown.
-* Critical/Major/Minor distribution is shown.
-* Model usage is displayed if exposed by Phase 8.
-* Active rule count is displayed.
-* Rule lifecycle event counts are displayed.
-* Rule-search performance is displayed.
-* Rule usage/effectiveness metrics are displayed.
-* Expired historical rules can still appear meaningfully.
-* Multi-project comparison is displayed.
-* Null/undefined rates are handled safely.
-* Empty datasets render useful empty states.
-* Legacy partial telemetry does not break pages.
-* HTML output is safely encoded.
-* Existing authorization conventions are applied.
-* Charts are supplementary and do not hide the underlying metrics.
-* Responsive layout is usable.
-* Existing application behavior remains unchanged.
-* Automated web tests pass.
-* Existing full test suite passes.
-* No Phase 10+ filtering functionality is unnecessarily introduced.
+* `[auto_review]` configuration exists.
+* Auto review has a global `enabled` switch.
+* Auto review supports `opt_in`.
+* Auto review supports `opt_out`.
+* Explicit user preference is stored in SQLite.
+* Preference key is `(ProjectId, UserId)`.
+* Stable provider user IDs are used.
+* GitHub and GitLab use the same policy layer.
+* `/auto_review on` is supported.
+* `/auto_review on /ja` is supported.
+* `/auto_review on /en` is supported.
+* `/auto_review off` is supported.
+* `/auto_review on` immediately enters the existing review sequence.
+* Language-less auto-review commands use `default_language`.
+* Explicit command language overrides apply only to that review.
+* Future opened-event automatic reviews use `default_language`.
+* `/auto_review off` does not start a review.
+* Manual `/review` works regardless of automatic-review preference.
+* PR/MR opened events use the author's preference.
+* Global disabled state prevents automatic reviews even when DB override is ON.
+* Opt-in users without DB state default to OFF.
+* Opt-out users without DB state default to ON.
+* Explicit DB state overrides mode defaults.
+* Preference survives application restart.
+* Review failures do not modify preference.
+* Automatic reviews reuse the normal review pipeline.
+* Automatic reviews reuse the normal owned status-comment mechanism.
+* Existing multi-project isolation remains intact.
+* Automated tests cover configuration, policy, commands, providers, language, and project isolation.
+* Existing tests pass.
 
 ---
 
-# 94. Coding Guidelines
-
-Keep the dashboard server-rendered, simple, and read-only.
+# 51. Coding Guidelines
 
 Follow existing:
 
-* ASP.NET patterns
-* Razor/MVC conventions
-* Layout/navigation conventions
-* Authorization policies
+* Command parsing conventions
+* Language validation
+* Project identity handling
+* GitHub/GitLab provider abstraction
+* SQLite conventions
+* Migration conventions
+* Repository patterns
+* Options/configuration patterns
 * Dependency injection
-* CSS conventions
-* JavaScript conventions
-* Testing infrastructure
+* Structured logging
+* CancellationToken propagation
+* Review concurrency controls
+* Test infrastructure
 
-Keep presentation logic in the web layer and aggregation logic in Phase 8.
+Prefer one shared review execution path for:
 
-Do not bypass `IStatisticsService`.
+```text
+/review
+/auto_review on
+PR/MR opened automatic review
+```
 
-Avoid unrelated refactoring.
+Do not duplicate review logic.
 
 The core principle is:
 
-> Phase 9 should make the telemetry understandable to humans without changing how any metric is defined or collected.
+> Auto review decides when the existing review pipeline starts; it does not create a new kind of review.
 
 ---
 
-# 95. Final Deliverable
+# 52. Final Deliverable
 
 After implementation, provide a concise implementation report containing:
 
 1. Files changed.
-2. Statistics routes/pages added.
-3. ASP.NET UI approach used: Razor Pages or MVC.
-4. How `IStatisticsService` is consumed.
-5. Default reporting period used.
-6. Overview metrics displayed.
-7. Charts added and chart library used.
-8. Review page sections implemented.
-9. Rule page sections implemented.
-10. Project comparison columns implemented.
-11. Null/empty-state handling.
-12. Expired-rule display behavior.
-13. Authorization behavior.
-14. Responsive/accessibility considerations.
-15. Automated tests added or updated.
-16. Any dashboard query/performance issues observed.
-17. Any assumptions or follow-up items relevant to Phase 10.
+2. `config.toml` options added.
+3. Final `auto_review_user_settings` schema.
+4. Repository API added.
+5. Auto-review policy logic.
+6. Opt-in semantics.
+7. Opt-out semantics.
+8. How GitHub/GitLab user IDs are normalized.
+9. Command grammar implemented.
+10. How `/auto_review on` reuses normal review execution.
+11. Language resolution behavior.
+12. How PR/MR opened events invoke automatic review.
+13. How manual `/review` remains independent.
+14. How concurrency with manual review is handled.
+15. How persistent review-status comments are reused.
+16. README/config template changes.
+17. Tests added or updated.
+18. Any remaining risks or assumptions.
 
-Do not begin Phase 10 implementation.
+Do not expand the scope into unrelated review, statistics, or rule-learning changes.

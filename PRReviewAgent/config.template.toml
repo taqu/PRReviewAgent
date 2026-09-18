@@ -1,7 +1,7 @@
 [common]
 default_language = "ja"
 git_provider = "github"
-warm_up = true
+warm_up = false
 
 [server]
 url = ""
@@ -35,6 +35,13 @@ ssl_verify = false
 [review]
 # file extensions to review
 target_extensions = ["c","cpp", "cxx", "cc", "h", "hpp", "inl", "cs", "py", "rs"]
+
+[auto_review]
+# Automatic review on PR/MR opened events.
+enabled = false
+# "opt_out" = all users get auto-review unless they run /auto_review off
+# "opt_in"  = no auto-review unless users run /auto_review on
+mode = "opt_out"
 
 [auto_improve]
 # Optional project-adaptation feature.

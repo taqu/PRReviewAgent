@@ -1,10 +1,25 @@
 using System.Text.Json.Serialization;
 namespace PRReviewAgent.Services.GitLabWebhook
 {
+    public class WebhookUser
+    {
+        [JsonPropertyName("id")]
+        public long? Id { get; set; }
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("username")]
+        public string? Username { get; set; }
+    }
+
     public class GitLabMrNoteWebhook
     {
         [JsonPropertyName("object_kind")]
         public string? ObjectKind { get; set; }
+
+        [JsonPropertyName("user")]
+        public WebhookUser? User { get; set; }
 
         [JsonPropertyName("project")]
         public WebhookProject? Project { get; set; }
@@ -32,6 +47,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
 
         [JsonPropertyName("noteable_type")]
         public string? NoteableType { get; set; }
+
+        [JsonPropertyName("author_id")]
+        public long? AuthorId { get; set; }
     }
 
     public class WebhookMergeRequest
@@ -57,6 +75,9 @@ namespace PRReviewAgent.Services.GitLabWebhook
         [JsonPropertyName("object_kind")]
         public string? ObjectKind { get; set; }
 
+        [JsonPropertyName("user")]
+        public WebhookUser? User { get; set; }
+
         [JsonPropertyName("project")]
         public WebhookProject? Project { get; set; }
 
@@ -77,5 +98,17 @@ namespace PRReviewAgent.Services.GitLabWebhook
 
         [JsonPropertyName("action")]
         public string? Action { get; set; }
+
+        [JsonPropertyName("author_id")]
+        public long? AuthorId { get; set; }
+
+        [JsonPropertyName("target_project_id")]
+        public long? TargetProjectId { get; set; }
+
+        [JsonPropertyName("title")]
+        public string? Title { get; set; }
+
+        [JsonPropertyName("description")]
+        public string? Description { get; set; }
     }
 }

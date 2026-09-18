@@ -16,6 +16,7 @@ namespace PRReviewAgent.Services.GitHubWebhook
         public string? body { get; set; }
         public PayloadPRHead head { get; set; } = new();
         public PayloadPRHead @base { get; set; } = new();
+        public PayloadSender? user { get; set; }
     }
 
     public class PayloadPullRequestEvent
