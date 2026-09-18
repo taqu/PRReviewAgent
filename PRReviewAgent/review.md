@@ -1,1872 +1,1403 @@
-# Phase 6 — Replace Base-Filename Grouping with Semantic Review Groups
+# Phase 8 — Add Adaptive End-to-End Review Execution Policy
 
 ## Objective
 
-Replace the current base-filename review grouping strategy with a deterministic **semantic grouping** strategy.
+Introduce an adaptive execution policy that selects an appropriate Verification strategy based on the actual review workload.
 
-The existing grouping logic is intentionally simple:
-
-```text
-foo.h
-foo.cpp
-→ group "foo"
-```
-
-This works well for obvious header / implementation pairs, but it has two important limitations:
+The current architecture supports:
 
 ```text
-src/network/foo.cpp
-src/storage/foo.cpp
+Sequential single-candidate Verification
+Sequential batched Verification
+Bounded parallel batched Verification
 ```
 
-may be grouped together even though they are unrelated.
-
-At the same time:
-
-```text
-Foo.cpp
-FooImpl.cpp
-FooFactory.cpp
-```
-
-may be split into separate groups even when they form one logical change.
-
-Phase 6 should build review groups using semantic relationships already available from path structure, pair-file resolution, and AST / symbol analysis.
+Phase 8 should stop treating one fixed execution configuration as optimal for every merge request.
 
 The goal is:
 
-> Group changed files that should reasonably be reviewed together, while keeping unrelated changes separate.
+> Select the cheapest review execution strategy that preserves review quality for the current workload.
 
-Do not turn grouping into repository-wide graph partitioning.
+The decision should be deterministic, observable, configurable, and based on already available workload metrics.
 
-The implementation must remain deterministic, bounded, explainable, and inexpensive.
+Do not introduce model-based or LLM-based scheduling decisions.
 
 ---
 
-# Current Pipeline
+# Current Architecture
 
-The review architecture after the previous phases is approximately:
+The review pipeline is approximately:
 
 ```text
-Changed files
+Semantic review groups
     ↓
-AST / semantic analysis
+Turn 1: Candidate Discovery
     ↓
-Review grouping
+CandidateIssue[]
     ↓
-budget-aware Turn 1 context
+bounded VerificationContext resolution
     ↓
-Candidate Discovery
+VerificationBatchBuilder
     ↓
-candidate-specific Verification Context
+Verification execution
     ↓
-Turn 2 Verification
+VerifiedIssue[]
     ↓
-Turn 3 Finalization
+Turn 3: Finalization
 ```
 
-Phase 6 changes only:
+Phase 7 made Verification execution configurable using concepts such as:
 
 ```text
-Review grouping
+MaxCandidatesPerBatch
+MaxVerificationBatchTokens
+MaxConcurrentVerificationBatches
 ```
 
-The remaining review stages should continue to behave as before.
+Phase 8 should introduce a policy layer above these execution settings.
 
 ---
 
-# Current Grouping Problem
+# Primary Design Principle
 
-The current implementation groups by:
+Do not optimize one request in isolation.
 
-```csharp
-Path.GetFileNameWithoutExtension(reviewContext.Path)
-```
+Optimize the complete review.
 
-Conceptually:
+The policy should consider:
 
 ```text
-include/foo.h       → foo
-src/foo.cpp         → foo
+candidate count
+candidate context size
+group count
+group context size
+expected Verification call count
+local inference concurrency behavior
+historical measured execution cost
 ```
 
-This is useful for paired files but does not represent semantic ownership reliably.
-
-Examples of false merging:
-
-```text
-src/network/config.cpp
-src/storage/config.cpp
-```
-
-Both become:
-
-```text
-config
-```
-
-even when they belong to different subsystems.
-
-Examples of false splitting:
-
-```text
-include/image.h
-src/image.cpp
-src/image_loader.cpp
-src/image_factory.cpp
-```
-
-These may represent one coordinated API change but become multiple groups.
+The policy should then choose an execution plan.
 
 ---
 
-# Target Strategy
-
-Construct groups using three sources of affinity:
-
-```text
-1. Path / module affinity
-2. Header / source pair relationships
-3. Changed-symbol dependency relationships
-```
-
-Use these in that order of conceptual strength, but do not implement them as arbitrary numeric scores unless useful.
-
-The preferred mental model is:
-
-```text
-changed files
-    ↓
-module boundaries
-    ↓
-pair-file edges
-    ↓
-changed-symbol dependency edges
-    ↓
-bounded connected groups
-```
-
----
-
-# Core Design Principle
-
-Grouping is not dependency expansion.
-
-Grouping should answer:
-
-> Which changed files belong to the same review topic?
-
-It should NOT answer:
-
-> Which repository files could possibly affect this change?
-
-Only files already selected as review targets should normally become group members.
-
-Unchanged files remain context for Verification, not primary review-group members.
-
----
-
-# Changed Files Are the Grouping Universe
-
-Build groups primarily from:
-
-```text
-reviewContexts
-```
-
-or the equivalent collection of changed reviewable files.
-
-Do not automatically add unchanged dependency files to the group membership.
-
-For example:
-
-```text
-Changed:
-include/foo.h
-src/foo.cpp
-
-Unchanged:
-src/worker.cpp
-```
-
-The group should contain:
-
-```text
-include/foo.h
-src/foo.cpp
-```
-
-The unchanged `worker.cpp` may later be used by Verification Context Resolution but should not become a group member merely because it calls `Foo`.
-
----
-
-# New Component
-
-Introduce a dedicated component such as:
-
-```csharp
-ReviewGroupBuilder
-```
-
-or:
-
-```csharp
-SemanticReviewGroupBuilder
-```
-
-Exact naming may follow project conventions.
-
-Conceptually:
-
-```csharp
-IReadOnlyList<FileGroup> Build(
-    IReadOnlyList<ReviewContext> reviewContexts,
-    SemanticWorkspace workspace);
-```
-
-The grouping algorithm should not be embedded directly inside the review execution method.
-
-It should be independently testable.
-
----
-
-# Group Identity
-
-Do not use a bare base filename as the unique identity.
-
-Each group should have:
-
-```text
-stable internal id
-display topic
-member files
-grouping reasons
-```
-
-Example:
-
-```text
-Group ID:
-src/render:image
-
-Display topic:
-render / image
-
-Files:
-include/render/image.h
-src/render/image.cpp
-src/render/image_loader.cpp
-```
-
-Exact representation may differ.
-
-The internal identity should be deterministic.
-
----
-
-# Grouping Reason Metadata
-
-Where practical, record why files were grouped.
-
-For example:
-
-```text
-foo.h <-> foo.cpp
-reason: pair
-
-foo.cpp <-> foo_factory.cpp
-reason: changed-symbol dependency
-
-foo.cpp <-> foo_test.cpp
-reason: module / test affinity
-```
-
-This metadata is useful for:
-
-* debugging;
-* tests;
-* metrics;
-* future tuning.
-
-It does not need to be sent to the LLM unless useful.
-
----
-
-# Stage 1 — Normalize Paths
-
-Normalize repository-relative paths before grouping.
-
-Handle consistently:
-
-```text
-/
-\
-case sensitivity according to repository/platform conventions
-dot segments
-```
-
-Do not compare raw platform-specific path strings.
-
-Preserve original repository-relative path for output.
-
-Use normalized paths only for matching.
-
----
-
-# Stage 2 — Determine Module Affinity
-
-Use directory structure as the first broad grouping boundary.
-
-Examples:
-
-```text
-include/render/image.h
-src/render/image.cpp
-src/render/image_loader.cpp
-```
-
-share module affinity:
-
-```text
-render
-```
-
-while:
-
-```text
-src/network/config.cpp
-src/storage/config.cpp
-```
-
-should normally remain separate.
-
----
-
-# Module Key
-
-Introduce a deterministic module-key calculation.
-
-Possible examples:
-
-```text
-include/render/image.h → render
-src/render/image.cpp   → render
-tests/render/image.cpp → render
-```
-
-The algorithm should recognize common structural roots such as:
-
-```text
-include/
-src/
-source/
-lib/
-tests/
-test/
-```
-
-and derive the logical path below them.
-
-Example:
-
-```text
-include/foo/bar.h
-src/foo/bar.cpp
-tests/foo/bar_test.cpp
-```
-
-may share module key:
-
-```text
-foo
-```
-
-or:
-
-```text
-foo/bar
-```
-
-depending on project structure.
-
-Keep this configurable or heuristic-driven rather than hard-coding one repository layout.
-
----
-
-# Do Not Overgeneralize Module Roots
-
-Avoid assuming all repositories use:
-
-```text
-include/
-src/
-tests/
-```
-
-Support a fallback based on common path prefix.
-
-If no logical module root can be identified, use the immediate parent directory or another stable conservative fallback.
-
-The grouping algorithm must still work for layouts such as:
-
-```text
-engine/render/
-engine/network/
-tools/parser/
-```
-
----
-
-# Stage 3 — Preserve Explicit Pair Relationships
-
-Existing pair-file resolution is high-confidence information.
-
-If the system already resolved:
-
-```text
-foo.h ↔ foo.cpp
-```
-
-and both files are changed review targets, they should normally be placed in the same group.
-
-Pair relationships should override minor path differences when clearly valid.
-
-Example:
-
-```text
-public/foo.h
-implementation/foo.cpp
-```
-
-may still belong together if the pair resolver established the relationship.
-
----
-
-# Pair Relationship Strength
-
-Treat explicit pair-file edges as strong grouping edges.
-
-Conceptually:
-
-```text
-A --pair--> B
-```
-
-should normally merge A and B.
-
-Do not infer pair relationships solely from identical base filenames inside the new group builder if a better pair resolver already exists.
-
-Reuse existing pairing logic.
-
----
-
-# Stage 4 — Changed-Symbol Dependency Affinity
-
-Use AST / semantic information to detect relationships between changed files.
-
-Only consider dependencies involving changed symbols.
-
-Examples:
-
-```text
-FooFactory::Create
-    → constructs Foo
-
-Foo::Open
-    → called by Worker::Start
-
-ImageLoader::Load
-    → returns Image
-```
-
-If both endpoint files are changed in the same MR, this relationship may justify grouping.
-
----
-
-# Important Constraint
-
-Do not group files merely because one includes another.
-
-For example:
-
-```text
-foo.cpp includes logging.h
-bar.cpp includes logging.h
-```
-
-does not imply:
-
-```text
-foo.cpp
-bar.cpp
-```
-
-belong in the same review group.
-
-Imports/includes are weak structural information.
-
-Use them only as supporting evidence, not as a primary grouping edge.
-
----
-
-# Strong Symbol Relationships
-
-Good candidates for grouping edges include:
-
-```text
-changed caller → changed callee
-changed implementation → changed interface declaration
-changed derived type → changed base/interface
-changed factory → changed constructed type
-changed serializer → changed serialized type
-changed test → changed production symbol
-```
-
-These indicate coordinated changes more strongly than generic references.
-
----
-
-# Weak Symbol Relationships
-
-Avoid merging groups solely because of:
-
-```text
-shared utility usage
-shared common type
-shared logging dependency
-shared allocator
-shared standard-library type
-widely referenced enum
-global configuration access
-```
-
-These relationships create giant groups and reduce review focus.
-
----
-
-# Relationship Must Involve Changed Code
-
-Prefer edges where the relevant reference itself is part of changed code.
-
-For example:
-
-```text
-Worker::Run changed to call Foo::Open
-Foo::Open also changed
-```
-
-is a strong grouping signal.
-
-But:
-
-```text
-Worker::Run unchanged and has always called Foo::Open
-Foo::Open changed
-```
-
-does not justify putting `Worker` in the group because `Worker` is not even a changed file.
-
----
-
-# Stage 5 — Test Affinity
-
-Changed tests should usually follow the production code they directly test.
-
-Example:
-
-```text
-src/render/image.cpp
-tests/render/image_test.cpp
-```
-
-should likely share a review group if the semantic index shows that the test directly references the changed production symbols.
-
-Do not group all tests in the same module together automatically.
-
-Prefer direct test-to-symbol relationship.
-
----
-
-# Test File Naming Hints
-
-Naming may be used as supporting evidence:
-
-```text
-foo.cpp
-foo_test.cpp
-test_foo.cpp
-foo_tests.cpp
-```
-
-but should not be the only mechanism when semantic information is available.
-
-Use deterministic naming heuristics as fallback.
-
----
-
-# Stage 6 — Build a Small Affinity Graph
-
-Represent changed files as nodes.
-
-Add bounded edges for meaningful relationships:
-
-```text
-pair
-same logical module
-changed-symbol dependency
-test-target relationship
-```
-
-Conceptually:
-
-```text
-A ---- B
-|      |
-C      D
-```
-
-Then construct review groups from the relevant connected structure.
-
-However, do not blindly use unrestricted connected components.
-
-A single weak bridge must not merge large unrelated subsystems.
-
----
-
-# Edge Strength
-
-Classify relationships into simple strengths.
-
-Suggested:
-
-```text
-Strong:
-- explicit header/source pair
-- declaration/definition
-- direct changed-symbol call
-- direct changed interface/implementation
-- direct test target
-
-Medium:
-- same logical component/module
-- direct changed type dependency
-- direct changed field/type relationship
-
-Weak:
-- include/import
-- shared generic dependency
-- shared utility
-```
-
-Weak edges should generally not merge groups by themselves.
-
-Do not over-engineer a large scoring model.
-
-A small discrete classification is sufficient.
-
----
-
-# Merge Rules
-
-A conservative initial strategy:
-
-```text
-1. Merge all strong edges.
-2. Use medium edges when files also have module affinity.
-3. Do not merge using weak edges alone.
-```
-
-This is easier to understand and test than a complex weighted clustering algorithm.
-
----
-
-# Transitive Merge Protection
-
-Avoid accidental giant groups caused by transitivity.
-
-Example:
-
-```text
-A strongly related to B
-B weakly related to C
-C strongly related to D
-```
-
-Do not automatically produce:
-
-```text
-A B C D
-```
-
-if the B-C relationship is weak.
-
-Only edges accepted by the merge policy should contribute to connected grouping.
-
----
-
-# Group Size Limit
+# Target Architecture
 
 Introduce:
 
 ```text
-MaxFilesPerReviewGroup
+Review workload
+    ↓
+ExecutionPolicy
+    ↓
+ExecutionPlan
+    ↓
+VerificationExecutor
 ```
 
-or equivalent.
+Conceptually:
 
-Even semantically related changes can become too large for a focused Turn 1 review.
+```text
+ReviewWorkloadProfile
+    ↓
+VerificationExecutionPlanner
+    ↓
+VerificationExecutionPlan
+```
 
-When a connected semantic group exceeds the limit, split it deterministically.
-
-Do not rely only on Turn 1 context truncation to handle an oversized group.
+The executor should not contain adaptive policy logic itself.
 
 ---
 
-# Oversized Group Splitting
+# Scope
 
-When a group exceeds the configured size, split using:
+Implement:
 
-```text
-module/submodule boundaries
-strongly connected local clusters
-pair preservation
-changed-symbol locality
-```
+* workload profiling;
+* execution-plan model;
+* deterministic execution planner;
+* rule-based adaptive mode selection;
+* batch-size selection;
+* concurrency selection;
+* context-aware safeguards;
+* configuration overrides;
+* execution-plan logging;
+* policy metrics;
+* benchmarks.
 
-Never split an explicit header / implementation pair unless unavoidable.
+Do not implement:
 
-Prefer:
-
-```text
-render/image
-render/texture
-```
-
-over arbitrary chunks based on file order.
-
----
-
-# Token-Aware Group Size
-
-If existing context-size estimation is available from Phase 5, group size may also consider estimated Turn 1 source cost.
-
-A group with:
-
-```text
-4 huge files
-```
-
-may be more expensive than:
-
-```text
-10 tiny files
-```
-
-Consider a configurable:
-
-```text
-MaxEstimatedTurn1TokensPerGroup
-```
-
-or allow the Phase 5 context builder to report group cost.
-
-Do not duplicate token estimation logic.
+* reinforcement learning;
+* LLM-based scheduling;
+* online self-modifying policy;
+* dynamic model switching;
+* dynamic reasoning-mode switching;
+* repository-wide scheduling;
+* quality prediction using an LLM;
+* adaptive severity policy.
 
 ---
 
-# Pair Preservation During Splitting
+# Part 1 — Workload Profile
 
-When splitting an oversized group:
+Introduce a compact workload representation.
 
-```text
-foo.h
-foo.cpp
+Suggested structure:
+
+```csharp
+public sealed class ReviewWorkloadProfile
+{
+    public int GroupCount { get; init; }
+
+    public int CandidateCount { get; init; }
+
+    public int EstimatedVerificationTokensTotal { get; init; }
+
+    public int EstimatedVerificationTokensMax { get; init; }
+
+    public int EstimatedVerificationTokensAverage { get; init; }
+
+    public int LargeCandidateCount { get; init; }
+
+    public int TruncatedContextCount { get; init; }
+}
 ```
 
-must normally remain together.
+Exact fields may differ.
 
-Treat explicit pair edges as indivisible units during the first split pass.
-
-The same applies to tightly coupled declaration / definition pairs.
+Only include values that can influence execution strategy.
 
 ---
 
-# Group Topic Generation
+# Candidate-Level Cost Estimate
 
-Generate a useful deterministic display topic.
-
-Avoid topics such as:
+For each candidate, estimate:
 
 ```text
-foo
+Verification context input size
++
+fixed prompt overhead
++
+expected output allowance
 ```
 
-when ambiguous.
+Do not attempt to predict exact generation length.
 
-Prefer:
-
-```text
-render/image
-network/config
-storage/config
-parser/lexer
-```
-
-Possible topic sources:
-
-```text
-logical module
-dominant changed symbol
-paired base name
-common semantic component
-```
-
-Do not ask an LLM to generate group names.
+A conservative estimate is sufficient.
 
 ---
 
-# Topic Examples
+# Group-Level Profile
+
+Where useful, preserve group-local information:
+
+```text
+group candidate count
+group total verification context size
+largest candidate context
+```
+
+This matters because Phase 7 batching should remain inside semantic groups.
+
+---
+
+# Part 2 — Execution Plan
+
+Introduce an explicit execution-plan model.
+
+Example:
+
+```csharp
+public sealed class VerificationExecutionPlan
+{
+    public required VerificationExecutionMode Mode { get; init; }
+
+    public int MaxCandidatesPerBatch { get; init; }
+
+    public int MaxBatchInputTokens { get; init; }
+
+    public int MaxConcurrentBatches { get; init; }
+
+    public string Reason { get; init; }
+}
+```
+
+Possible modes:
+
+```text
+SequentialSingle
+SequentialBatch
+ParallelSingle
+ParallelBatch
+```
+
+If `ParallelSingle` is not useful in the current architecture, it may be omitted.
+
+Keep the model minimal.
+
+---
+
+# Plan Must Be Immutable During Execution
+
+Once a plan is selected for a review execution, do not continuously change it based on each batch completion.
+
+Phase 8 should use:
+
+```text
+plan once
+execute plan
+measure result
+```
+
+not:
+
+```text
+continuously adapt while running
+```
+
+This keeps behavior reproducible.
+
+More dynamic scheduling can be considered later if needed.
+
+---
+
+# Part 3 — Planner
+
+Introduce a component such as:
+
+```text
+VerificationExecutionPlanner
+```
+
+Responsibilities:
+
+```text
+read workload profile
+read configured limits
+select mode
+select batch size
+select concurrency
+produce explanation
+```
+
+It must not:
+
+```text
+call the LLM
+resolve AST context
+execute batches
+modify candidates
+```
+
+---
+
+# Rule-Based Policy
+
+Use simple deterministic rules.
+
+Do not build a complicated optimizer.
+
+A good initial policy may resemble:
+
+```text
+if candidate_count <= 1:
+    SequentialSingle
+
+else if candidate_count is small
+     and total context is small:
+    SequentialBatch
+
+else if candidate_count is moderate
+     and batch contexts fit comfortably:
+    ParallelBatch with low concurrency
+
+else:
+    conservative batched execution
+```
+
+Exact thresholds must be configurable and benchmark-driven.
+
+---
+
+# Example Policy Shape
+
+Conceptually:
+
+```text
+0 candidates
+    → no Verification
+
+1 candidate
+    → SequentialSingle
+
+2–4 small candidates
+    → SequentialBatch
+
+5–10 moderate candidates
+    → ParallelBatch, concurrency 2
+
+large contexts
+    → smaller batches
+
+very large candidate
+    → single-candidate batch
+
+high truncation rate
+    → conservative execution
+```
+
+Do not hard-code these exact numbers unless benchmark data supports them.
+
+---
+
+# Part 4 — Context-Aware Batch Sizing
+
+Batch size should depend on context size.
 
 Example:
 
 ```text
-Files:
-include/render/image.h
-src/render/image.cpp
-src/render/image_loader.cpp
+many tiny candidates
+    → batch 4
 
-Topic:
-render/image
+medium candidates
+    → batch 2
+
+very large candidates
+    → batch 1
 ```
 
-Another:
+Use both:
 
 ```text
-Files:
-src/network/config.cpp
-include/network/config.h
-
-Topic:
-network/config
+MaxCandidatesPerBatch
+MaxBatchInputTokens
 ```
 
-Another:
-
-```text
-Files:
-src/parser/lexer.cpp
-tests/parser/lexer_test.cpp
-
-Topic:
-parser/lexer
-```
+Batch size must never override token safety limits.
 
 ---
 
-# Same Filename in Different Modules
+# Effective Batch Size
 
-This case must be explicitly tested:
-
-```text
-src/network/config.cpp
-src/storage/config.cpp
-```
-
-They must not be grouped solely because both have base name:
+The execution planner may produce:
 
 ```text
-config
+preferred batch size = 4
 ```
 
-This is one of the primary motivations for Phase 6.
+but the batch builder still enforces:
+
+```text
+token budget
+```
+
+Therefore actual batch size may be smaller.
+
+This is expected.
 
 ---
 
-# Related Files with Different Names
+# Part 5 — Adaptive Concurrency
 
-Also explicitly support:
-
-```text
-image.cpp
-image_loader.cpp
-image_factory.cpp
-```
-
-when changed-symbol relationships show coordinated behavior.
-
-Do not require identical base names.
-
----
-
-# Cross-Module Changes
-
-Sometimes a valid change spans module boundaries.
+Concurrency should depend on expected request size and workload shape.
 
 Example:
 
 ```text
-api/foo.h
-backend/foo_impl.cpp
+small prompts
+many batches
+    → concurrency 2 or higher if benchmarked safe
+
+large prompts
+few batches
+    → concurrency 1
+
+memory-heavy contexts
+    → concurrency 1
 ```
 
-or:
-
-```text
-parser/ast.cpp
-semantic/resolver.cpp
-```
-
-Do not enforce module boundaries as hard barriers.
-
-A strong changed-symbol relationship may merge files across modules.
-
-Module affinity is a default boundary, not an absolute rule.
+Do not base concurrency solely on candidate count.
 
 ---
 
-# Public API Changes
+# Local Inference Constraints
 
-Changed public interfaces may affect multiple changed implementations.
+The planner must assume that local inference may suffer from:
+
+```text
+GPU memory pressure
+KV-cache pressure
+request contention
+reduced tokens/sec under concurrency
+```
+
+Therefore, high concurrency should require explicit configuration or benchmark support.
+
+Prefer conservative defaults.
+
+---
+
+# Runtime Capability Configuration
+
+If useful, expose a local runtime capability profile.
 
 Example:
 
 ```text
-include/backend.h
-src/linux_backend.cpp
-src/windows_backend.cpp
+Inference:
+  MaxRecommendedConcurrentRequests: 2
 ```
 
-If all implementations are changed because of the same interface change, they may belong in one group if the size remains manageable.
-
-Use interface/implementation relationships as strong semantic edges.
+The planner must never exceed the configured hard maximum.
 
 ---
 
-# Inheritance
+# Part 6 — Hard Limits vs Adaptive Preferences
 
-If a changed base class and changed derived class are directly related:
+Separate:
 
 ```text
-Base
-Derived
+hard safety limits
 ```
 
-they may be grouped.
-
-Do not traverse the entire inheritance hierarchy.
-
-Only direct changed relationships are relevant for grouping.
-
----
-
-# Factory / Product Relationship
-
-If a changed factory implementation directly constructs a changed product type:
+from:
 
 ```text
-FooFactory::Create → Foo
+adaptive preferred values
 ```
 
-this can be a grouping edge.
-
-Again, require both files to be changed review targets.
-
----
-
-# Call Graph Usage
-
-Use only direct changed-symbol call relationships.
-
-Do not use:
+Example:
 
 ```text
-callers of callers
-callees of callees
+HardMaxConcurrentBatches = 4
+PreferredConcurrency = planner result
 ```
 
-for grouping.
+The planner may choose:
 
-Phase 6 must not introduce multi-hop semantic expansion.
+```text
+2
+```
+
+but never:
+
+```text
+5
+```
+
+Hard limits always win.
 
 ---
 
-# Reference Graph Usage
+# Part 7 — Manual Override
 
-Generic symbol references should be weaker than call or declaration relationships.
+Provide a way to disable adaptive behavior.
+
+Example:
+
+```text
+VerificationExecutionPolicy:
+    Fixed
+    Adaptive
+```
+
+In Fixed mode, use explicit Phase 7 settings.
+
+In Adaptive mode, use the planner.
+
+This is important for:
+
+```text
+benchmarking
+debugging
+rollback
+```
+
+---
+
+# Fixed Mode Compatibility
+
+Fixed mode must reproduce existing Phase 7 behavior.
+
+Do not change semantics when adaptive mode is disabled.
+
+---
+
+# Part 8 — Planner Inputs
+
+Use only data already available before Verification execution.
+
+Allowed inputs include:
+
+```text
+candidate count
+candidate category
+estimated context size
+group count
+group size
+truncated VerificationContext flags
+configured model/runtime limits
+```
+
+Avoid inputs that require additional expensive analysis.
+
+---
+
+# Candidate Category Use
+
+Candidate category may influence scheduling only when it predicts context size or isolation needs.
 
 For example:
 
 ```text
-file A references constant from file B
+lifetime candidate
 ```
 
-does not necessarily justify grouping.
+may often require larger context than:
 
-Use reference relationships only when:
+```text
+simple local correctness candidate
+```
 
-* the referenced symbol is itself changed; and
-* the reference is directly relevant to the changed logic; and
-* module affinity or another supporting relationship exists.
+However, do not introduce category-specific correctness behavior.
+
+Category-based scheduling should remain optional and conservative.
 
 ---
 
-# Include / Import Information
+# Do Not Predict Issue Validity
 
-Include/import information may help identify module context but should not directly drive merging.
+The planner must never prioritize or drop candidates based on a guess that they are probably false positives.
 
-Treat:
+All eligible candidates still follow the existing verification policy.
 
-```text
-#include "foo.h"
-```
-
-as weak evidence.
-
-The stronger relationship is:
-
-```text
-changed symbol in caller uses changed declaration in foo.h
-```
-
-Prefer semantic identity over text-level include edges.
+Execution planning is not review judgment.
 
 ---
 
-# New Files
+# Part 9 — Plan Reason
 
-New files may have limited historical semantic relationships.
-
-Group them using:
-
-```text
-module path
-direct changed-symbol references
-test naming
-pair relationships
-```
-
-Do not isolate every new file automatically.
-
----
-
-# Deleted Files
-
-Deleted files should still participate in grouping using available pre-change semantic information where reliable.
-
-If semantic data is unavailable, fall back to:
-
-```text
-module path
-pair relationship
-previous path
-```
-
-Do not fail grouping because a current source representation is absent.
-
----
-
-# Renamed Files
-
-Treat a rename as identity continuity where possible.
+Every adaptive plan should include a concise deterministic reason.
 
 Example:
 
 ```text
-old/path/foo.cpp
-→
-new/path/foo.cpp
+Mode=ParallelBatch
+BatchSize=2
+Concurrency=2
+Reason="8 candidates, average verification context 4.1K tokens, no oversized candidates."
 ```
 
-Do not treat the old and new names as separate semantic files.
+This should be available in diagnostics.
 
-Use the new path for grouping output.
-
-Retain rename metadata separately.
+Do not use free-form LLM-generated explanations.
 
 ---
 
-# Generated Files
+# Part 10 — Execution Integration
 
-Preserve existing review filtering.
-
-Generated files excluded from review should not become group nodes merely because semantic analysis sees references to them.
-
----
-
-# Group Ordering
-
-Groups must have deterministic ordering.
-
-Recommended order:
+Preferred flow:
 
 ```text
-normalized topic
-then minimum normalized member path
+Candidates
+    ↓
+VerificationContext resolution
+    ↓
+ReviewWorkloadProfileBuilder
+    ↓
+VerificationExecutionPlanner
+    ↓
+VerificationExecutionPlan
+    ↓
+VerificationBatchBuilder
+    ↓
+VerificationExecutor
 ```
 
-or another stable strategy.
-
-Do not depend on dictionary iteration order.
+The batch builder should receive the selected plan.
 
 ---
 
-# File Ordering Inside Group
+# Planner Timing
 
-Use stable ordering.
+Build the execution plan after candidate VerificationContexts are available.
+
+This is important because actual context sizes are better than guesses from Turn 1.
+
+Do not plan concurrency or batch size before context resolution unless needed for an early coarse estimate.
+
+---
+
+# Context Resolution Remains Independent
+
+The planner must not change:
+
+```text
+which context items are selected
+```
+
+for a candidate.
+
+Phase 5 context-budget policy remains authoritative.
+
+Phase 8 changes execution strategy, not verification evidence.
+
+---
+
+# Part 11 — Per-Group Planning vs Whole-Review Planning
+
+Prefer whole-review planning for concurrency limits, but allow group-local batching.
+
+Conceptually:
+
+```text
+whole review
+    ↓
+global concurrency plan
+
+each semantic group
+    ↓
+local batches
+```
+
+Do not plan unrelated groups independently in a way that causes total concurrency to exceed the global limit.
+
+---
+
+# Global Concurrency Coordinator
+
+If multiple semantic groups can verify concurrently, use a single global Verification concurrency limiter.
+
+Do not create:
+
+```text
+2 concurrent batches per group
+```
+
+across ten groups accidentally.
+
+The configured/planned concurrency limit should apply across the review execution.
+
+---
+
+# Cross-Group Parallelism
+
+Phase 7 avoided cross-group batching.
+
+Keep that rule.
+
+However, batches from separate groups may execute concurrently if the global concurrency limit permits it.
+
+This can reduce wall-clock latency while preserving semantic batching boundaries.
+
+---
+
+# Deterministic Scheduling
+
+Where several batches are ready, schedule deterministically.
 
 Recommended:
 
 ```text
-1. public headers / declarations
-2. private headers
-3. main implementation
-4. related implementations
-5. tests
-6. other files
+group order
+then batch order
 ```
 
-Within each category, sort by normalized path.
-
-Pair files should remain adjacent where practical.
+Completion may be asynchronous, but scheduling order should remain stable.
 
 ---
 
-# Grouping Determinism
+# Part 12 — Adaptive Small-Review Fast Path
 
-The same:
+Small reviews should avoid unnecessary orchestration overhead.
 
-```text
-changed files
-AST relationships
-configuration
-```
-
-must produce the same grouping.
-
-Do not use:
+Example:
 
 ```text
-LLM output
-randomness
-hash iteration order
-timing-dependent discovery
+1 group
+1 candidate
+small context
 ```
 
-for grouping decisions.
+should resolve directly to:
+
+```text
+SequentialSingle
+```
+
+No batching complexity should be added.
 
 ---
 
-# Explainability
+# Zero Candidate Fast Path
 
-Provide diagnostic information such as:
+Preserve:
 
 ```text
-Group render/image:
-- include/render/image.h
-  joined via pair with src/render/image.cpp
-
-- src/render/image_loader.cpp
-  joined via changed-symbol dependency ImageLoader::Load -> Image
+0 candidates
+→ no Verification planner execution needed
 ```
 
-This may be emitted only in debug logs or internal metadata.
+or allow the planner to return:
 
-Explainability will be important when a grouping decision produces unexpected review behavior.
+```text
+NoOp
+```
+
+if cleaner.
+
+Do not invoke the LLM.
 
 ---
 
-# Metrics
+# Part 13 — Adaptive Large-Review Protection
 
-Record at least:
-
-```text
-changed file count
-group count
-average files per group
-maximum files per group
-pair-edge count
-symbol-dependency edge count
-module-affinity merge count
-oversized group split count
-```
-
-Also correlate with review metrics from Phase 5:
+For a large review:
 
 ```text
-Turn 1 input tokens per group
-Turn 1 latency per group
-candidate count per group
-verified count per group
-final finding count per group
+many groups
+many candidates
+large contexts
 ```
 
-This will show whether semantic grouping improves both context quality and latency.
+the planner should prefer predictable bounded work over maximum concurrency.
+
+Potential strategy:
+
+```text
+small batches
+low concurrency
+strict hard limits
+```
+
+Avoid creating very large batches merely to reduce call count.
 
 ---
 
-# Useful Derived Metrics
+# Overload Protection
 
-Make it possible to calculate:
+If workload exceeds configured operational limits, do not crash or produce an unsafe prompt.
 
-```text
-files per candidate
-tokens per candidate
-tokens per verified finding
-groups with zero candidates
-groups split by budget
-```
+Reuse Phase 5 candidate caps and context budgets.
 
-A large number of zero-candidate groups may indicate over-splitting.
-
-Very large groups with many unrelated candidates may indicate under-splitting.
+Phase 8 does not increase hard review workload limits.
 
 ---
 
-# Do Not Optimize Group Count Alone
+# Part 14 — Historical Metrics
 
-Fewer groups are not inherently better.
+Do not require historical performance data for the initial implementation.
 
-For example:
+The first version should be rule-based.
 
-```text
-1 group with 30 unrelated files
-```
-
-is worse than:
+However, structure metrics so that later tuning can answer:
 
 ```text
-5 coherent groups
+For this workload shape,
+which mode was fastest?
 ```
 
-even if it requires more Turn 1 calls.
-
-Optimize for:
-
-```text
-semantic coherence
-bounded context
-review accuracy
-latency
-```
-
-rather than minimum LLM invocation count.
+Persist or log enough data for offline analysis.
 
 ---
 
-# Avoid Excessive Fragmentation
+# Optional Static Runtime Profile
 
-At the same time, do not create one group per file by default.
-
-That loses cross-file change context, especially for C/C++:
+If helpful, allow configuration such as:
 
 ```text
-header ↔ implementation
-interface ↔ implementation
-factory ↔ object
-test ↔ production code
+RuntimeProfile:
+  SerialOptimized
+  LowConcurrency
+  HighThroughput
 ```
 
-Grouping should preserve meaningful coordinated changes.
+but do not introduce this unless it materially simplifies deployment-specific defaults.
+
+The primary interface should remain explicit numeric limits.
 
 ---
 
-# Interaction with Turn 1
+# Part 15 — Metrics
 
-Turn 1 behavior must not change semantically.
+Record the chosen plan per review execution.
 
-Each new semantic group should be passed to the existing:
-
-```text
-Turn1ContextBuilder
-```
-
-The context builder remains responsible for:
+At minimum:
 
 ```text
-full-file vs semantic-scope selection
-diff anchors
-budget enforcement
-semantic summary
+execution mode
+planned batch size
+planned concurrency
+candidate count
+estimated total verification tokens
+average candidate context tokens
+maximum candidate context tokens
+batch count
+actual max concurrency
+Verification wall-clock duration
+sum of batch durations
 ```
-
-The group builder should not duplicate context formatting.
 
 ---
 
-# Interaction with Semantic Summary
+# Plan Effectiveness Metrics
 
-The Phase 4 semantic summary should be generated per new semantic group.
-
-Do not include relationships to unrelated groups unless they are useful as a compact boundary hint.
-
-For example, it is acceptable to say:
+Make it possible to compare:
 
 ```text
-Foo::Open is called by changed symbol Worker::Run in another review group.
+planned mode
+actual latency
+actual throughput
+actual batch failures
+fallback count
 ```
 
-only if that information helps discovery.
-
-Do not automatically merge groups merely to avoid such cross-group references.
+This will support tuning.
 
 ---
 
-# Interaction with Verification
+# Fallback Metrics
 
-Verification remains candidate-specific.
-
-A candidate may require source from another review group or an unchanged file.
-
-That is acceptable.
-
-The VerificationContextResolver should remain independent from Turn 1 grouping boundaries.
-
-This is important:
+Record if execution deviated from the plan due to:
 
 ```text
-review grouping != verification context boundary
+batch split
+single-candidate fallback
+context oversize
+model failure
 ```
 
-Turn 2 may cross group boundaries when necessary to verify a concrete candidate.
+Adaptive policy quality should be evaluated using actual behavior, not just the initial plan.
 
 ---
 
-# Cross-Group Dependencies
+# Part 16 — Benchmark Matrix
 
-If two groups have a direct changed-symbol dependency but were kept separate due to size or module boundaries, preserve enough relationship metadata for Verification.
+Benchmark both Fixed and Adaptive modes.
 
-Do not duplicate the complete second group into Turn 1.
+Representative fixed baselines:
 
-Verification can resolve the required symbol later.
+```text
+Single / concurrency 1
+Batch 2 / concurrency 1
+Batch 2 / concurrency 2
+Batch 4 / concurrency 2
+```
+
+Compare against:
+
+```text
+Adaptive
+```
+
+using identical workloads.
+
+---
+
+# Workload Classes
+
+Benchmark at least:
+
+```text
+Tiny
+- 1 candidate
+
+Small
+- 2–3 candidates
+
+Medium
+- 4–8 candidates
+
+Large
+- 9+ candidates
+
+Large-context
+- few candidates with large contexts
+
+Mixed
+- small and large candidate contexts together
+
+Multi-group
+- several semantic review groups
+```
+
+---
+
+# Benchmark Dimensions
+
+Measure:
+
+```text
+overall review latency
+Verification wall-clock latency
+number of Verification calls
+input tokens
+output tokens
+batch failure rate
+fallback rate
+verified count
+final finding count
+```
+
+---
+
+# Quality Must Remain Constant
+
+Adaptive execution must not change review semantics.
+
+For the same candidates and contexts, compare:
+
+```text
+Fixed baseline result
+Adaptive result
+```
+
+Any quality difference should be investigated as a batching/concurrency artifact.
+
+---
+
+# Part 17 — Conservative Initial Policy
+
+Start with a deliberately simple policy.
+
+Example concept:
+
+```text
+candidate_count == 1
+    → single
+
+small total context
+    → sequential batch
+
+moderate workload
+    → batch + concurrency 2
+
+large individual contexts
+    → smaller batches
+
+very large average context
+    → concurrency 1
+```
+
+Do not add many thresholds in the first version.
+
+---
+
+# Configuration Thresholds
+
+Possible configuration:
+
+```text
+AdaptiveVerification:
+  SmallCandidateCountThreshold
+  SmallTotalTokenThreshold
+  LargeCandidateTokenThreshold
+  PreferredSmallBatchSize
+  PreferredMediumBatchSize
+  PreferredConcurrency
+```
+
+Avoid exposing every internal heuristic as configuration.
+
+Keep only values that are likely to require deployment tuning.
+
+---
+
+# Threshold Validation
+
+Validate configuration relationships.
+
+Examples:
+
+```text
+preferred concurrency <= hard max concurrency
+preferred batch size <= hard max batch size
+thresholds > 0
+```
+
+Fail configuration loading clearly if values are invalid according to existing conventions.
+
+---
+
+# Part 18 — Planner Tests
+
+Add unit tests for plan selection.
+
+At minimum:
+
+## Zero candidates
+
+Expected:
+
+```text
+No Verification
+```
+
+## One candidate
+
+Expected:
+
+```text
+SequentialSingle
+```
+
+## Several tiny candidates
+
+Expected:
+
+```text
+SequentialBatch
+```
+
+or configured small-review strategy.
+
+## Moderate workload
+
+Expected:
+
+```text
+ParallelBatch
+```
+
+when allowed.
+
+## Large candidate contexts
+
+Expected:
+
+```text
+smaller batch size
+```
+
+## Runtime concurrency hard limit
+
+Planner never exceeds it.
+
+## Adaptive disabled
+
+Fixed configuration is used.
+
+## Determinism
+
+Same profile + configuration produces identical plan.
+
+---
+
+# Batch Integration Tests
+
+Verify the selected plan actually affects the batch builder.
+
+Example:
+
+```text
+plan batch size = 2
+5 candidates
+```
+
+Expected:
+
+```text
+2
+2
+1
+```
+
+subject to token budget.
+
+---
+
+# Concurrency Integration Test
+
+If planner chooses:
+
+```text
+MaxConcurrentBatches = 2
+```
+
+the executor must never exceed two active Verification calls.
+
+---
+
+# Multi-Group Concurrency Test
+
+Two review groups each have multiple batches.
+
+Ensure the concurrency cap applies globally.
+
+---
+
+# Fallback Test
+
+Planner selects:
+
+```text
+ParallelBatch
+```
+
+but one batch fails.
+
+Existing split/retry behavior must still work.
+
+The planner should not need to re-plan the entire review.
+
+---
+
+# Oversized Candidate Test
+
+One large candidate plus several small candidates.
+
+Expected:
+
+```text
+large candidate in single batch
+small candidates batched normally
+```
+
+according to existing batch safety rules.
+
+---
+
+# Part 19 — Logging
+
+Add concise diagnostics such as:
+
+```text
+VerificationPlan:
+mode=ParallelBatch
+candidates=7
+estimated_tokens=28140
+avg_candidate_tokens=4020
+max_candidate_tokens=7310
+batch_size=2
+concurrency=2
+reason="moderate candidate count and bounded contexts"
+```
+
+After execution:
+
+```text
+VerificationResult:
+planned_batches=4
+actual_calls=5
+splits=1
+wall_ms=8210
+sum_call_ms=14620
+```
+
+Do not log full prompt contents.
+
+---
+
+# Part 20 — Rollout
+
+Keep adaptive mode behind configuration initially.
+
+Recommended rollout:
+
+```text
+1. Fixed mode remains default.
+2. Run Adaptive mode in benchmark/test environments.
+3. Compare workload classes.
+4. Tune thresholds.
+5. Enable Adaptive by default after results are stable.
+```
+
+If the project does not maintain separate deployment environments, retain an easy configuration rollback path.
+
+---
+
+# Part 21 — Do Not Add Online Self-Tuning Yet
+
+Do not automatically rewrite thresholds based on recent executions.
+
+Phase 8 should produce data for later tuning, but behavior should remain configuration-driven.
+
+This ensures:
+
+```text
+reproducibility
+debuggability
+predictability
+```
+
+---
+
+# Part 22 — Interaction with Turn 1
+
+Do not adapt Turn 1 model settings in this phase.
+
+Turn 1 remains:
+
+```text
+non-thinking Candidate Discovery
+```
+
+Do not enable thinking for large MRs automatically.
+
+That would mix execution scheduling with review semantics.
+
+---
+
+# Interaction with Turn 2
+
+Turn 2 semantics remain identical.
+
+Only:
+
+```text
+batch size
+batch scheduling
+concurrency
+```
+
+may change.
+
+---
+
+# Interaction with Turn 3
+
+Turn 3 remains unchanged.
+
+Do not parallelize or batch Finalization.
+
+It should continue to see one deterministic verified issue set per review group or existing finalization boundary.
+
+---
+
+# Interaction with Semantic Grouping
+
+Phase 6 grouping remains authoritative.
+
+The adaptive planner must not merge semantic groups.
+
+It may schedule batches from separate groups concurrently.
+
+---
+
+# Interaction with Context Budgets
+
+Phase 5 budgets remain hard constraints.
+
+The planner must never increase context budgets to improve batching efficiency.
 
 ---
 
 # Interaction with Learned Rules
 
-Do not redesign learned-rule retrieval.
+No change.
 
-If RAG currently runs once per review execution, preserve that.
-
-If rules are attached to all groups, continue doing so unless existing architecture says otherwise.
-
-Semantic grouping should not change rule lifecycle semantics.
+Learned-rule retrieval and attribution remain outside execution planning.
 
 ---
 
-# Interaction with Candidate IDs
+# Part 23 — Failure Isolation
 
-Candidate IDs may currently restart per group.
+Planner failure itself must not fail the review.
 
-Preserve existing behavior unless it causes ambiguity in execution-wide tracking.
-
-If IDs need to become globally unique, prefer deterministic composition such as:
+If adaptive planning throws or receives invalid input:
 
 ```text
-g2-c3
+log error
+fallback to conservative fixed mode
 ```
 
-or internal group ID + candidate index.
+Recommended fallback:
 
-Do not change public output merely for internal convenience.
+```text
+SequentialSingle
+```
+
+or the existing Phase 7 fixed configuration.
+
+Prefer existing configured safe baseline.
 
 ---
 
-# Group IDs
+# Plan Validation
 
-If persistence or metrics require stable group IDs, generate them deterministically from:
+Before execution, validate:
 
 ```text
-topic
-member paths
+batch size >= 1
+concurrency >= 1
+batch size <= hard max
+concurrency <= hard max
+token budget <= hard model limit
 ```
 
-or another stable canonical representation.
-
-Do not use random GUIDs when a deterministic ID is sufficient.
+If invalid, fallback safely.
 
 ---
 
-# Configuration
+# Part 24 — Suggested Internal Architecture
 
-Introduce only necessary configuration.
-
-Potential values:
+Preferred structure:
 
 ```text
-MaxFilesPerReviewGroup
-MaxEstimatedTokensPerReviewGroup
-EnableSemanticGrouping
+CandidateIssue[]
+    ↓
+VerificationContextResolver
+    ↓
+VerificationWorkItem[]
+    ↓
+ReviewWorkloadProfileBuilder
+    ↓
+VerificationExecutionPlanner
+    ↓
+VerificationExecutionPlan
+    ↓
+VerificationBatchBuilder
+    ↓
+VerificationExecutor
+    ↓
+VerifiedIssue[]
 ```
 
-A feature flag may be useful for benchmarking against the old grouping.
-
-Do not expose dozens of edge weights as configuration in the first implementation.
-
-Keep relationship policy in code unless real tuning data shows a need.
+Keep planning separate from execution.
 
 ---
 
-# Feature Flag / Fallback
+# Class Responsibility Summary
 
-Provide a safe fallback to the previous grouping behavior during rollout if practical.
+## ReviewWorkloadProfileBuilder
 
-Example:
+Computes workload statistics.
 
-```text
-GroupingMode:
-    BaseFilename
-    Semantic
-```
+## VerificationExecutionPlanner
 
-This makes A/B benchmarking and rollback easier.
+Chooses execution strategy.
 
-Do not maintain two architectures indefinitely if semantic grouping proves stable.
+## VerificationBatchBuilder
 
----
+Builds batches under the selected plan and hard limits.
 
-# Fallback Behavior
+## VerificationExecutor
 
-If semantic analysis is unavailable or fails:
+Executes batches with bounded concurrency and fallback.
 
-```text
-use path-aware conservative grouping
-```
-
-rather than immediately falling back to bare base filename.
-
-A reasonable fallback might be:
-
-```text
-logical module + base filename
-```
-
-Example:
-
-```text
-network/config
-storage/config
-```
-
-This already avoids one major class of collision.
-
----
-
-# Path-Aware Fallback
-
-Conceptually:
-
-```text
-src/network/config.cpp → network/config
-src/storage/config.cpp → storage/config
-```
-
-If pair metadata exists, merge the pair.
-
-This fallback should remain deterministic and safe without AST.
-
----
-
-# Group-Build Failure
-
-A grouping exception must not abort the whole review.
-
-Log the failure and use the conservative fallback grouping.
-
-The review pipeline should continue.
-
----
-
-# Tests
-
-Add focused unit tests for grouping.
-
-At minimum cover the following.
-
-## Header / implementation pair
-
-```text
-include/foo.h
-src/foo.cpp
-```
-
-Expected:
-
-```text
-same group
-```
-
----
-
-## Same base name, different modules
-
-```text
-src/network/config.cpp
-src/storage/config.cpp
-```
-
-Expected:
-
-```text
-different groups
-```
-
-unless a strong explicit semantic relationship exists.
-
----
-
-## Different names, direct changed-symbol relationship
-
-```text
-src/image.cpp
-src/image_loader.cpp
-```
-
-where:
-
-```text
-ImageLoader::Load → Image
-```
-
-and both relevant symbols are changed.
-
-Expected:
-
-```text
-same group
-```
-
-when within limits.
-
----
-
-## Unrelated files in same directory
-
-```text
-src/render/image.cpp
-src/render/shader.cpp
-```
-
-with no meaningful changed-symbol relationship.
-
-Expected:
-
-```text
-do not merge solely because both are under render
-```
-
-unless module policy intentionally uses that directory as one small component.
-
-Use the conservative interpretation.
-
----
-
-## Changed test and production file
-
-```text
-src/foo.cpp
-tests/foo_test.cpp
-```
-
-with direct test reference.
-
-Expected:
-
-```text
-same group
-```
-
----
-
-## Unchanged caller
-
-```text
-src/foo.cpp changed
-src/worker.cpp unchanged
-```
-
-Expected:
-
-```text
-worker.cpp is not added to the group
-```
-
----
-
-## Strong cross-module relationship
-
-```text
-api/foo.h
-backend/foo_impl.cpp
-```
-
-with explicit interface/implementation relation.
-
-Expected:
-
-```text
-same group
-```
-
----
-
-## Weak include relationship
-
-Two files include the same changed header but otherwise have no direct changed-symbol relationship.
-
-Expected:
-
-```text
-do not merge solely because of shared include
-```
-
----
-
-## Oversized semantic group
-
-Create more related files than:
-
-```text
-MaxFilesPerReviewGroup
-```
-
-Expected:
-
-```text
-deterministic semantic split
-```
-
-with explicit pair relationships preserved.
-
----
-
-## Token-heavy group
-
-A group exceeds estimated Turn 1 budget despite a small file count.
-
-Expected:
-
-```text
-group splitting or bounded handling according to configured policy
-```
-
-without arbitrary file loss.
-
----
-
-## New file
-
-A new implementation and its changed test are grouped correctly.
-
----
-
-## Deleted file
-
-A deleted implementation remains associated with its changed declaration when available.
-
----
-
-## Rename
-
-A renamed file keeps semantic identity and does not appear twice.
-
----
-
-## Missing AST
-
-Grouping uses path-aware fallback.
-
----
-
-## Determinism
-
-Repeated runs with identical data produce identical:
-
-```text
-group count
-member sets
-group order
-topics
-```
-
----
-
-# Integration Tests
-
-Add at least one representative C++ merge request with:
-
-```text
-include/render/image.h
-src/render/image.cpp
-src/render/image_loader.cpp
-src/network/config.cpp
-src/storage/config.cpp
-tests/render/image_test.cpp
-```
-
-Use semantic relationships such that:
-
-```text
-image.h
-image.cpp
-image_loader.cpp
-image_test.cpp
-```
-
-form one coherent review group.
-
-Ensure:
-
-```text
-network/config.cpp
-```
-
-and:
-
-```text
-storage/config.cpp
-```
-
-remain separate.
-
-Verify the resulting groups flow correctly through Turn 1, Verification, and Finalization.
-
----
-
-# Benchmark
-
-Compare:
-
-```text
-Baseline:
-base-filename grouping
-
-New:
-semantic grouping
-```
-
-Using the same MRs and model configuration.
-
-Measure:
-
-```text
-group count
-Turn 1 calls
-Turn 1 total input tokens
-Turn 1 total latency
-average Turn 1 tokens per group
-candidate count
-verified count
-final finding count
-overall review latency
-```
-
----
-
-# Quality Evaluation
-
-Manually inspect whether semantic grouping improves detection of cross-file issues such as:
-
-```text
-header / implementation mismatch
-changed API + changed caller
-ownership across related classes
-factory / object contract
-test / implementation consistency
-interface / implementation compatibility
-```
-
-Also inspect for regressions caused by:
-
-```text
-unrelated files merged together
-related files split unnecessarily
-groups becoming too large
-cross-group dependencies being lost
-```
-
----
-
-# Diagnostic Interpretation
-
-## Too many tiny groups
-
-Possible causes:
-
-```text
-semantic edges too strict
-module affinity too weak
-test relations not recognized
-pair resolver incomplete
-```
-
-Do not immediately loosen all edge rules.
-
-Inspect real examples first.
-
----
-
-## Very large groups
-
-Possible causes:
-
-```text
-module affinity too broad
-generic references treated as strong
-include edges incorrectly used for merging
-transitive merging too permissive
-```
-
-Prefer tightening weak relationships before lowering hard group-size limits.
-
----
-
-## Candidate recall decreases
-
-Check whether related changed files that previously shared Turn 1 context were separated.
-
-Use group diagnostics to identify missing semantic edges.
-
----
-
-## Turn 1 latency increases
-
-Check:
-
-```text
-group count
-group source size
-duplicate source across groups
-```
-
-Do not assume more groups are necessarily the cause.
-
-Smaller groups may still reduce total generation cost.
+Do not collapse all four into one service.
 
 ---
 
 # Migration Strategy
 
-Recommended implementation order:
+Recommended order:
 
 ```text
-1. Extract existing grouping into a dedicated ReviewGroupBuilder abstraction.
-2. Add path normalization and logical module detection.
-3. Add path-aware fallback grouping.
-4. Integrate existing pair relationships.
-5. Add changed-symbol dependency edges.
-6. Add test-target relationships.
-7. Add strong / medium / weak edge classification.
-8. Build deterministic groups.
-9. Add group-size and token-size safeguards.
-10. Add deterministic topic generation.
-11. Add grouping diagnostics / metrics.
-12. Add feature flag for old vs semantic grouping.
-13. Add unit and integration tests.
-14. Benchmark against base-filename grouping.
-15. Make semantic grouping the default only after validation.
+1. Introduce ReviewWorkloadProfile.
+2. Introduce VerificationExecutionPlan.
+3. Extract existing fixed Verification settings into a plan-compatible form.
+4. Implement VerificationExecutionPlanner.
+5. Add Adaptive/Fixed configuration mode.
+6. Integrate planner before batch construction.
+7. Add global concurrency coordination if not already present.
+8. Add plan diagnostics.
+9. Add planner tests.
+10. Add end-to-end adaptive tests.
+11. Benchmark workload classes.
+12. Tune conservative thresholds.
+13. Enable Adaptive mode only after validation.
 ```
-
-Keep each stage independently testable where practical.
 
 ---
 
@@ -1875,22 +1406,21 @@ Keep each stage independently testable where practical.
 Preserve:
 
 ```text
-Turn 1 Candidate Discovery contract
-Turn1ContextBuilder
-context budgeting
-CandidateIssue schema
+CandidateIssue semantics
 VerificationContextResolver
-Turn 2 Verification semantics
-VerifiedIssue schema
+Verification context budgets
+VerificationBatchBuilder safety limits
+Turn 2 verification policy
+batch failure fallback
+VerifiedIssue semantics
 Turn 3 Finalization
-severity policy
-learned-rule tracking
+semantic grouping
+learned-rule attribution
 GitLab output behavior
-English/Japanese output
-review execution metrics
+review language behavior
 ```
 
-Grouping should change which changed files are reviewed together, not what the individual review stages mean.
+Adaptive planning must remain an execution concern only.
 
 ---
 
@@ -1899,86 +1429,81 @@ Grouping should change which changed files are reviewed together, not what the i
 Explicitly exclude:
 
 ```text
-repository-wide graph partitioning
-multi-hop dependency grouping
-LLM-generated groups
-LLM-generated group names
-dynamic group merging during review
-dynamic group splitting based on LLM output
-cross-group candidate sharing
-verification batching
-parallel verification redesign
-RAG redesign
-severity changes
-review-policy changes
+historical ML-based scheduling
+online threshold learning
+dynamic model switching
+dynamic thinking-mode switching
+speculative duplicate execution
+multi-model verification
+quality-score prediction
+repository-wide scheduling
+dynamic Turn 1 strategy changes
+RAG adaptation
+severity adaptation
 ```
 
-These belong to later optimization work if needed.
+These may be evaluated later if the simpler policy is insufficient.
 
 ---
 
 # Acceptance Criteria
 
-Phase 6 is complete when:
+Phase 8 is complete when:
 
-1. Base-filename grouping is no longer the primary grouping strategy.
-2. Group construction is implemented in a dedicated component.
-3. Paths are normalized consistently.
-4. Logical module affinity is available.
-5. Existing header / source pair relationships are preserved.
-6. Direct changed-symbol relationships can merge related changed files.
-7. Direct test-to-production relationships can influence grouping.
-8. Generic includes/imports do not merge groups by themselves.
-9. Same-name files in unrelated modules remain separate.
-10. Related files with different names can be grouped.
-11. Only changed review-target files normally become group members.
-12. Unchanged dependencies remain Verification context rather than group members.
-13. Strong cross-module relationships can override module boundaries.
-14. Multi-hop dependency traversal is not used.
-15. Groups are bounded by file and/or estimated context size.
-16. Oversized groups are split deterministically.
-17. Header / implementation pairs are preserved during splitting where practical.
-18. Group topics are deterministic and path-aware.
-19. Group ordering and member ordering are deterministic.
-20. Semantic-analysis failure has a safe path-aware fallback.
-21. Group diagnostics and metrics are available.
-22. Existing review stages require no semantic changes.
-23. Unit and integration tests cover the major grouping cases.
-24. Benchmark results compare semantic grouping against the previous strategy.
+1. Verification workload profiling exists.
+2. An explicit VerificationExecutionPlan exists.
+3. A deterministic planner selects execution mode.
+4. Adaptive and Fixed execution modes are supported.
+5. Single-candidate reviews use a cheap fast path.
+6. Batch size can adapt to context size.
+7. Concurrency can adapt to workload size.
+8. Hard context and concurrency limits always override adaptive preferences.
+9. Planning is performed after VerificationContext resolution.
+10. Semantic groups are never merged by the planner.
+11. Global Verification concurrency is bounded across groups.
+12. Planner output includes an explainable reason.
+13. Plan selection is deterministic.
+14. Planner failure has a safe fixed-mode fallback.
+15. Existing batch split/retry behavior still works.
+16. Adaptive execution does not change Turn 2 semantics.
+17. Turn 3 behavior remains unchanged.
+18. Plan and actual execution metrics are recorded.
+19. Fixed-mode baseline behavior remains reproducible.
+20. Unit tests cover major workload shapes.
+21. Integration tests cover multi-group and failure scenarios.
+22. Benchmarks compare Adaptive against several fixed configurations.
+23. Quality results remain materially equivalent to the fixed baseline.
+24. Production thresholds are configurable.
 25. The project builds successfully.
 
 ---
 
 # Implementation Principle
 
-Do not group files because their names happen to look similar.
+Do not make every review follow the same execution strategy.
 
-Do not group files because they happen to share a common dependency.
+A one-candidate review and a ten-candidate review are different workloads.
 
-Group files because the change itself shows that they belong to the same review concern.
+A review with 2K-token contexts and one with 20K-token contexts are also different workloads.
 
-The intended architecture after Phase 6 is:
+The intended Phase 8 architecture is:
 
 ```text
-Changed files
+review workload
     ↓
-path / module analysis
+measure shape
     ↓
-pair relationships
+choose conservative execution plan
     ↓
-changed-symbol relationships
+batch within hard limits
     ↓
-bounded semantic review groups
+execute with bounded concurrency
     ↓
-Turn 1 Candidate Discovery
-    ↓
-candidate-specific Verification
-    ↓
-Turn 3 Finalization
+observe actual performance
 ```
 
 The core principle is:
 
-> Review together what changed together semantically.
+> Adapt execution cost, not review semantics.
 
-Use path information to establish boundaries, pair relationships to preserve obvious C/C++ structure, and changed-symbol relationships to connect coordinated changes that filenames alone cannot identify.
+The same candidate should receive the same factual Verification task regardless of whether it is executed alone, inside a batch, sequentially, or concurrently.

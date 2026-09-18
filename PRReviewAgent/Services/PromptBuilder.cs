@@ -82,6 +82,60 @@ namespace PRReviewAgent.Services
             return stringBuilder.ToString();
         }
 
+        public static string BuildTurn2Batch(
+            ReviewRequest reviewRequest,
+            PRReviewAgent.Services.Verification.VerificationBatch batch,
+            StringBuilder stringBuilder)
+        {
+            stringBuilder.Clear();
+            stringBuilder.Append(reviewRequest.ReviewRulesTurn2);
+            stringBuilder.Append('\n');
+
+            if (batch.Items.Count == 1)
+            {
+                var item = batch.Items[0];
+                stringBuilder.Append(VerificationContextFormatter.Format(item.Context, item.Candidate));
+            }
+            else
+            {
+                // Multi-candidate batch format with explicit delimiters
+                stringBuilder.Append($"This request contains {batch.Items.Count} independent candidates. Verify each one independently.\n\n");
+                for (int i = 0; i < batch.Items.Count; i++)
+                {
+                    var item = batch.Items[i];
+                    if (i > 0) stringBuilder.Append("================================\n\n");
+                    stringBuilder.Append($"[CANDIDATE {item.Candidate.candidate_id}]\n");
+                    stringBuilder.Append($"Location: {item.Candidate.location}\n");
+                    if (!string.IsNullOrEmpty(item.Candidate.hypothesis))
+                        stringBuilder.Append($"Hypothesis: {item.Candidate.hypothesis}\n");
+                    if (!string.IsNullOrEmpty(item.Candidate.trigger))
+                        stringBuilder.Append($"Changed-code trigger: {item.Candidate.trigger}\n");
+                    stringBuilder.Append('\n');
+                    stringBuilder.Append($"[VERIFICATION CONTEXT {item.Candidate.candidate_id}]\n\n");
+                    foreach (var ctxItem in item.Context.Items)
+                    {
+                        stringBuilder.Append($"[{VerificationContextFormatter.KindLabel(ctxItem.Kind)}]\n");
+                        stringBuilder.Append($"FILE: {ctxItem.Path}\n");
+                        stringBuilder.Append($"SYMBOL: {ctxItem.Symbol}\n\n");
+                        stringBuilder.Append(ctxItem.Source);
+                        stringBuilder.Append("\n\n");
+                    }
+                    if (item.Context.UnresolvedTargets.Count > 0)
+                    {
+                        stringBuilder.Append("[Unresolved]\n");
+                        foreach (string t in item.Context.UnresolvedTargets)
+                            stringBuilder.Append($"- {t}\n");
+                        stringBuilder.Append('\n');
+                    }
+                    if (item.Context.Truncated)
+                        stringBuilder.Append("[Context truncated due to budget limits]\n");
+                    stringBuilder.Append('\n');
+                }
+            }
+
+            return stringBuilder.ToString();
+        }
+
         public static string BuildTurn3(ReviewRequest reviewRequest, VerifiedIssue[] verifiedIssues, StringBuilder stringBuilder)
         {
             stringBuilder.Clear();

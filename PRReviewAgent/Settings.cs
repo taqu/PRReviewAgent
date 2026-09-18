@@ -336,6 +336,9 @@ namespace PRReviewAgent
             int verMaxTypes = 3;
             int maxCandidates = 8;
             int maxVerCandidates = 8;
+            int maxBatchCandidates = 1;
+            int maxBatchChars = 32_000;
+            int maxConcurrentBatches = 1;
 
             if (config_ != null
                 && config_.TryGetValue("review", out object? reviewObj)
@@ -363,6 +366,12 @@ namespace PRReviewAgent
                     maxCandidates = GetIntSetting(cand, "max_candidates_per_group", maxCandidates);
                     maxVerCandidates = GetIntSetting(cand, "max_verification_candidates_per_group", maxVerCandidates);
                 }
+                if (reviewTable.TryGetValue("batching", out object? batchObj) && batchObj is Tomlyn.Model.TomlTable batchTable)
+                {
+                    maxBatchCandidates = GetIntSetting(batchTable, "max_candidates_per_batch", maxBatchCandidates);
+                    maxBatchChars = GetIntSetting(batchTable, "max_batch_input_chars", maxBatchChars);
+                    maxConcurrentBatches = GetIntSetting(batchTable, "max_concurrent_batches", maxConcurrentBatches);
+                }
             }
 
             return new PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig
@@ -377,6 +386,9 @@ namespace PRReviewAgent
                 VerificationMaxReferencedTypes = verMaxTypes,
                 MaxCandidatesPerGroup = maxCandidates,
                 MaxVerificationCandidatesPerGroup = maxVerCandidates,
+                MaxCandidatesPerBatch = maxBatchCandidates,
+                MaxBatchInputChars = maxBatchChars,
+                MaxConcurrentBatches = maxConcurrentBatches,
             };
         }
 

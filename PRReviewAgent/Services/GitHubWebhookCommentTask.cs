@@ -453,78 +453,37 @@ namespace PRReviewAgent.Services
                         int fileGroupCandidates = issuesResponse.issues.Length;
                         totalCandidates += fileGroupCandidates;
 
-                        // Verification turn (one per candidate)
+                        // Verification: build batches and execute with bounded parallelism
+                        string groupId = fileGroup.Topic.Replace('/', '-').Replace(' ', '_');
+                        IReadOnlyList<PRReviewAgent.Services.Verification.VerificationBatch> verBatches =
+                            PRReviewAgent.Services.Verification.VerificationBatchBuilder.Build(
+                                candidatesForVerification, fileGroup.ReviewContexts, budget, groupId, logger);
+                        logger.LogInformation(
+                            "Verification batches: group={Group} candidates={Candidates} batches={Batches} maxBatch={MaxBatch} maxConcurrent={MaxConcurrent}",
+                            fileGroup.Topic, candidatesForVerification.Length, verBatches.Count,
+                            budget.MaxCandidatesPerBatch, budget.MaxConcurrentBatches);
+
+                        Func<string, CancellationToken, Task<(PRReviewAgent.Prompt.VerifiedResponse?, int?, int?)>> verLlmCall =
+                            (prompt, ct) => context.Agents.RunJsonWithUsageAsync<PRReviewAgent.Prompt.VerifiedResponse>(prompt, ct);
+
+                        var (verResults, verMetrics) = await PRReviewAgent.Services.Verification.VerificationExecutor.ExecuteAsync(
+                            reviewRequest, verBatches, verLlmCall, budget,
+                            turnRecorder, executionId, context.Agents.Model, logger, cancellationToken);
+
+                        logger.LogInformation(
+                            "VerificationMetrics: batches={Batches} success={Success} failed={Failed} retries={Retries} splits={Splits} singleFallback={Single} wallMs={WallMs} totalBatchMs={TotalMs}",
+                            verMetrics.BatchCount, verMetrics.BatchSuccessCount, verMetrics.BatchFailureCount,
+                            verMetrics.BatchRetryCount, verMetrics.BatchSplitCount, verMetrics.SingleCandidateFallbackCount,
+                            verMetrics.WallClockMs, verMetrics.TotalBatchDurationMs);
+
                         List<VerifiedIssue> verifiedIssues = new List<VerifiedIssue>();
-                        foreach (CandidateIssue candidate in candidatesForVerification)
+                        foreach (VerifiedIssue vi in verResults)
                         {
-                            try
-                            {
-                                VerificationContext verCtx = new VerificationContextResolver().Resolve(candidate, fileGroup.ReviewContexts, budget, logger);
-                                if (verCtx.Items.Count == 0)
-                                {
-                                    logger.LogWarning("Skipping verification for candidate {Id}: no context resolved (NoContext)", candidate.candidate_id ?? "?");
-                                    continue;
-                                }
-                                string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, candidate, verCtx, stringBuilder_);
-
-                                DateTimeOffset verStart = DateTimeOffset.UtcNow;
-                                Stopwatch verSw = Stopwatch.StartNew();
-                                long? verTurnId = null;
-                                if (turnRecorder != null && executionId.HasValue)
-                                {
-                                    try { verTurnId = await turnRecorder.StartAsync(executionId.Value, ReviewTurnType.Verification, context.Agents.Model, verStart, cancellationToken); }
-                                    catch (Exception ex) { logger.LogError(ex, "Failed to start Verification turn record"); }
-                                }
-
-                                VerifiedResponse? verResp = null;
-                                int? verInputTokens = null, verOutputTokens = null;
-                                Exception? verException = null;
-                                try
-                                {
-                                    (verResp, verInputTokens, verOutputTokens) = await context.Agents.RunJsonWithUsageAsync<VerifiedResponse>(promptTurn2, context.CancellationToken);
-                                }
-                                catch (Exception ex) { verException = ex; throw; }
-                                finally
-                                {
-                                    verSw.Stop();
-                                    if (turnRecorder != null && verTurnId.HasValue)
-                                    {
-                                        try
-                                        {
-                                            int validCount = verResp?.issues.Count(i => i.valid) ?? 0;
-                                            if (verException != null)
-                                                await turnRecorder.CompleteFailureAsync(verTurnId.Value, verInputTokens, verOutputTokens, ClassifyError(verException), DateTimeOffset.UtcNow, verSw.ElapsedMilliseconds, cancellationToken);
-                                            else
-                                                await turnRecorder.CompleteSuccessAsync(verTurnId.Value, verInputTokens, verOutputTokens, validCount, DateTimeOffset.UtcNow, verSw.ElapsedMilliseconds, cancellationToken);
-                                        }
-                                        catch (Exception rex) { logger.LogError(rex, "Failed to complete Verification turn record"); }
-                                    }
-                                }
-
-                                logger.LogInformation(
-                                    "Verification: candidate={Id} items={Items} estimated_chars={Chars} truncated={Truncated} unresolved={Unresolved}",
-                                    candidate.candidate_id ?? "?",
-                                    verCtx.Items.Count,
-                                    verCtx.Items.Sum(i => i.Source.Length),
-                                    verCtx.Truncated,
-                                    verCtx.UnresolvedTargets.Count);
-
-                                if (verResp != null)
-                                {
-                                    foreach (VerifiedIssue vi in verResp.issues)
-                                    {
-                                        if (!vi.valid) continue;
-                                        VerifiedIssue withRule = vi;
-                                        if (string.IsNullOrEmpty(vi.rule_id) && candidateToRuleId.TryGetValue(vi.candidate_id, out string? rid))
-                                            withRule.rule_id = rid;
-                                        verifiedIssues.Add(withRule);
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                logger.LogError(ex, $"Verification failed for candidate {candidate.candidate_id}");
-                            }
+                            if (!vi.valid) continue;
+                            VerifiedIssue withRule = vi;
+                            if (string.IsNullOrEmpty(vi.rule_id) && candidateToRuleId.TryGetValue(vi.candidate_id, out string? rid))
+                                withRule.rule_id = rid;
+                            verifiedIssues.Add(withRule);
                         }
 
                         if (verifiedIssues.Count == 0)

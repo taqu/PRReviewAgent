@@ -38,7 +38,7 @@ namespace PRReviewAgent.Prompt
             return sb.ToString();
         }
 
-        private static string KindLabel(VerificationContextKind kind) => kind switch
+        internal static string KindLabel(VerificationContextKind kind) => kind switch
         {
             VerificationContextKind.ChangedScope => "Changed Scope",
             VerificationContextKind.Declaration => "Declaration",

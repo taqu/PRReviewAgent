@@ -17,5 +17,10 @@ namespace PRReviewAgent.Prompt.Turn1
         // Candidates
         public int MaxCandidatesPerGroup { get; init; } = 8;
         public int MaxVerificationCandidatesPerGroup { get; init; } = 8;
+
+        // Batching
+        public int MaxCandidatesPerBatch { get; init; } = 1;
+        public int MaxBatchInputChars { get; init; } = 32_000;
+        public int MaxConcurrentBatches { get; init; } = 1;
     }
 }
