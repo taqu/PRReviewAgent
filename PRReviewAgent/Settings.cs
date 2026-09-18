@@ -380,6 +380,30 @@ namespace PRReviewAgent
             };
         }
 
+        public PRReviewAgent.Services.Grouping.GroupingConfig GetGroupingConfig()
+        {
+            int maxFiles = 8;
+            PRReviewAgent.Services.Grouping.GroupingMode mode = PRReviewAgent.Services.Grouping.GroupingMode.Semantic;
+
+            if (config_ != null
+                && config_.TryGetValue("review", out object? reviewObj)
+                && reviewObj is Tomlyn.Model.TomlTable reviewTable
+                && reviewTable.TryGetValue("grouping", out object? gObj)
+                && gObj is Tomlyn.Model.TomlTable gTable)
+            {
+                maxFiles = GetIntSetting(gTable, "max_files_per_group", maxFiles);
+                if (gTable.TryGetValue("mode", out object? modeVal) && modeVal is string modeStr
+                    && System.Enum.TryParse<PRReviewAgent.Services.Grouping.GroupingMode>(modeStr, true, out var parsed))
+                    mode = parsed;
+            }
+
+            return new PRReviewAgent.Services.Grouping.GroupingConfig
+            {
+                MaxFilesPerGroup = maxFiles,
+                Mode = mode,
+            };
+        }
+
         private static int GetIntSetting(Tomlyn.Model.TomlTable table, string key, int defaultValue)
         {
             if (table.TryGetValue(key, out object? val) && val is long l) return (int)l;

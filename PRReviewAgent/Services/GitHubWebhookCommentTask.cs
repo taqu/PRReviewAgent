@@ -252,7 +252,7 @@ namespace PRReviewAgent.Services
                 }
             }
 
-            // Step 6: Build file groups deterministically by base filename.
+            // Step 6: Build file groups using semantic grouping.
             logger.LogInformation($"Building file groups for {reviewContexts.Count} files.");
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = payloadIssueComment_.issue.title ?? string.Empty;
@@ -261,18 +261,16 @@ namespace PRReviewAgent.Services
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template("en");
             reviewRequest.ReviewRulesTurn3 = Context.Instance.Settings.GetReview3Template(language_);
 
-            Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
-            foreach (ReviewContext reviewContext in reviewContexts)
+            var groupingConfig = Context.Instance.Settings.GetGroupingConfig();
+            IReadOnlyList<FileGroup> builtGroups = PRReviewAgent.Services.Grouping.SemanticReviewGroupBuilder.Build(reviewContexts, groupingConfig, logger);
+            foreach (FileGroup group in builtGroups)
             {
-                string baseName = Path.GetFileNameWithoutExtension(reviewContext.Path);
-                if (!groups.TryGetValue(baseName, out FileGroup? group))
-                {
-                    group = new FileGroup { Topic = baseName };
-                    groups[baseName] = group;
-                    reviewRequest.FileGroups.Add(group);
-                }
-                group.ReviewContexts.Add(reviewContext);
+                reviewRequest.FileGroups.Add(group);
+                if (group.GroupingReasons.Count > 0)
+                    logger.LogDebug("Group {Topic}: {Reasons}", group.Topic, string.Join("; ", group.GroupingReasons));
             }
+            logger.LogInformation("Built {GroupCount} semantic review groups from {FileCount} files.",
+                builtGroups.Count, reviewContexts.Count);
 
             // Step 7: Execute review for each file group.
             IReviewExecutionRecorder? recorder = serviceProvider.GetService<IReviewExecutionRecorder>();

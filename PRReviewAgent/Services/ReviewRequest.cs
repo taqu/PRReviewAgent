@@ -5,6 +5,7 @@ namespace PRReviewAgent.Services
         public string Topic { get; set; } = string.Empty;
         public List<ReviewContext> ReviewContexts => reviewContexts;
         private List<ReviewContext> reviewContexts = new List<ReviewContext>();
+        public List<string> GroupingReasons { get; set; } = new();
     }
 
     public sealed class ReviewRequest
