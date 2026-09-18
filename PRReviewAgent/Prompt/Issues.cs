@@ -2,6 +2,23 @@ using System.ComponentModel.DataAnnotations;
 
 namespace PRReviewAgent.Prompt
 {
+    public struct CandidateIssue
+    {
+        public string location { get; set; }
+        public string category { get; set; }
+        public string hypothesis { get; set; }
+        public string trigger { get; set; }
+        public string[] verify_symbols { get; set; }
+        public string? rule_id { get; set; }
+        public string? candidate_id { get; set; }
+    }
+
+    [LlmSchema("candidate_schema", "structure of candidate issue list")]
+    public class CandidateResponse
+    {
+        public CandidateIssue[] issues { get; set; } = new CandidateIssue[0];
+    }
+
     public struct Issue
     {
         [Required]

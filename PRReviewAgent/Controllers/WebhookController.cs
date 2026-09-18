@@ -133,11 +133,6 @@ namespace PRReviewAgent.Controllers
                                 {
                                     GitLabAutoReviewCommandTask autoReviewTask = new GitLabAutoReviewCommandTask(payloadComment, command.Type);
                                     await taskQueueReview_.QueueBackgroundWorkItemAsync(autoReviewTask.RunAsync);
-                                    if (command.Type == ReviewCommandType.AutoReviewOn)
-                                    {
-                                        GitLabWebhookCommentTask gitLabWebhookTask = new GitLabWebhookCommentTask(payloadComment);
-                                        await taskQueueReview_.QueueBackgroundWorkItemAsync(gitLabWebhookTask.RunAsync);
-                                    }
                                     return Ok();
                                 }
                             }
@@ -223,11 +218,6 @@ namespace PRReviewAgent.Controllers
                                 {
                                     GitHubAutoReviewCommandTask autoReviewTask = new GitHubAutoReviewCommandTask(payloadIssueComment, command.Type, command.Language);
                                     await taskQueueReview_.QueueBackgroundWorkItemAsync(autoReviewTask.RunAsync);
-                                    if (command.Type == ReviewCommandType.AutoReviewOn)
-                                    {
-                                        GitHubWebhookCommentTask gitHubWebhookCommentTask = new GitHubWebhookCommentTask(payloadIssueComment);
-                                        await taskQueueReview_.QueueBackgroundWorkItemAsync(gitHubWebhookCommentTask.RunAsync);
-                                    }
                                     return Ok();
                                 }
                             }

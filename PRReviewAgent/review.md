@@ -1,1698 +1,1647 @@
-# Implementation Instructions — Per-User Auto Review Opt-In/Opt-Out
+# Phase 3 — Add a Dedicated Non-Thinking Verification Turn
 
 ## Objective
 
-Add a provider-neutral automatic review preference system that allows each user to enable or disable automatic review per project.
+Introduce a dedicated **Verification Turn** between Candidate Discovery and Finalization.
 
-The feature must work consistently for both GitHub pull requests and GitLab merge requests.
-
-The system must support:
+The review pipeline should move from:
 
 ```text
-/auto_review on
-/auto_review on /ja
-/auto_review on /en
-/auto_review off
+Turn 1: Candidate Discovery
+    ↓
+Turn 2: Final Selection / Formatting
 ```
 
-and reuse the existing review pipeline already triggered by:
+to:
 
 ```text
-/review
-/review /ja
-/review /en
+Turn 1: Candidate Discovery
+    ↓
+AST-driven Verification Context Resolution
+    ↓
+Turn 2: Candidate Verification
+    ↓
+Turn 3: Finalization
 ```
 
-The main outcome must be:
+All three LLM turns should be able to run without thinking/reasoning mode.
 
-> Automatic review behavior is controlled by server configuration plus a persistent per-project/per-user override stored in SQLite, while all actual reviews continue to use the existing review execution sequence.
+The purpose of this phase is not to increase the amount of reasoning performed by a single model invocation.
+
+Instead, split the review task into narrow stages that are individually simple and deterministic enough for non-thinking inference.
 
 ---
 
-# 1. Existing Review Command Behavior
+# Prerequisites
 
-The application already supports:
+Phase 3 assumes the previous phases have established:
+
+1. Turn 1 as a lightweight Candidate Discovery stage.
+2. A candidate representation containing concepts such as:
 
 ```text
-/review
-/review /ja
-/review /en
+candidate_id
+location
+category
+hypothesis
+trigger
+verify_symbols
 ```
 
-The configured default language comes from:
+3. A deterministic AST-backed component similar to:
 
-```toml
-[common]
-default_language = "ja"
+```text
+VerificationContextResolver
 ```
 
-The new auto-review commands must reuse the same language parsing and review execution logic.
+4. A structured output similar to:
 
-Do not build a second review pipeline specifically for automatic review.
+```text
+VerificationContext
+```
+
+containing candidate-specific source code.
+
+5. A formatter capable of converting that context into compact LLM-readable text.
+
+Do not reimplement those components unless integration requires small fixes.
 
 ---
 
-# 2. New Commands
+# Target Architecture
 
-Support:
+The review execution should become:
 
 ```text
-/auto_review on
-/auto_review on /ja
-/auto_review on /en
-/auto_review off
+Merge Request
+    ↓
+Changed files
+    ↓
+AST / semantic analysis
+    ↓
+File grouping
+    ↓
+Turn 1: Candidate Discovery
+    ↓
+CandidateIssue[]
+    ↓
+VerificationContextResolver
+    ↓
+VerificationContext[]
+    ↓
+Turn 2: Verification
+    ↓
+VerifiedIssue[]
+    ↓
+Turn 3: Finalization
+    ↓
+Final GitLab review
 ```
 
-Semantics:
-
-## `/auto_review on`
-
-* Persist automatic review as enabled for the current `(ProjectId, UserId)`.
-* Resolve language using `config.toml` `default_language`.
-* Immediately start the normal review sequence for the current PR/MR.
-
-## `/auto_review on /ja`
-
-* Persist automatic review as enabled.
-* Start the normal review sequence immediately.
-* Use Japanese for this review.
-
-## `/auto_review on /en`
-
-* Persist automatic review as enabled.
-* Start the normal review sequence immediately.
-* Use English for this review.
-
-## `/auto_review off`
-
-* Persist automatic review as disabled.
-* Do not start a review.
-* Return a confirmation response.
+Responsibilities must remain clearly separated.
 
 ---
 
-# 3. Language Scope
+# Turn Responsibilities
 
-The language argument on:
+## Turn 1 — Candidate Discovery
 
-```text
-/auto_review on /ja
-/auto_review on /en
-```
+Turn 1 remains responsible only for identifying suspicious changed code.
 
-applies only to the review triggered by that command.
+It should answer:
 
-Do not persist a user-specific language preference in SQLite.
+> What should be checked?
 
-Future automatic reviews triggered by a newly opened PR/MR must use:
-
-```text
-[common].default_language
-```
-
-from `config.toml`.
-
-The persistence model should therefore remain:
-
-```text
-ProjectId
-UserId
-Enabled
-```
-
-and should not add:
-
-```text
-PreferredLanguage
-```
-
-in this phase.
+Do not move verification logic back into Turn 1.
 
 ---
 
-# 4. Shared Language Resolution
+## Turn 2 — Verification
 
-Reuse the same language parser and validation logic used by `/review`.
+Turn 2 answers:
 
-Preferred behavior:
+> Does this candidate actually represent a sufficiently supported issue?
 
-```text
-command language specified
-    -> use command language
+It should inspect the candidate together with targeted source context selected by the application.
 
-command language missing
-    -> use config.toml default_language
-```
+Turn 2 must not search broadly for additional issues.
 
-Conceptually:
-
-```csharp
-string language =
-    command.Language
-    ?? _commonOptions.DefaultLanguage;
-```
-
-Do not implement separate language parsing for `/auto_review`.
-
-Unknown or unsupported language arguments must behave consistently with `/review`.
+It must only verify candidates discovered by Turn 1.
 
 ---
 
-# 5. Configuration
+## Turn 3 — Finalization
 
-Add a new section to `config.toml`.
+Turn 3 answers:
 
-Recommended:
+> Which verified issues should be reported, at what severity, and how should they be presented?
 
-```toml
-[auto_review]
-enabled = true
-mode = "opt_in"
-```
+Turn 3 applies:
 
-Supported modes:
+* project-specific reporting policy;
+* final filtering;
+* deduplication;
+* severity assignment;
+* language selection;
+* final formatting.
 
-```text
-opt_in
-opt_out
-```
+Turn 3 should not inspect source code.
 
 ---
 
-# 6. Meaning of `enabled`
+# Template Layout
 
-`enabled` is the global master switch for automatic review.
-
-## `enabled = false`
-
-Automatic review is completely disabled.
-
-Required behavior:
-
-* PR/MR opened events do not trigger review.
-* `/auto_review on` does not enable automatic review.
-* `/auto_review off` does not need to modify behavior.
-* The command should return a clear message that automatic review is disabled by server configuration.
-* Manual `/review` must continue to work normally.
-
-## `enabled = true`
-
-Per-user auto-review configuration is active.
-
----
-
-# 7. Meaning of `mode`
-
-`mode` defines the default state for users without a stored preference.
-
-## `mode = "opt_in"`
-
-Default:
+Change the template structure from approximately:
 
 ```text
-automatic review OFF
+Templates
+├── review1.en.md
+├── review2.en.md
+└── review2.ja.md
 ```
 
-Only users who explicitly use:
+to:
 
 ```text
-/auto_review on
-```
-
-receive automatic reviews.
-
-## `mode = "opt_out"`
-
-Default:
-
-```text
-automatic review ON
-```
-
-Users receive automatic reviews unless they explicitly use:
-
-```text
-/auto_review off
-```
-
----
-
-# 8. Configuration vs User Override
-
-Use this precedence:
-
-```text
-1. auto_review.enabled
-2. stored per-user setting
-3. auto_review.mode default
-```
-
-Conceptually:
-
-```csharp
-if (!options.Enabled)
-    return false;
-
-bool? userSetting =
-    await repository.GetAsync(
-        projectId,
-        userId,
-        cancellationToken);
-
-if (userSetting.HasValue)
-    return userSetting.Value;
-
-return options.Mode switch
-{
-    AutoReviewMode.OptIn => false,
-    AutoReviewMode.OptOut => true,
-    _ => false
-};
-```
-
-This distinction is important.
-
-`config.toml` defines the default policy.
-
-SQLite stores explicit user choice.
-
----
-
-# 9. Configuration Changes Must Preserve Explicit User Choice
-
-Example:
-
-Initial configuration:
-
-```toml
-[auto_review]
-enabled = true
-mode = "opt_in"
-```
-
-User A has never configured auto review:
-
-```text
-effective state = OFF
-```
-
-User B executes:
-
-```text
-/auto_review on
-```
-
-SQLite stores:
-
-```text
-User B = ON
-```
-
-Later the administrator changes:
-
-```toml
-mode = "opt_out"
-```
-
-Expected:
-
-```text
-User A -> ON
-User B -> ON
-```
-
-If User C previously executed:
-
-```text
-/auto_review off
-```
-
-then:
-
-```text
-User C -> OFF
-```
-
-Explicit DB state always overrides the default mode.
-
----
-
-# 10. SQLite Persistence
-
-Add a dedicated table.
-
-Recommended name:
-
-```text
-auto_review_user_settings
-```
-
-Recommended schema:
-
-```sql
-CREATE TABLE auto_review_user_settings (
-    project_id      INTEGER NOT NULL,
-    user_id         TEXT NOT NULL,
-    enabled         INTEGER NOT NULL,
-
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-
-    PRIMARY KEY(project_id, user_id),
-
-    FOREIGN KEY(project_id)
-        REFERENCES projects(id)
-);
-```
-
-Follow existing naming and timestamp conventions.
-
----
-
-# 11. Why the Composite Key Is Required
-
-User preference is project-specific.
-
-The same user may want:
-
-```text
-Project A -> auto review ON
-Project B -> auto review OFF
-```
-
-Therefore the logical key must be:
-
-```text
-(ProjectId, UserId)
-```
-
-Do not key preferences by UserId alone.
-
----
-
-# 12. Stable User Identity
-
-Use the stable provider user ID supplied by GitHub or GitLab.
-
-Do not use:
-
-* Display name
-* Username if a more stable numeric/provider ID exists
-* Email address
-* Comment author text
-
-The provider adapter must expose a stable user identifier.
-
-Normalize it into the common application model as a string if needed.
-
----
-
-# 13. GitHub/GitLab Neutral Event Model
-
-Auto-review logic must not depend on GitHub- or GitLab-specific event payload types.
-
-Normalize opened PR/MR events into a common representation.
-
-Example:
-
-```csharp
-public sealed record MergeRequestOpenedEvent(
-    string ExternalProjectId,
-    string MergeRequestId,
-    string AuthorUserId);
-```
-
-The actual type/name may follow existing conventions.
-
-The important fields are:
-
-```text
-Project identity
-Merge/Pull Request identity
-Author User ID
-```
-
----
-
-# 14. Repository API
-
-Introduce a focused persistence abstraction.
-
-Example:
-
-```csharp
-public interface IAutoReviewUserSettingRepository
-{
-    Task<bool?> GetAsync(
-        long projectId,
-        string userId,
-        CancellationToken cancellationToken);
-
-    Task SetAsync(
-        long projectId,
-        string userId,
-        bool enabled,
-        CancellationToken cancellationToken);
-}
-```
-
-Returning `bool?` is useful:
-
-```text
-true  -> explicit ON
-false -> explicit OFF
-null  -> no user override exists
-```
-
-Do not collapse `null` into the config default inside the repository.
-
-The policy layer owns that decision.
-
----
-
-# 15. Upsert Behavior
-
-Use an atomic SQLite upsert.
-
-Conceptually:
-
-```sql
-INSERT INTO auto_review_user_settings (
-    project_id,
-    user_id,
-    enabled,
-    created_at,
-    updated_at
-)
-VALUES (
-    @projectId,
-    @userId,
-    @enabled,
-    @now,
-    @now
-)
-ON CONFLICT(project_id, user_id)
-DO UPDATE SET
-    enabled = excluded.enabled,
-    updated_at = excluded.updated_at;
-```
-
-Preserve `created_at` according to existing conventions.
-
----
-
-# 16. Add AutoReview Options
-
-Introduce typed configuration.
-
-Example:
-
-```csharp
-public sealed class AutoReviewOptions
-{
-    public bool Enabled { get; init; }
-
-    public AutoReviewMode Mode { get; init; }
-}
-```
-
-Example enum:
-
-```csharp
-public enum AutoReviewMode
-{
-    OptIn,
-    OptOut
-}
-```
-
-Validate configuration at startup if the application already uses options validation.
-
-Unknown values must not silently become an unsafe default.
-
-Prefer failing configuration validation or explicitly defaulting to `OptIn` according to existing conventions.
-
----
-
-# 17. Add AutoReview Policy
-
-Introduce a provider-neutral policy service.
-
-Example:
-
-```csharp
-public interface IAutoReviewPolicy
-{
-    Task<bool> IsEnabledAsync(
-        long projectId,
-        string userId,
-        CancellationToken cancellationToken);
-}
+Templates
+├── review1.en.md
+├── review2.en.md
+├── review3.en.md
+└── review3.ja.md
 ```
 
 Responsibilities:
 
 ```text
-global feature switch
-+
-user override
-+
-opt-in/opt-out default
+review1.en.md
+    Candidate Discovery
+
+review2.en.md
+    Candidate Verification
+
+review3.en.md
+    Finalization in English
+
+review3.ja.md
+    Finalization in Japanese
 ```
 
-Do not put this decision logic inside GitHub/GitLab event handlers.
+The internal reasoning turns should remain English-only.
+
+Only the finalization template needs language-specific variants.
 
 ---
 
-# 18. Command Parsing
+# New `review2.en.md`
 
-Extend the existing command parser rather than creating an unrelated parser.
+Create a new verification prompt.
 
-A suitable internal model may be:
+Its role must be narrowly defined.
 
-```csharp
-public enum ReviewCommandType
+The model receives:
+
+```text
+Candidate
++
+Candidate-specific verification context
+```
+
+and decides whether the candidate is valid.
+
+The prompt should explicitly prohibit broad issue discovery.
+
+---
+
+# Verification Prompt Goal
+
+The goal should be approximately:
+
+> Determine whether the supplied candidate is supported by the supplied source context.
+
+The model must decide:
+
+1. Whether the candidate is valid.
+2. What concrete source evidence supports or rejects it.
+3. Under what execution or state conditions it occurs.
+4. What practical consequence follows.
+5. Whether the candidate should proceed to Finalization.
+
+Do not assign Critical / Major / Minor severity.
+
+Do not apply final project-specific reporting policy.
+
+Do not generate final review prose.
+
+---
+
+# Verification Input
+
+Each verification request should contain one candidate or a small bounded batch of closely related candidates.
+
+Preferred input structure:
+
+```text
+[Candidate]
+
+ID: c0
+Location: src/foo.cpp: Foo::Open
+Category: lifetime
+Hypothesis:
+Foo::Open may expose an object whose lifetime is shorter than the returned pointer.
+
+Changed-code trigger:
+Foo::Open now returns resource_.get().
+
+[Verification Context]
+
+[Changed Scope]
+FILE: src/foo.cpp
+SYMBOL: Foo::Open
+
+<source>
+
+[Containing Type]
+FILE: include/foo.h
+SYMBOL: Foo
+
+<source>
+
+[Field]
+FILE: include/foo.h
+SYMBOL: Foo::resource_
+
+<source>
+
+[Direct Caller]
+FILE: src/worker.cpp
+SYMBOL: Worker::Run
+
+<source>
+```
+
+Avoid embedding raw AST JSON unless unavoidable.
+
+The model should reason primarily from source code.
+
+---
+
+# Verification Output
+
+Introduce a dedicated structured response.
+
+Preferred logical schema:
+
+```json
 {
-    Review,
-    AutoReviewOn,
-    AutoReviewOff
+  "issues": [
+    {
+      "candidate_id": "c0",
+      "valid": true,
+      "evidence": "Foo owns Resource through a unique_ptr stored in resource_. Foo::Open returns resource_.get(), while Worker::Run stores the returned raw pointer beyond the Foo lifetime.",
+      "impact": "The stored pointer can become dangling after Foo is destroyed and may later be dereferenced.",
+      "suggested_fix": "Preserve ownership or return a handle whose lifetime is guaranteed by the API contract.",
+      "confidence": "high"
+    }
+  ]
 }
 ```
 
-with:
+The exact field names may follow existing project conventions.
+
+Preserve at least:
+
+```text
+candidate_id
+valid
+evidence
+impact
+suggested_fix
+confidence
+```
+
+---
+
+# Invalid Candidate Output
+
+When a candidate is not supported:
+
+```json
+{
+  "issues": [
+    {
+      "candidate_id": "c0",
+      "valid": false,
+      "evidence": "The returned pointer is consumed synchronously and is not retained by any supplied caller.",
+      "impact": "",
+      "suggested_fix": "",
+      "confidence": "high"
+    }
+  ]
+}
+```
+
+A more compact rejected representation is acceptable if cleaner.
+
+For example:
+
+```json
+{
+  "candidate_id": "c0",
+  "valid": false,
+  "reason": "All supplied callers consume the pointer synchronously."
+}
+```
+
+Choose one schema and use it consistently.
+
+---
+
+# VerifiedIssue Model
+
+Introduce a separate model rather than overloading the Phase 1 candidate type.
+
+Suggested concept:
 
 ```csharp
-public sealed record ReviewCommand(
-    ReviewCommandType Type,
-    string? Language);
+public sealed class VerifiedIssue
+{
+    public required string CandidateId { get; init; }
+
+    public required bool Valid { get; init; }
+
+    public required string Evidence { get; init; }
+
+    public required string Impact { get; init; }
+
+    public required string SuggestedFix { get; init; }
+
+    public string? Confidence { get; init; }
+
+    public string? RuleId { get; init; }
+}
 ```
 
-Expected parse results:
+Reuse exact project naming conventions where appropriate.
+
+The important design requirement is:
 
 ```text
-/review
-    -> Review, null
-
-/review /ja
-    -> Review, ja
-
-/review /en
-    -> Review, en
-
-/auto_review on
-    -> AutoReviewOn, null
-
-/auto_review on /ja
-    -> AutoReviewOn, ja
-
-/auto_review on /en
-    -> AutoReviewOn, en
-
-/auto_review off
-    -> AutoReviewOff, null
+CandidateIssue != VerifiedIssue
 ```
 
-Adapt this to the actual command architecture.
+A discovered suspicion and a verified issue must remain distinct domain concepts.
 
 ---
 
-# 19. Do Not Duplicate Existing Review Command Logic
+# Verification Rules
 
-If `/review` parsing currently has reusable components for:
+The verification prompt should enforce the following rules.
 
-```text
-command recognition
-language validation
-language normalization
-review invocation
-```
+## Use only supplied context
 
-reuse them.
+The model must not assume repository behavior outside the supplied source context.
 
-Do not create a parallel implementation for `/auto_review on`.
+If required evidence is absent, reject or mark the candidate unsupported.
+
+Do not invent missing callers, contracts, ownership rules, or runtime behavior.
 
 ---
 
-# 20. `/auto_review on` Command Flow
+## Source code is authoritative
 
-Required flow:
+If the candidate hypothesis conflicts with the supplied source code:
 
 ```text
-Receive comment command
-      |
-      v
-Parse /auto_review on [language]
-      |
-      v
-Check auto_review.enabled
-      |
-      +-- false
-      |      |
-      |      v
-      |  return feature-disabled message
-      |
-      +-- true
-             |
-             v
-Resolve Project
-             |
-             v
-Resolve command author User ID
-             |
-             v
-Persist Enabled = true
-             |
-             v
-Resolve review language
-             |
-             v
-Enter existing normal review sequence
+reject the candidate
 ```
 
-The actual review must be the same sequence used by `/review`.
+Do not try to preserve the candidate merely because Turn 1 suggested it.
 
 ---
 
-# 21. `/auto_review off` Command Flow
+## Candidate identity is immutable
 
-Required flow:
+Turn 2 must preserve:
 
 ```text
-Receive /auto_review off
-      |
-      v
-Check auto_review.enabled
-      |
-      +-- disabled
-      |      |
-      |      v
-      |  return feature-disabled message
-      |
-      +-- enabled
-             |
-             v
-Resolve Project
-             |
-             v
-Resolve command author User ID
-             |
-             v
-Persist Enabled = false
-             |
-             v
-Return confirmation
+candidate_id
 ```
 
-Do not start a review.
+exactly.
+
+It must not invent new candidate IDs.
 
 ---
 
-# 22. Manual `/review` Remains Independent
+## No new issues
 
-A user with automatic review disabled must still be able to run:
+Turn 2 must not discover or return unrelated issues.
+
+If the verification context reveals another unrelated defect, ignore it.
+
+That issue was not discovered by Turn 1 and therefore belongs outside this verification request.
+
+This rule is important for maintaining predictable pipeline semantics.
+
+---
+
+## Verify one root cause
+
+Each candidate represents one root cause.
+
+Do not split it into multiple issues during verification.
+
+If the hypothesis contains multiple independent root causes because Turn 1 produced a poor candidate, reject it or validate only the explicitly represented root cause according to the selected implementation policy.
+
+Do not silently create extra findings.
+
+---
+
+## Establish concrete conditions
+
+Evidence should state relevant execution or state conditions.
+
+Prefer:
 
 ```text
-/review
-/review /ja
-/review /en
+When Foo is destroyed before Worker::Run consumes the stored pointer, the pointer refers to the Resource formerly owned by Foo.
 ```
 
-Manual review does not consult auto-review preference.
+Avoid:
+
+```text
+This may potentially be unsafe.
+```
+
+---
+
+## Reject unsupported hypotheses
+
+Reject candidates when:
+
+* required caller behavior is not established;
+* ownership assumptions are unsupported;
+* control flow contradicts the hypothesis;
+* the changed code does not create or expose the alleged behavior;
+* the issue depends only on theoretical misuse that violates the visible contract;
+* AST-selected context disproves the candidate;
+* supplied context is insufficient to establish a concrete issue.
+
+Verification should reduce false positives.
+
+---
+
+# Confidence
+
+Turn 2 may use:
+
+```text
+high
+medium
+```
+
+Do not support low-confidence verified findings.
+
+If confidence would be low, mark the candidate invalid.
+
+The Verification stage should prefer:
+
+```text
+unsupported candidate
+```
+
+over:
+
+```text
+weak final finding
+```
+
+---
+
+# Severity
+
+Turn 2 must NOT assign:
+
+```text
+Critical
+Major
+Minor
+```
+
+Severity remains a Turn 3 responsibility.
+
+This keeps verification focused on factual correctness.
+
+---
+
+# Project-Specific Review Policy
+
+Do not apply final reporting policy during Verification unless that policy changes the factual validity of the candidate.
+
+For example:
+
+* assertion policy;
+* preferred style;
+* maintainability thresholds;
+* reporting preferences;
+
+should normally remain Turn 3 responsibilities.
+
+Turn 2 asks:
+
+> Is the issue real?
+
+Turn 3 asks:
+
+> Should we report it, and at what severity?
+
+Keep that distinction explicit.
+
+---
+
+# BuildTurn2
+
+Refactor or replace the current `PromptBuilder.BuildTurn2()`.
+
+After Phase 3, it should build the Verification prompt.
+
+Conceptually:
+
+```csharp
+string promptTurn2 = PromptBuilder.BuildTurn2(
+    reviewRequest,
+    candidate,
+    verificationContext,
+    stringBuilder);
+```
+
+Exact API shape may differ.
+
+Do not pass all candidate groups and all source code into every verification call.
+
+Use candidate-specific context.
+
+---
+
+# Candidate Execution Strategy
+
+Initially prefer **one verification request per candidate**.
 
 Conceptually:
 
 ```text
-auto_review preference
-    -> controls only automatic triggering
-
-/review
-    -> explicit user request
-    -> always uses normal review pipeline
+for each candidate
+    resolve verification context
+    run Turn 2
 ```
 
-Do not couple the two.
+This gives:
+
+* simpler prompts;
+* easier attribution;
+* clean candidate IDs;
+* easier metrics;
+* less cross-candidate interference;
+* better failure isolation.
+
+However, latency may become an issue when many candidates are produced.
+
+Design the implementation so that bounded batching can be added later.
+
+Do not implement complicated batching in this phase unless the codebase already makes it trivial.
 
 ---
 
-# 23. PR/MR Open Event Flow
+# Parallel Verification
 
-When a new pull request or merge request is created:
+Do not introduce uncontrolled parallel LLM calls.
 
-```text
-PR/MR Opened
-      |
-      v
-Resolve Project
-      |
-      v
-Get author User ID
-      |
-      v
-IAutoReviewPolicy.IsEnabledAsync(...)
-      |
-   +--+--+
-   |     |
- false  true
-   |     |
-   v     v
- stop   Resolve default language
-             |
-             v
-       Existing review pipeline
-```
+If the existing runtime has a safe bounded-concurrency abstraction, using limited candidate verification concurrency is acceptable.
 
-Do not create a dedicated "auto review pipeline."
+Otherwise keep verification sequential in Phase 3.
+
+Correctness and observability are more important than maximum throughput in the first implementation.
+
+A later phase can optimize parallelism after metrics are available.
 
 ---
 
-# 24. Which User Controls Open-Event Auto Review
+# Verification Context Resolution
 
-Use the PR/MR author's user ID.
+For every candidate:
 
-Do not use:
+```text
+CandidateIssue
+    ↓
+VerificationContextResolver
+    ↓
+VerificationContext
+    ↓
+BuildTurn2
+```
 
-* Webhook sender if different from the author
-* Reviewer
-* Assignee
-* Person who last edited the MR
-* Repository owner
+If context resolution fails completely:
 
-The auto-review preference belongs to the author whose newly opened PR/MR is being evaluated.
+* log the failure;
+* do not fabricate verification;
+* treat the candidate as unverified/rejected;
+* continue with other candidates.
+
+A single broken candidate must not abort the entire file-group review.
 
 ---
 
-# 25. Automatic Review Language
-
-For PR/MR opened events, use:
-
-```text
-[common].default_language
-```
-
-because there is no command language argument.
-
-Do not read a persisted per-user language preference because this phase does not store one.
-
----
-
-# 26. `/auto_review on /ja` Does Two Things
-
-This command is intentionally both:
-
-```text
-settings command
-+
-review trigger
-```
-
-Required semantics:
-
-```text
-1. Store AutoReview = ON
-2. Resolve current review language = ja
-3. Execute normal review
-```
-
-Do not require the user to then separately enter:
-
-```text
-/review /ja
-```
-
----
-
-# 27. `/auto_review on` Without Language
-
-This command must:
-
-```text
-1. Store AutoReview = ON
-2. Resolve current review language from config.toml
-3. Execute normal review
-```
-
-Equivalent review-language behavior to:
-
-```text
-/review
-```
-
----
-
-# 28. `/auto_review off /ja`
-
-Do not support language arguments for `off` unless there is an existing generic parser reason to accept and ignore them.
-
-Preferred valid syntax:
-
-```text
-/auto_review off
-```
-
-Preferred invalid syntax:
-
-```text
-/auto_review off /ja
-```
-
-Handle invalid syntax consistently with the current command parser.
-
----
-
-# 29. Command Confirmation Behavior
-
-For `/auto_review on`, because the command immediately starts a normal review, avoid creating unnecessary extra persistent comments if the current review-status-comment system already shows:
-
-```text
-Review in progress
-```
-
-The stored review-status comment can serve as the visible confirmation that the command was accepted.
-
-If command acknowledgment already exists elsewhere, keep it concise.
-
-For `/auto_review off`, return a clear confirmation such as:
-
-```text
-Automatic review disabled for this project.
-```
-
-Follow the application's existing response style.
-
----
-
-# 30. Global Feature Disabled Response
+# Context Truncation
 
 If:
 
-```toml
-[auto_review]
-enabled = false
-```
-
-then:
-
 ```text
-/auto_review on
-/auto_review off
+VerificationContext.Truncated == true
 ```
 
-should not silently succeed.
+the Verification prompt should be informed that supplied context may be incomplete.
 
-Return a message equivalent to:
+However, do not encourage speculation.
 
-```text
-Automatic review is disabled by server configuration.
-```
+The correct behavior is:
 
-Manual `/review` remains available.
+> If the supplied context is insufficient to verify the candidate, reject it rather than infer missing facts.
 
 ---
 
-# 31. Interaction with Persistent Review Status Comment
+# Existing `review2.en.md`
 
-The recently introduced owned review-status-comment mechanism must be reused.
+The current `review2.en.md` already performs final validation, policy filtering, severity assignment, deduplication, and formatting.
 
-When `/auto_review on` triggers a review:
+Move or adapt this content into:
 
 ```text
-AutoReview setting saved
-      |
-      v
-normal review starts
-      |
-      v
-Ensure owned status comment
-      |
-      v
-Reviewing...
-      |
-      v
+review3.en.md
+```
+
+Do not simply duplicate it.
+
+After migration:
+
+```text
+review2.en.md = Verification
+review3.en.md = Finalization
+```
+
+---
+
+# Japanese Template Migration
+
+Rename or adapt:
+
+```text
+review2.ja.md
+```
+
+to:
+
+```text
+review3.ja.md
+```
+
+It should remain a finalization template.
+
+Do not create:
+
+```text
+review2.ja.md
+```
+
+for Verification unless there is a concrete product requirement.
+
+Verification should remain English-only to keep internal behavior consistent across output languages.
+
+---
+
+# Turn 3 Input
+
+Turn 3 must receive only verified issues.
+
+Conceptually:
+
+```text
+Verified issues:
+- c0
+- c3
+- c7
+```
+
+Candidates with:
+
+```text
+valid = false
+```
+
+must not be included.
+
+Turn 3 should not receive raw VerificationContext source code.
+
+This keeps the final turn small and cheap.
+
+---
+
+# Turn 3 Responsibilities
+
+Turn 3 should:
+
+1. Recheck the recorded verified evidence for internal consistency.
+2. Apply project-specific review policy.
+3. Reject findings that are real but not appropriate to report.
+4. Deduplicate findings with the same root cause.
+5. Assign severity.
+6. Format the final review.
+7. Use the requested output language.
+
+Turn 3 must not:
+
+* inspect source code;
+* retrieve more context;
+* discover new issues;
+* invent evidence;
+* strengthen weak verification results.
+
+---
+
+# Turn 3 Prompt
+
+Adapt the old final-selection prompt so that it says:
+
+```text
+You are given Verified Issues produced by a dedicated verification stage.
+```
+
+rather than:
+
+```text
+You are given Issue Candidates produced by a previous analysis stage.
+```
+
+The prompt should trust neither the severity nor final reporting decision because those have not yet been assigned.
+
+But it may rely on the recorded factual evidence from Verification.
+
+---
+
+# Severity Assignment
+
+Keep severity assignment only in Turn 3.
+
+Suggested categories remain:
+
+```text
+Critical
+Major
+Minor
+```
+
+Preserve current project definitions unless there is an independent reason to modify them.
+
+Do not change severity policy as part of Phase 3.
+
+This phase should isolate architectural changes from review-policy changes.
+
+---
+
+# Learned Rule Attribution
+
+Preserve rule attribution across all stages.
+
+Conceptually:
+
+```text
+CandidateIssue.RuleId
+    ↓
+VerifiedIssue.RuleId
+    ↓
+Final finding attribution
+```
+
+A rejected candidate must not count as a produced final finding.
+
+Maintain existing tracking semantics such as:
+
+```text
+ProducedCandidate
+ProducedFinalFinding
+```
+
+Add a verification-level state if useful, for example:
+
+```text
+ProducedVerifiedIssue
+```
+
+or equivalent.
+
+If adding a persistent field requires a large schema migration, defer that persistence change and record verification metrics through existing turn/execution records.
+
+Do not break current learned-rule analytics.
+
+---
+
+# Execution Recorder
+
+Extend review turn types from:
+
+```text
 Detection
-      |
-      v
 Selection
-      |
-      v
-Update same comment with result
 ```
 
-The same applies to a PR/MR opened event.
+to:
 
-Do not create a separate auto-review comment type.
+```text
+Detection
+Verification
+Finalization
+```
+
+Rename `Selection` to `Finalization` if practical and migration-safe.
+
+If persisted enum values or database compatibility make renaming risky, preserve the stored value temporarily but update semantic naming in new code where possible.
+
+Do not perform unsafe migrations solely for naming cleanliness.
 
 ---
 
-# 32. Repeated Commands
+# Verification Metrics
 
-If a user repeatedly executes:
-
-```text
-/auto_review on
-```
-
-the state remains:
+Record for Turn 2:
 
 ```text
-Enabled = true
+input tokens
+output tokens
+duration
+candidate id
+valid / invalid
+context item count
+context size
+context truncated
 ```
 
-and each valid command may trigger the normal review sequence again.
+At file-group or execution level also record:
 
-The existing per-MR owned comment should be reused.
+```text
+candidate count
+verified count
+rejected count
+```
+
+This phase should make it possible to answer:
+
+> How many Turn 1 candidates survive factual verification?
+
+---
+
+# Finalization Metrics
+
+Record:
+
+```text
+verified issue count
+final selected count
+Critical count
+Major count
+Minor count
+Turn 3 latency
+Turn 3 input tokens
+Turn 3 output tokens
+```
+
+Preserve existing final finding metrics.
+
+---
+
+# Candidate / Rule Tracking
+
+Current semantics should become:
+
+```text
+Turn 1 candidate
+    → ProducedCandidate
+
+Turn 2 valid candidate
+    → Verified
+
+Turn 3 reported finding
+    → ProducedFinalFinding
+```
+
+Where persistence supports it, track all three.
+
+At minimum preserve existing candidate and final-finding tracking.
+
+---
+
+# Failure Isolation
+
+Each verification candidate should be independently recoverable.
+
+If one candidate verification call throws:
+
+```text
+log failure
+mark candidate unverified
+continue
+```
+
+Do not abort the entire file group unless infrastructure-level failure makes further processing impossible.
 
 Similarly:
 
 ```text
-/auto_review off
+Candidate c0 verification fails
+Candidate c1 succeeds
+Candidate c2 succeeds
 ```
 
-should be idempotent.
+should still allow c1 and c2 to reach Turn 3.
 
 ---
 
-# 33. Auto Review Open Event Must Not Duplicate an Already-Running Review
+# No Candidate Case
 
-Inspect the existing per-MR review concurrency behavior.
+If Turn 1 returns no candidates:
 
-A PR/MR open event and a user command could occur close together.
+```text
+skip Turn 2
+skip Turn 3
+```
+
+and preserve existing "No issues found" / no-review behavior.
+
+Do not invoke empty LLM turns.
+
+---
+
+# No Verified Issue Case
+
+If Turn 1 finds candidates but Turn 2 rejects all of them:
+
+```text
+skip Turn 3
+```
+
+Return the existing no-issues result.
+
+Do not invoke Finalization merely to produce:
+
+```text
+No issues found
+```
+
+unless existing output architecture strictly requires it.
+
+Prefer deterministic application-side handling.
+
+---
+
+# Prompt Builder Structure
+
+The prompt builder should clearly expose:
+
+```text
+BuildTurn1(...)
+BuildTurn2(...)
+BuildTurn3(...)
+```
+
+Responsibilities:
+
+```text
+BuildTurn1:
+Candidate Discovery
+
+BuildTurn2:
+Candidate + VerificationContext
+
+BuildTurn3:
+Verified issues + learned/project policy
+```
+
+Avoid one generic builder containing stage-specific branches where possible.
+
+Keep stage contracts explicit.
+
+---
+
+# Review Request Model
+
+Reassess whether fields such as:
+
+```text
+ReviewRulesTurn1
+ReviewRulesTurn2
+```
+
+should become:
+
+```text
+ReviewRulesTurn1
+ReviewRulesTurn2
+ReviewRulesTurn3
+```
+
+or clearer names such as:
+
+```text
+DetectionTemplate
+VerificationTemplate
+FinalizationTemplate
+```
+
+Prefer semantic names if changing them does not cause excessive churn.
+
+Do not prioritize naming refactors over functional integration.
+
+---
+
+# Finalization Language
+
+Only Turn 3 should depend on the selected review language.
 
 Example:
 
 ```text
-MR opened -> auto review starts
+English output:
+review3.en.md
 
-immediately afterward:
-/auto_review on
+Japanese output:
+review3.ja.md
 ```
 
-or:
+Turn 1 and Turn 2 remain:
 
 ```text
-/review
+English internal representation
 ```
 
-Reuse the existing per-MR review lock or duplicate-execution prevention mechanism.
-
-Do not create a separate global lock.
-
-The automatic trigger should enter the same concurrency boundary as manual review.
+This helps keep candidate and verification schemas language-independent.
 
 ---
 
-# 34. Provider-Neutral User Preference
+# JSON Parsing
 
-The preference system must remain common across GitHub and GitLab.
+Turn 1 and Turn 2 should both use structured JSON output.
 
-Provider adapters are responsible only for extracting:
+Turn 3 may continue producing final Markdown/text.
 
-```text
-project ID
-MR/PR ID
-user ID
-event type
-command text
-```
-
-The following must remain provider-neutral:
+Use the existing typed JSON execution path where available, for example conceptually:
 
 ```text
-AutoReviewOptions
-IAutoReviewUserSettingRepository
-IAutoReviewPolicy
-command semantics
-review trigger logic
+RunJsonWithUsageAsync<T>()
 ```
+
+Do not parse Verification output through fragile free-form text processing.
 
 ---
 
-# 35. Do Not Share Preferences Across Providers Accidentally
+# Verification Prompt Constraints
 
-Because `project_id` is already provider/project-specific, the composite key:
-
-```text
-(ProjectId, UserId)
-```
-
-is sufficient if internal project identity is globally unique.
-
-Do not assume that GitHub user ID `123` and GitLab user ID `123` represent the same human.
-
-Their settings remain isolated because they belong to different project records/provider contexts.
-
----
-
-# 36. Migration
-
-Add a migration that:
-
-1. Creates `auto_review_user_settings`.
-2. Adds the project foreign key.
-3. Adds the composite primary key.
-4. Adds any genuinely necessary index not already covered by the primary key.
-
-Do not backfill user settings.
-
-Existing users should have:
+The new `review2.en.md` should explicitly state:
 
 ```text
-no explicit DB override
+Output JSON only.
+Do not assign severity.
+Do not write the final review.
+Do not discover new issues.
+Do not inspect anything outside the supplied context.
+Reject candidates that cannot be established from the supplied context.
 ```
 
-and therefore inherit:
+Keep the prompt shorter than the old combined validation/finalization prompt.
+
+The narrow role should reduce inference latency and improve consistency.
+
+---
+
+# Suggested `review2.en.md` Structure
+
+Use approximately:
 
 ```text
-auto_review.mode
+Role
+Goal
+Input Authority
+Verification Rules
+Evidence Requirements
+Rejection Rules
+Output Schema
+Output Constraints
+Candidate
+Verification Context
 ```
 
----
-
-# 37. Configuration Template
-
-Update `config.template.toml` with:
-
-```toml
-[auto_review]
-# Enables automatic review on newly opened pull/merge requests.
-enabled = false
-
-# Default policy for users without an explicit per-project preference.
-# "opt_in": automatic review is disabled until the user runs /auto_review on.
-# "opt_out": automatic review is enabled until the user runs /auto_review off.
-mode = "opt_in"
-```
-
-Choose the default according to the product's desired rollout policy.
-
-For a conservative rollout, prefer:
+Avoid large sections about:
 
 ```text
-enabled = false
-mode = "opt_in"
+final formatting
+severity policy
+project reporting policy
+deduplication across unrelated candidates
 ```
 
-unless the existing requirements specify otherwise.
+Those belong to Turn 3.
 
 ---
 
-# 38. README Update
+# Turn 3 Deduplication
 
-Update README configuration documentation to describe:
-
-```text
-[auto_review]
-enabled
-mode
-```
-
-and commands:
-
-```text
-/auto_review on
-/auto_review on /ja
-/auto_review on /en
-/auto_review off
-```
-
-Document clearly that:
-
-* `/auto_review on` immediately runs a review.
-* Language arguments apply only to that review.
-* Future automatic reviews use `default_language`.
-* Preferences are stored per project/user.
-* Manual `/review` remains available regardless of auto-review setting.
-
----
-
-# 39. Logging
-
-Add useful structured logs.
-
-Example:
-
-```csharp
-_logger.LogInformation(
-    "Auto review {EnabledState} for project {ProjectId}, user {UserId}",
-    enabled,
-    projectId,
-    userId);
-```
-
-On automatic trigger:
-
-```csharp
-_logger.LogInformation(
-    "Starting automatic review for project {ProjectId}, merge request {MergeRequestId}, author {UserId}",
-    projectId,
-    mergeRequestId,
-    userId);
-```
-
-Do not log secrets or access tokens.
-
----
-
-# 40. Do Not Use Logs as Preference Storage
-
-SQLite is authoritative.
-
-Preferences must survive application restart.
-
-Do not reconstruct state from past commands or logs.
-
----
-
-# 41. Cancellation
-
-Propagate `CancellationToken` through:
-
-```text
-setting lookup
-setting upsert
-policy evaluation
-command handling
-opened-event handling
-review invocation
-```
-
-Do not weaken the existing review cancellation semantics.
-
----
-
-# 42. Tests
-
-Add focused automated tests.
-
-At minimum implement the following.
-
-## Test 1 — Opt-In Default Is Off
-
-Given:
-
-```toml
-enabled = true
-mode = "opt_in"
-```
-
-and no DB row:
-
-```text
-IsEnabled = false
-```
-
----
-
-## Test 2 — Opt-Out Default Is On
-
-Given:
-
-```toml
-enabled = true
-mode = "opt_out"
-```
-
-and no DB row:
-
-```text
-IsEnabled = true
-```
-
----
-
-## Test 3 — Global Disabled Always Wins
-
-Given:
-
-```toml
-enabled = false
-```
-
-and DB:
-
-```text
-Enabled = true
-```
-
-verify:
-
-```text
-effective auto review = false
-```
-
----
-
-## Test 4 — Explicit ON Overrides Opt-In Default
-
-Store:
-
-```text
-Enabled = true
-```
-
-under opt-in.
-
-Verify effective state is true.
-
----
-
-## Test 5 — Explicit OFF Overrides Opt-Out Default
-
-Store:
-
-```text
-Enabled = false
-```
-
-under opt-out.
-
-Verify effective state is false.
-
----
-
-## Test 6 — Preferences Are Project-Specific
-
-Create:
-
-```text
-Project A / User 123 = ON
-Project B / User 123 = OFF
-```
-
-Verify independent results.
-
----
-
-## Test 7 — `/auto_review on`
-
-Run:
-
-```text
-/auto_review on
-```
-
-Verify:
-
-* DB setting becomes true.
-* Existing review pipeline is invoked.
-* Language equals `default_language`.
-
----
-
-## Test 8 — `/auto_review on /ja`
-
-Verify:
-
-```text
-DB setting = true
-review invoked
-language = ja
-```
-
----
-
-## Test 9 — `/auto_review on /en`
-
-Verify:
-
-```text
-DB setting = true
-review invoked
-language = en
-```
-
----
-
-## Test 10 — `/auto_review off`
-
-Verify:
-
-```text
-DB setting = false
-review pipeline not invoked
-```
-
----
-
-## Test 11 — Manual `/review` Ignores Auto-Review OFF
-
-Store:
-
-```text
-auto review = false
-```
-
-Run:
-
-```text
-/review
-```
-
-Verify the review still starts.
-
----
-
-## Test 12 — Manual `/review /ja`
-
-Verify existing behavior remains unchanged.
-
----
-
-## Test 13 — Open Event with Enabled Preference
-
-Create an opened PR/MR from a user whose effective auto-review setting is true.
-
-Verify:
-
-* Existing normal review pipeline starts.
-* Language equals `default_language`.
-
----
-
-## Test 14 — Open Event with Disabled Preference
-
-Verify no review starts.
-
----
-
-## Test 15 — Open Event Uses Author User ID
-
-Create an event where webhook sender and PR/MR author differ.
-
-Verify policy lookup uses the PR/MR author.
-
----
-
-## Test 16 — GitHub and GitLab Use Same Policy
-
-Provide equivalent normalized opened events from both providers.
-
-Verify the same `IAutoReviewPolicy` behavior is used.
-
----
-
-## Test 17 — Same Numeric User ID Across Providers Is Not Shared Globally
-
-Ensure project/provider isolation prevents accidental preference sharing.
-
----
-
-## Test 18 — Invalid Language Handling
-
-Run:
-
-```text
-/auto_review on /invalid
-```
-
-Verify behavior matches existing `/review /invalid` validation semantics.
-
-Do not silently persist ON and then fail review in an inconsistent state unless that ordering is explicitly intended.
-
-Prefer validating command syntax/language before mutating persistent state.
-
----
-
-# 43. Important Ordering for `/auto_review on /lang`
-
-Validate the entire command before persisting the setting.
-
-Preferred flow:
-
-```text
-Parse command
-      |
-      v
-Validate on/off
-      |
-      v
-Validate optional language
-      |
-      v
-Check feature enabled
-      |
-      v
-Persist ON
-      |
-      v
-Start review
-```
-
-This prevents malformed input such as:
-
-```text
-/auto_review on /invalid
-```
-
-from unexpectedly changing user preference.
-
----
-
-# 44. Review Failure Does Not Roll Back Preference
-
-Once a valid:
-
-```text
-/auto_review on
-```
-
-command successfully persists the setting, a later review failure must not revert it.
-
-These are separate operations:
-
-```text
-preference update
-review execution
-```
+Deduplication belongs in Turn 3 because independently verified candidates can still represent the same root cause.
 
 Example:
 
 ```text
-AutoReview ON saved successfully
-review model later fails
+c0: declaration contract mismatch
+c3: implementation behavior caused by the same mismatch
 ```
 
-Expected:
+Turn 3 may merge them.
+
+Do not merge independent root causes merely because they occur in the same function.
+
+---
+
+# Existing File Grouping
+
+Do not change grouping in Phase 3.
+
+Preserve the existing grouping behavior.
+
+The purpose of this phase is to measure the impact of adding Verification.
+
+Do not mix semantic grouping changes into the experiment.
+
+---
+
+# AST Changes
+
+Do not expand AST capabilities beyond what the Verification Context Resolver needs.
+
+Do not reintroduce broad AST JSON into Turn 2.
+
+Target:
 
 ```text
-AutoReview remains ON
+AST / semantic index
+    ↓
+resolver
+    ↓
+source code
+    ↓
+Turn 2
 ```
 
----
-
-# 45. Open-Event Review Failure Does Not Change Preference
-
-If an automatically triggered review fails, do not change:
+not:
 
 ```text
-Enabled
+AST JSON
+    ↓
+Turn 2
 ```
-
-in the user setting.
-
-Review success/failure is unrelated to preference state.
 
 ---
 
-# 46. Existing Review Telemetry
+# RAG / Learned Rules
 
-Automatically triggered reviews should flow through the same normal review execution path and therefore produce normal telemetry:
+Preserve existing rule retrieval behavior in Phase 3.
+
+Do not redesign the rule-search query.
+
+Candidate Discovery may continue to receive learned rules according to existing behavior.
+
+Finalization should continue applying project-specific review policy.
+
+Verification should remain primarily factual.
+
+If a learned rule encodes a factual invariant required to validate a candidate, pass it only if the existing architecture already makes that information available cleanly.
+
+Do not create a second RAG pipeline for Verification in this phase.
+
+---
+
+# Performance Considerations
+
+The purpose of the 3-turn design is to replace one expensive thinking-heavy stage with multiple short non-thinking stages.
+
+Do not allow the new Verification stage to become another broad reasoning prompt.
+
+Keep:
 
 ```text
-ReviewExecution
-ReviewTurn
-RuleSearchExecution
-ReviewRuleUsage
+one candidate
++
+small targeted source context
++
+one verification decision
 ```
 
-where applicable.
+as the default unit of work.
 
-Do not create a parallel telemetry path.
-
-If the system already records trigger source, it may distinguish manual/automatic review.
-
-Do not add a new telemetry field solely for this feature unless genuinely required.
-
----
-
-# 47. No User-Language Persistence
-
-Do not add:
+The expected architecture is:
 
 ```text
-preferred_language
-review_language
-default_language_override
+cheap broad scan
+    ↓
+small targeted checks
+    ↓
+tiny final policy/formatting pass
 ```
 
-to `auto_review_user_settings`.
+---
 
-The desired model is:
+# Benchmark
+
+Compare at least:
 
 ```text
-SQLite:
-    explicit enabled/disabled choice
+Baseline:
+Thinking Turn 1
++ existing Turn 2
 
-config.toml:
-    default review language
-
-command:
-    one-review language override
+New:
+Non-thinking Turn 1
++ non-thinking Verification
++ non-thinking Finalization
 ```
 
-Keep these responsibilities separate.
-
----
-
-# 48. Out of Scope
-
-Do not implement:
-
-* User-specific persistent language preferences
-* Organization-wide user preferences
-* Global cross-project user profiles
-* Auto-review schedules
-* Branch-specific auto-review policies
-* File-path-specific policies
-* Automatic reviewer assignment
-* Per-user model selection
-* Auto-review billing/quota logic
-* New review pipeline
-* New result-comment mechanism
-* New statistics dashboard changes unrelated to this feature
-
-Keep the implementation focused on automatic trigger preference and command integration.
-
----
-
-# 49. Recommended Implementation Order
-
-Use the following order unless the existing architecture strongly suggests a small adjustment.
+Measure:
 
 ```text
-1. Inspect existing /review command parser
-2. Inspect language parsing/validation
-3. Inspect GitHub/GitLab opened-event normalization
-4. Identify stable user ID in both providers
-5. Inspect existing per-MR review concurrency controls
-6. Add [auto_review] configuration options
-7. Add configuration validation
-8. Add auto_review_user_settings migration
-9. Add repository model/API
-10. Implement SQLite Get/Set
-11. Add IAutoReviewPolicy
-12. Extend command parser for /auto_review
-13. Implement /auto_review on
-14. Reuse existing language resolution
-15. Invoke existing review pipeline from /auto_review on
-16. Implement /auto_review off
-17. Integrate policy into PR/MR opened events
-18. Ensure opened event uses author User ID
-19. Reuse persistent review-status-comment flow
-20. Reuse existing per-MR review lock
-21. Update config.template.toml
-22. Update README
-23. Add repository/policy tests
-24. Add command tests
-25. Add GitHub opened-event tests
-26. Add GitLab opened-event tests
-27. Run full existing test suite
-28. Fix regressions without expanding scope
+total review latency
+Turn 1 latency
+Turn 2 verification latency
+Turn 3 latency
+total input tokens
+total output tokens
+candidate count
+verified count
+final finding count
 ```
 
----
-
-# 50. Acceptance Criteria
-
-This change is complete when all of the following are true:
-
-* `[auto_review]` configuration exists.
-* Auto review has a global `enabled` switch.
-* Auto review supports `opt_in`.
-* Auto review supports `opt_out`.
-* Explicit user preference is stored in SQLite.
-* Preference key is `(ProjectId, UserId)`.
-* Stable provider user IDs are used.
-* GitHub and GitLab use the same policy layer.
-* `/auto_review on` is supported.
-* `/auto_review on /ja` is supported.
-* `/auto_review on /en` is supported.
-* `/auto_review off` is supported.
-* `/auto_review on` immediately enters the existing review sequence.
-* Language-less auto-review commands use `default_language`.
-* Explicit command language overrides apply only to that review.
-* Future opened-event automatic reviews use `default_language`.
-* `/auto_review off` does not start a review.
-* Manual `/review` works regardless of automatic-review preference.
-* PR/MR opened events use the author's preference.
-* Global disabled state prevents automatic reviews even when DB override is ON.
-* Opt-in users without DB state default to OFF.
-* Opt-out users without DB state default to ON.
-* Explicit DB state overrides mode defaults.
-* Preference survives application restart.
-* Review failures do not modify preference.
-* Automatic reviews reuse the normal review pipeline.
-* Automatic reviews reuse the normal owned status-comment mechanism.
-* Existing multi-project isolation remains intact.
-* Automated tests cover configuration, policy, commands, providers, language, and project isolation.
-* Existing tests pass.
-
----
-
-# 51. Coding Guidelines
-
-Follow existing:
-
-* Command parsing conventions
-* Language validation
-* Project identity handling
-* GitHub/GitLab provider abstraction
-* SQLite conventions
-* Migration conventions
-* Repository patterns
-* Options/configuration patterns
-* Dependency injection
-* Structured logging
-* CancellationToken propagation
-* Review concurrency controls
-* Test infrastructure
-
-Prefer one shared review execution path for:
+Also measure:
 
 ```text
-/review
-/auto_review on
-PR/MR opened automatic review
+candidate → verified survival rate
+verified → final survival rate
 ```
-
-Do not duplicate review logic.
-
-The core principle is:
-
-> Auto review decides when the existing review pipeline starts; it does not create a new kind of review.
 
 ---
 
-# 52. Final Deliverable
+# Quality Evaluation
 
-After implementation, provide a concise implementation report containing:
+Use representative real C/C++ merge requests.
 
-1. Files changed.
-2. `config.toml` options added.
-3. Final `auto_review_user_settings` schema.
-4. Repository API added.
-5. Auto-review policy logic.
-6. Opt-in semantics.
-7. Opt-out semantics.
-8. How GitHub/GitLab user IDs are normalized.
-9. Command grammar implemented.
-10. How `/auto_review on` reuses normal review execution.
-11. Language resolution behavior.
-12. How PR/MR opened events invoke automatic review.
-13. How manual `/review` remains independent.
-14. How concurrency with manual review is handled.
-15. How persistent review-status comments are reused.
-16. README/config template changes.
-17. Tests added or updated.
-18. Any remaining risks or assumptions.
+Manually evaluate:
 
-Do not expand the scope into unrelated review, statistics, or rule-learning changes.
+## Recall
+
+Did Turn 1 still discover important defects?
+
+## Verification precision
+
+Did Turn 2 correctly reject speculative candidates?
+
+## Final precision
+
+Did Turn 3 avoid weak or policy-inappropriate findings?
+
+## Evidence quality
+
+Are verified findings supported by concrete source facts?
+
+## Latency
+
+Is the complete non-thinking pipeline faster than the previous thinking-based pipeline?
+
+---
+
+# Expected Diagnostic Patterns
+
+Useful metrics may reveal:
+
+### High candidate count + low verification survival
+
+Turn 1 is too permissive.
+
+Example:
+
+```text
+20 candidates
+2 verified
+```
+
+Tighten Candidate Discovery.
+
+---
+
+### Low candidate count + high survival
+
+Turn 1 may be too conservative.
+
+Example:
+
+```text
+2 candidates
+2 verified
+```
+
+Check for recall loss.
+
+---
+
+### High verification survival + low final survival
+
+Project policy / reporting threshold is doing substantial filtering.
+
+This may be expected, but inspect whether policy should move earlier.
+
+Do not move it during Phase 3 unless clearly necessary.
+
+---
+
+### Verification consumes most latency
+
+The context or per-candidate execution strategy is too expensive.
+
+Optimize later through:
+
+```text
+candidate batching
+bounded parallelism
+smaller context
+candidate caps
+```
+
+Do not prematurely redesign the architecture.
+
+---
+
+# Tests
+
+Add or update tests covering the complete 3-stage flow.
+
+At minimum:
+
+## Candidate survives verification
+
+```text
+Turn 1:
+c0
+
+Turn 2:
+c0 valid
+
+Turn 3:
+c0 reported
+```
+
+---
+
+## Candidate rejected by verification
+
+```text
+Turn 1:
+c0
+
+Turn 2:
+c0 invalid
+
+Turn 3:
+c0 absent
+```
+
+---
+
+## Mixed candidates
+
+```text
+Turn 1:
+c0, c1, c2
+
+Turn 2:
+c0 valid
+c1 invalid
+c2 valid
+
+Turn 3 input:
+c0, c2 only
+```
+
+---
+
+## No candidates
+
+Turn 2 and Turn 3 are not executed.
+
+---
+
+## All candidates rejected
+
+Turn 3 is skipped.
+
+---
+
+## Verification failure
+
+One failed candidate does not prevent unrelated candidates from completing.
+
+---
+
+## Candidate ID preservation
+
+`candidate_id` remains stable through all stages.
+
+---
+
+## Rule attribution preservation
+
+A rule-linked candidate keeps its attribution through verification and finalization.
+
+---
+
+## No severity in Turn 2
+
+Verification output must not contain final severity.
+
+---
+
+## No new issue in Turn 2
+
+Verification cannot introduce an issue absent from Turn 1.
+
+---
+
+## Turn 3 receives no source code
+
+Finalization operates only on verified findings and applicable policy.
+
+---
+
+## Language behavior
+
+English and Japanese final review output use the correct Turn 3 template.
+
+Internal candidate and verification output remains English.
+
+---
+
+# Migration Strategy
+
+Implement incrementally.
+
+Recommended order:
+
+```text
+1. Add VerifiedIssue response types.
+2. Add new review2.en.md.
+3. Move existing review2.en.md behavior to review3.en.md.
+4. Move review2.ja.md to review3.ja.md.
+5. Add BuildTurn3().
+6. Change BuildTurn2() to Verification.
+7. Integrate VerificationContextResolver.
+8. Execute Turn 2 per candidate.
+9. Filter invalid candidates.
+10. Pass verified candidates to Turn 3.
+11. Add Verification recorder metrics.
+12. Update tests.
+13. Disable thinking for the complete pipeline.
+14. Benchmark against the previous pipeline.
+```
+
+Keep commits or implementation steps independently testable where practical.
+
+---
+
+# Compatibility
+
+Preserve:
+
+* GitLab comment behavior;
+* review execution status reporting;
+* learned-rule retrieval;
+* rule attribution;
+* existing file grouping;
+* existing AST extraction;
+* project-specific policy;
+* final English/Japanese output behavior;
+* execution failure handling.
+
+The architectural change should remain internal to review generation.
+
+---
+
+# Do Not Implement Yet
+
+Explicitly exclude:
+
+```text
+semantic file grouping redesign
+repository-wide verification
+multi-hop AST traversal
+automatic LLM tool use
+dynamic recursive context retrieval
+parallel verification optimization
+candidate batching optimization
+Turn 1 full-file architecture redesign
+RAG redesign
+severity policy redesign
+new learned-rule lifecycle design
+```
+
+These belong to later phases.
+
+---
+
+# Acceptance Criteria
+
+Phase 3 is complete when all of the following are true:
+
+1. The review pipeline contains three explicit stages:
+
+   * Candidate Discovery
+   * Verification
+   * Finalization
+
+2. `review2.en.md` is dedicated to Verification.
+
+3. `review3.en.md` and `review3.ja.md` are dedicated to Finalization.
+
+4. Verification consumes candidate-specific source context from the AST-driven resolver.
+
+5. Verification does not receive broad raw AST JSON as its primary context.
+
+6. Verification cannot discover new issues.
+
+7. Verification returns typed structured output.
+
+8. Verification preserves candidate IDs.
+
+9. Invalid candidates are removed before Finalization.
+
+10. Turn 2 does not assign Critical / Major / Minor severity.
+
+11. Turn 3 receives only verified findings.
+
+12. Turn 3 remains responsible for project policy, deduplication, severity, and formatting.
+
+13. Turn 3 does not inspect source code.
+
+14. No-candidate and no-verified-issue paths avoid unnecessary LLM calls.
+
+15. Candidate verification failures are isolated.
+
+16. Learned-rule attribution remains functional.
+
+17. Detection, Verification, and Finalization latency/token metrics are recorded.
+
+18. Existing GitLab review behavior remains functional.
+
+19. English and Japanese final review output remain supported.
+
+20. The full pipeline can run with thinking disabled.
+
+21. Relevant unit and integration tests pass.
+
+22. The project builds successfully.
+
+---
+
+# Implementation Principle
+
+Do not compensate for removing thinking mode by asking one turn to reason more deeply.
+
+Distribute responsibility.
+
+The intended pipeline is:
+
+```text
+Turn 1
+Find something suspicious.
+
+        ↓
+
+Application / AST
+Provide exactly the context needed to check it.
+
+        ↓
+
+Turn 2
+Determine whether it is actually true.
+
+        ↓
+
+Turn 3
+Determine whether and how it should be reported.
+```
+
+The core Phase 3 design principle is:
+
+> Discovery, factual verification, and review policy are three different tasks and should not compete for attention inside the same LLM invocation.
+
+Keep each turn small, explicit, and independently observable.

@@ -350,7 +350,7 @@ namespace PRReviewAgent.Services
             }
 
             List<string> reviews = new List<string>();
-            int totalCandidates = 0, totalSelected = 0, totalCritical = 0, totalMajor = 0, totalMinor = 0;
+            int totalCandidates = 0, totalSelected = 0;
             logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
             try
             {
@@ -370,12 +370,12 @@ namespace PRReviewAgent.Services
                             catch (Exception ex) { logger.LogError(ex, "Failed to start Detection turn record"); }
                         }
 
-                        IssuesResponse? issuesResponse = null;
+                        CandidateResponse? issuesResponse = null;
                         int? detInputTokens = null, detOutputTokens = null;
                         Exception? detException = null;
                         try
                         {
-                            (issuesResponse, detInputTokens, detOutputTokens) = await context.Agents.RunJsonWithUsageAsync<IssuesResponse>(promptTurn1, context.CancellationToken);
+                            (issuesResponse, detInputTokens, detOutputTokens) = await context.Agents.RunJsonWithUsageAsync<CandidateResponse>(promptTurn1, context.CancellationToken);
                         }
                         catch (Exception ex) { detException = ex; throw; }
                         finally
@@ -429,19 +429,7 @@ namespace PRReviewAgent.Services
                         }
 
                         int fileGroupCandidates = issuesResponse.issues.Length;
-                        int fileGroupSelected = 0, fileGroupCritical = 0, fileGroupMajor = 0, fileGroupMinor = 0;
-                        foreach (Prompt.Issue issue in issuesResponse.issues)
-                        {
-                            string conf = issue.confidence?.Trim() ?? string.Empty;
-                            if (string.Equals(conf, "Critical", StringComparison.OrdinalIgnoreCase)) { fileGroupCritical++; fileGroupSelected++; }
-                            else if (string.Equals(conf, "Major", StringComparison.OrdinalIgnoreCase)) { fileGroupMajor++; fileGroupSelected++; }
-                            else if (string.Equals(conf, "Minor", StringComparison.OrdinalIgnoreCase)) { fileGroupMinor++; fileGroupSelected++; }
-                        }
                         totalCandidates += fileGroupCandidates;
-                        totalCritical += fileGroupCritical;
-                        totalMajor += fileGroupMajor;
-                        totalMinor += fileGroupMinor;
-                        totalSelected += fileGroupSelected;
 
                         // Selection turn
                         string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
@@ -455,11 +443,14 @@ namespace PRReviewAgent.Services
                         }
 
                         string reviewResponse = string.Empty;
+                        string cleanedResponse = string.Empty;
+                        IReadOnlyList<string> selectedCandidateIds = Array.Empty<string>();
                         int? selInputTokens = null, selOutputTokens = null;
                         Exception? selException = null;
                         try
                         {
                             (reviewResponse, selInputTokens, selOutputTokens) = await context.Agents.RunWithUsageAsync(promptTurn2, context.CancellationToken);
+                            (cleanedResponse, selectedCandidateIds) = PromptBuilder.ExtractSelectionMetadata(reviewResponse);
                         }
                         catch (Exception ex) { selException = ex; throw; }
                         finally
@@ -472,7 +463,7 @@ namespace PRReviewAgent.Services
                                     if (selException != null)
                                         await turnRecorder.CompleteFailureAsync(selectionTurnId.Value, selInputTokens, selOutputTokens, ClassifyError(selException), DateTimeOffset.UtcNow, selectionSw.ElapsedMilliseconds, cancellationToken);
                                     else
-                                        await turnRecorder.CompleteSuccessAsync(selectionTurnId.Value, selInputTokens, selOutputTokens, fileGroupSelected, DateTimeOffset.UtcNow, selectionSw.ElapsedMilliseconds, cancellationToken);
+                                        await turnRecorder.CompleteSuccessAsync(selectionTurnId.Value, selInputTokens, selOutputTokens, selectedCandidateIds.Count, DateTimeOffset.UtcNow, selectionSw.ElapsedMilliseconds, cancellationToken);
                                 }
                                 catch (Exception rex) { logger.LogError(rex, "Failed to complete Selection turn record"); }
                             }
@@ -484,10 +475,6 @@ namespace PRReviewAgent.Services
                             PromptBuilder.AddNotFound(fileGroup, reviews, language_, stringBuilder_);
                             continue;
                         }
-
-                        // Extract selection metadata and strip hidden tracking comment before posting.
-                        (string cleanedResponse, IReadOnlyList<string> selectedCandidateIds) =
-                            PromptBuilder.ExtractSelectionMetadata(reviewResponse);
 
                         // Mark produced_final_finding for rules whose candidates survived Selection.
                         if (usageRepo != null && executionId.HasValue && project != null && selectedCandidateIds.Count > 0)
@@ -504,6 +491,7 @@ namespace PRReviewAgent.Services
                             }
                         }
 
+                        totalSelected += selectedCandidateIds.Count;
                         stringBuilder_.Clear();
                         stringBuilder_.Append($"# {fileGroup.Topic}\n\n");
                         stringBuilder_.Append(cleanedResponse);
@@ -526,9 +514,9 @@ namespace PRReviewAgent.Services
                             DurationMs: reviewStopwatch.ElapsedMilliseconds,
                             CandidateFindingCount: totalCandidates,
                             SelectedFindingCount: totalSelected,
-                            CriticalCount: totalCritical,
-                            MajorCount: totalMajor,
-                            MinorCount: totalMinor), cancellationToken);
+                            CriticalCount: 0,
+                            MajorCount: 0,
+                            MinorCount: 0), cancellationToken);
                     }
                     catch (Exception ex) { logger.LogError(ex, "Failed to complete review execution record"); }
                 }

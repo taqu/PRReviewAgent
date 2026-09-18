@@ -70,6 +70,36 @@ namespace PRReviewAgent.Services
             return stringBuilder.ToString();
         }
 
+        public static string BuildTurn2(ReviewRequest reviewRequest, CandidateResponse candidateResponse, StringBuilder stringBuilder)
+        {
+            stringBuilder.Clear();
+            stringBuilder.Append(reviewRequest.ReviewRulesTurn2);
+            foreach (CandidateIssue candidate in candidateResponse.issues)
+            {
+                string id = candidate.candidate_id ?? "?";
+                stringBuilder.Append($"\n### Candidate {id}\n\n");
+                stringBuilder.Append($"**Location:** {candidate.location}\n\n");
+                stringBuilder.Append($"**Category:** {candidate.category}\n\n");
+                stringBuilder.Append($"**Hypothesis:** {candidate.hypothesis}\n\n");
+                stringBuilder.Append($"**Changed-code trigger:** {candidate.trigger}\n\n");
+                if (candidate.verify_symbols?.Length > 0)
+                {
+                    stringBuilder.Append("**Suggested verification targets:**\n");
+                    foreach (string sym in candidate.verify_symbols)
+                        stringBuilder.Append($"- {sym}\n");
+                    stringBuilder.Append("\n");
+                }
+            }
+            bool hasCandidateIds = candidateResponse.issues.Any(i => i.candidate_id != null);
+            if (hasCandidateIds)
+            {
+                stringBuilder.Append("\n\nAfter your review, append exactly one hidden metadata line on its own line at the very end in this exact format (no spaces around the colon, comma-separated, no extra text):\n");
+                stringBuilder.Append("<!-- SELECTED_CANDIDATES: c0,c1 -->\n");
+                stringBuilder.Append("Replace c0,c1 with the candidate_id values of findings you included. If you included none, omit the line entirely.");
+            }
+            return stringBuilder.ToString();
+        }
+
         public static string BuildTurn2(ReviewRequest reviewRequest, IssuesResponse issuesResponse, StringBuilder stringBuilder)
         {
             stringBuilder.Clear();
@@ -84,8 +114,6 @@ namespace PRReviewAgent.Services
             string jsonText = System.Text.Json.JsonSerializer.Serialize<IssuesResponse>(issuesResponse, options);
             jsonText = jsonText.Replace("\r\n", "\n");
             stringBuilder.Append(jsonText);
-            // Attribution tracking: ask the model to append a hidden metadata line listing
-            // the candidate_id values of findings it included. This is stripped before posting.
             bool hasCandidateIds = issuesResponse.issues.Any(i => i.candidate_id != null);
             if (hasCandidateIds)
             {
