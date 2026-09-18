@@ -39,6 +39,40 @@ namespace PRReviewAgent.Services
             return stringBuilder.ToString();
         }
 
+        public static (string Prompt, PRReviewAgent.Prompt.Turn1.Turn1ContextMetrics Metrics) BuildTurn1WithMetrics(
+            ReviewRequest reviewRequest,
+            FileGroup fileGroup,
+            StringBuilder stringBuilder,
+            PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig? budget = null)
+        {
+            stringBuilder.Clear();
+            stringBuilder.Append(reviewRequest.ReviewRulesTurn1);
+            stringBuilder.Append("\n----\n");
+
+            if (!string.IsNullOrEmpty(reviewRequest.MergeRequestTitle))
+            {
+                stringBuilder.Append("# MR Title\n");
+                stringBuilder.Append(reviewRequest.MergeRequestTitle);
+                stringBuilder.Append("\n\n");
+            }
+            if (!string.IsNullOrEmpty(reviewRequest.MergeRequestDescription))
+            {
+                stringBuilder.Append("# MR Description\n");
+                stringBuilder.Append(reviewRequest.MergeRequestDescription);
+                stringBuilder.Append("\n\n");
+            }
+
+            var (turn1Context, metrics) = PRReviewAgent.Prompt.Turn1.Turn1ContextBuilder.BuildWithMetrics(fileGroup.ReviewContexts, budget);
+            stringBuilder.Append(turn1Context);
+
+            if (!string.IsNullOrEmpty(reviewRequest.LearnedRules))
+            {
+                stringBuilder.Append("\n----\n");
+                stringBuilder.Append(reviewRequest.LearnedRules);
+            }
+            return (stringBuilder.ToString(), metrics);
+        }
+
         public static string BuildTurn2(ReviewRequest reviewRequest, CandidateIssue candidate, VerificationContext verificationContext, StringBuilder stringBuilder)
         {
             stringBuilder.Clear();

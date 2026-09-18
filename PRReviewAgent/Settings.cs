@@ -324,6 +324,68 @@ namespace PRReviewAgent
         /// </summary>
         public Tomlyn.Model.TomlTable? Config => config_;
 
+        public PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig GetReviewBudgetConfig()
+        {
+            int turn1MaxSource = 128_000;
+            int turn1FullFile = 32_000;
+            int turn1SemSummary = 8_000;
+            int verMaxChars = 32_000;
+            int verMaxItems = 16;
+            int verMaxCallers = 5;
+            int verMaxCallees = 5;
+            int verMaxTypes = 3;
+            int maxCandidates = 8;
+            int maxVerCandidates = 8;
+
+            if (config_ != null
+                && config_.TryGetValue("review", out object? reviewObj)
+                && reviewObj is Tomlyn.Model.TomlTable reviewTable)
+            {
+                if (reviewTable.TryGetValue("turn1", out object? t1Obj)
+                    && t1Obj is Tomlyn.Model.TomlTable t1)
+                {
+                    turn1MaxSource = GetIntSetting(t1, "max_source_chars", turn1MaxSource);
+                    turn1FullFile = GetIntSetting(t1, "full_file_threshold_chars", turn1FullFile);
+                    turn1SemSummary = GetIntSetting(t1, "semantic_summary_max_chars", turn1SemSummary);
+                }
+                if (reviewTable.TryGetValue("verification", out object? verObj)
+                    && verObj is Tomlyn.Model.TomlTable ver)
+                {
+                    verMaxChars = GetIntSetting(ver, "max_context_chars", verMaxChars);
+                    verMaxItems = GetIntSetting(ver, "max_context_items", verMaxItems);
+                    verMaxCallers = GetIntSetting(ver, "max_direct_callers", verMaxCallers);
+                    verMaxCallees = GetIntSetting(ver, "max_direct_callees", verMaxCallees);
+                    verMaxTypes = GetIntSetting(ver, "max_referenced_types", verMaxTypes);
+                }
+                if (reviewTable.TryGetValue("candidates", out object? candObj)
+                    && candObj is Tomlyn.Model.TomlTable cand)
+                {
+                    maxCandidates = GetIntSetting(cand, "max_candidates_per_group", maxCandidates);
+                    maxVerCandidates = GetIntSetting(cand, "max_verification_candidates_per_group", maxVerCandidates);
+                }
+            }
+
+            return new PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig
+            {
+                Turn1MaxSourceChars = turn1MaxSource,
+                Turn1FullFileThresholdChars = turn1FullFile,
+                Turn1SemanticSummaryMaxChars = turn1SemSummary,
+                VerificationMaxContextChars = verMaxChars,
+                VerificationMaxContextItems = verMaxItems,
+                VerificationMaxDirectCallers = verMaxCallers,
+                VerificationMaxDirectCallees = verMaxCallees,
+                VerificationMaxReferencedTypes = verMaxTypes,
+                MaxCandidatesPerGroup = maxCandidates,
+                MaxVerificationCandidatesPerGroup = maxVerCandidates,
+            };
+        }
+
+        private static int GetIntSetting(Tomlyn.Model.TomlTable table, string key, int defaultValue)
+        {
+            if (table.TryGetValue(key, out object? val) && val is long l) return (int)l;
+            return defaultValue;
+        }
+
         private Tomlyn.Model.TomlTable? secrets_;
         private Tomlyn.Model.TomlTable? config_;
         private Dictionary<string, string> review1Templates_ = new();

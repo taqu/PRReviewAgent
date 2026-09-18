@@ -1,1173 +1,1846 @@
-# Phase 4 — Optimize Turn 1 Input with Full Changed Files and Diff Anchors
+# Phase 6 — Replace Base-Filename Grouping with Semantic Review Groups
 
 ## Objective
 
-Optimize the input provided to **Turn 1: Candidate Discovery**.
+Replace the current base-filename review grouping strategy with a deterministic **semantic grouping** strategy.
 
-Phase 3 established the three-stage review pipeline:
+The existing grouping logic is intentionally simple:
 
 ```text
-Turn 1: Candidate Discovery
+foo.h
+foo.cpp
+→ group "foo"
+```
+
+This works well for obvious header / implementation pairs, but it has two important limitations:
+
+```text
+src/network/foo.cpp
+src/storage/foo.cpp
+```
+
+may be grouped together even though they are unrelated.
+
+At the same time:
+
+```text
+Foo.cpp
+FooImpl.cpp
+FooFactory.cpp
+```
+
+may be split into separate groups even when they form one logical change.
+
+Phase 6 should build review groups using semantic relationships already available from path structure, pair-file resolution, and AST / symbol analysis.
+
+The goal is:
+
+> Group changed files that should reasonably be reviewed together, while keeping unrelated changes separate.
+
+Do not turn grouping into repository-wide graph partitioning.
+
+The implementation must remain deterministic, bounded, explainable, and inexpensive.
+
+---
+
+# Current Pipeline
+
+The review architecture after the previous phases is approximately:
+
+```text
+Changed files
     ↓
-AST-driven Verification Context Resolution
+AST / semantic analysis
     ↓
-Turn 2: Candidate Verification
+Review grouping
     ↓
-Turn 3: Finalization
+budget-aware Turn 1 context
+    ↓
+Candidate Discovery
+    ↓
+candidate-specific Verification Context
+    ↓
+Turn 2 Verification
+    ↓
+Turn 3 Finalization
 ```
 
-Phase 4 should improve Turn 1 by changing what source context it receives.
-
-The new default strategy should be:
+Phase 6 changes only:
 
 ```text
-full changed files
-+
-explicit diff anchors
-+
-small semantic summary
+Review grouping
 ```
 
-instead of relying heavily on expanded diffs or large AST-generated structured context.
-
-The goal is to give the non-thinking model enough real source context to understand local invariants while keeping its attention strongly anchored to the actual changes.
+The remaining review stages should continue to behave as before.
 
 ---
 
-# Primary Design Principle
+# Current Grouping Problem
 
-Turn 1 should see:
+The current implementation groups by:
 
-> complete changed source files as context, but review only the changed code and its direct consequences.
+```csharp
+Path.GetFileNameWithoutExtension(reviewContext.Path)
+```
 
-The full file provides context.
-
-The diff markers provide attention anchors.
-
-The semantic summary provides navigation hints.
-
-These three responsibilities must remain separate:
+Conceptually:
 
 ```text
-Full source
-    = context
-
-Diff markers
-    = attention anchor
-
-Semantic summary
-    = lightweight navigation
+include/foo.h       → foo
+src/foo.cpp         → foo
 ```
 
-Do not treat AST JSON as a substitute for source code.
+This is useful for paired files but does not represent semantic ownership reliably.
 
----
-
-# Current Problem
-
-The existing pipeline may provide combinations of:
+Examples of false merging:
 
 ```text
-Diff
-ExpandedDiff
-AST JSON
-Pair file context
+src/network/config.cpp
+src/storage/config.cpp
 ```
 
-This can make Turn 1 depend on pre-compressed representations of the code.
-
-That creates several problems:
-
-* important surrounding invariants may be omitted;
-* macro or conditional context may be lost;
-* ownership and lifetime relationships may be difficult to reconstruct;
-* class state can be separated from changed methods;
-* the LLM must interpret AST structure before reviewing the code;
-* expanded context logic may become more complex than simply showing the actual file.
-
-With a large local context window, this tradeoff is no longer desirable for changed files.
-
----
-
-# Target Turn 1 Input
-
-Turn 1 should receive approximately:
+Both become:
 
 ```text
-Merge request title
-Merge request description
-
-Learned rules / applicable review rules
-
-File group summary
-
-Changed symbols summary
-
-Dependency / relationship summary
-
-================================
-FILE: include/foo.h
-================================
-
-<full source with change annotations>
-
-================================
-FILE: src/foo.cpp
-================================
-
-<full source with change annotations>
-
-================================
-FILE: src/worker.cpp
-================================
-
-<full source with change annotations>
+config
 ```
 
-Do not append large raw AST JSON after these files.
+even when they belong to different subsystems.
+
+Examples of false splitting:
+
+```text
+include/image.h
+src/image.cpp
+src/image_loader.cpp
+src/image_factory.cpp
+```
+
+These may represent one coordinated API change but become multiple groups.
 
 ---
 
-# Scope
+# Target Strategy
 
-Implement:
+Construct groups using three sources of affinity:
 
-* full changed-file source input for Turn 1;
-* explicit change annotations inside full-file source;
-* lightweight semantic summaries;
-* input budgeting;
-* deterministic file ordering;
-* prompt formatting changes;
-* compatibility with Candidate Discovery;
-* tests and metrics.
+```text
+1. Path / module affinity
+2. Header / source pair relationships
+3. Changed-symbol dependency relationships
+```
 
-Do not change:
+Use these in that order of conceptual strength, but do not implement them as arbitrary numeric scores unless useful.
 
-* Verification Context architecture;
-* Turn 2 responsibilities;
-* Turn 3 responsibilities;
-* severity policy;
-* semantic grouping;
-* RAG architecture;
-* recursive AST traversal.
+The preferred mental model is:
+
+```text
+changed files
+    ↓
+module boundaries
+    ↓
+pair-file edges
+    ↓
+changed-symbol dependency edges
+    ↓
+bounded connected groups
+```
 
 ---
 
-# Changed Files Only
+# Core Design Principle
 
-The default full-file strategy applies to files actually changed by the merge request.
+Grouping is not dependency expansion.
+
+Grouping should answer:
+
+> Which changed files belong to the same review topic?
+
+It should NOT answer:
+
+> Which repository files could possibly affect this change?
+
+Only files already selected as review targets should normally become group members.
+
+Unchanged files remain context for Verification, not primary review-group members.
+
+---
+
+# Changed Files Are the Grouping Universe
+
+Build groups primarily from:
+
+```text
+reviewContexts
+```
+
+or the equivalent collection of changed reviewable files.
+
+Do not automatically add unchanged dependency files to the group membership.
 
 For example:
 
 ```text
-include/foo.h       changed
-src/foo.cpp         changed
-src/worker.cpp      changed
-src/resource.cpp    unchanged dependency
+Changed:
+include/foo.h
+src/foo.cpp
+
+Unchanged:
+src/worker.cpp
 ```
 
-Turn 1 should normally receive full contents of:
+The group should contain:
 
 ```text
 include/foo.h
 src/foo.cpp
-src/worker.cpp
 ```
 
-Do not automatically include the entire unchanged:
-
-```text
-src/resource.cpp
-```
-
-That kind of related source belongs primarily to Turn 2 Verification Context Resolution.
+The unchanged `worker.cpp` may later be used by Verification Context Resolution but should not become a group member merely because it calls `Foo`.
 
 ---
 
-# Pair Files
+# New Component
 
-A pair file should be treated differently depending on whether it is changed.
+Introduce a dedicated component such as:
 
-## Changed pair file
+```csharp
+ReviewGroupBuilder
+```
 
-If both are changed:
+or:
+
+```csharp
+SemanticReviewGroupBuilder
+```
+
+Exact naming may follow project conventions.
+
+Conceptually:
+
+```csharp
+IReadOnlyList<FileGroup> Build(
+    IReadOnlyList<ReviewContext> reviewContexts,
+    SemanticWorkspace workspace);
+```
+
+The grouping algorithm should not be embedded directly inside the review execution method.
+
+It should be independently testable.
+
+---
+
+# Group Identity
+
+Do not use a bare base filename as the unique identity.
+
+Each group should have:
+
+```text
+stable internal id
+display topic
+member files
+grouping reasons
+```
+
+Example:
+
+```text
+Group ID:
+src/render:image
+
+Display topic:
+render / image
+
+Files:
+include/render/image.h
+src/render/image.cpp
+src/render/image_loader.cpp
+```
+
+Exact representation may differ.
+
+The internal identity should be deterministic.
+
+---
+
+# Grouping Reason Metadata
+
+Where practical, record why files were grouped.
+
+For example:
+
+```text
+foo.h <-> foo.cpp
+reason: pair
+
+foo.cpp <-> foo_factory.cpp
+reason: changed-symbol dependency
+
+foo.cpp <-> foo_test.cpp
+reason: module / test affinity
+```
+
+This metadata is useful for:
+
+* debugging;
+* tests;
+* metrics;
+* future tuning.
+
+It does not need to be sent to the LLM unless useful.
+
+---
+
+# Stage 1 — Normalize Paths
+
+Normalize repository-relative paths before grouping.
+
+Handle consistently:
+
+```text
+/
+\
+case sensitivity according to repository/platform conventions
+dot segments
+```
+
+Do not compare raw platform-specific path strings.
+
+Preserve original repository-relative path for output.
+
+Use normalized paths only for matching.
+
+---
+
+# Stage 2 — Determine Module Affinity
+
+Use directory structure as the first broad grouping boundary.
+
+Examples:
+
+```text
+include/render/image.h
+src/render/image.cpp
+src/render/image_loader.cpp
+```
+
+share module affinity:
+
+```text
+render
+```
+
+while:
+
+```text
+src/network/config.cpp
+src/storage/config.cpp
+```
+
+should normally remain separate.
+
+---
+
+# Module Key
+
+Introduce a deterministic module-key calculation.
+
+Possible examples:
+
+```text
+include/render/image.h → render
+src/render/image.cpp   → render
+tests/render/image.cpp → render
+```
+
+The algorithm should recognize common structural roots such as:
+
+```text
+include/
+src/
+source/
+lib/
+tests/
+test/
+```
+
+and derive the logical path below them.
+
+Example:
+
+```text
+include/foo/bar.h
+src/foo/bar.cpp
+tests/foo/bar_test.cpp
+```
+
+may share module key:
+
+```text
+foo
+```
+
+or:
+
+```text
+foo/bar
+```
+
+depending on project structure.
+
+Keep this configurable or heuristic-driven rather than hard-coding one repository layout.
+
+---
+
+# Do Not Overgeneralize Module Roots
+
+Avoid assuming all repositories use:
+
+```text
+include/
+src/
+tests/
+```
+
+Support a fallback based on common path prefix.
+
+If no logical module root can be identified, use the immediate parent directory or another stable conservative fallback.
+
+The grouping algorithm must still work for layouts such as:
+
+```text
+engine/render/
+engine/network/
+tools/parser/
+```
+
+---
+
+# Stage 3 — Preserve Explicit Pair Relationships
+
+Existing pair-file resolution is high-confidence information.
+
+If the system already resolved:
+
+```text
+foo.h ↔ foo.cpp
+```
+
+and both files are changed review targets, they should normally be placed in the same group.
+
+Pair relationships should override minor path differences when clearly valid.
+
+Example:
+
+```text
+public/foo.h
+implementation/foo.cpp
+```
+
+may still belong together if the pair resolver established the relationship.
+
+---
+
+# Pair Relationship Strength
+
+Treat explicit pair-file edges as strong grouping edges.
+
+Conceptually:
+
+```text
+A --pair--> B
+```
+
+should normally merge A and B.
+
+Do not infer pair relationships solely from identical base filenames inside the new group builder if a better pair resolver already exists.
+
+Reuse existing pairing logic.
+
+---
+
+# Stage 4 — Changed-Symbol Dependency Affinity
+
+Use AST / semantic information to detect relationships between changed files.
+
+Only consider dependencies involving changed symbols.
+
+Examples:
+
+```text
+FooFactory::Create
+    → constructs Foo
+
+Foo::Open
+    → called by Worker::Start
+
+ImageLoader::Load
+    → returns Image
+```
+
+If both endpoint files are changed in the same MR, this relationship may justify grouping.
+
+---
+
+# Important Constraint
+
+Do not group files merely because one includes another.
+
+For example:
+
+```text
+foo.cpp includes logging.h
+bar.cpp includes logging.h
+```
+
+does not imply:
+
+```text
+foo.cpp
+bar.cpp
+```
+
+belong in the same review group.
+
+Imports/includes are weak structural information.
+
+Use them only as supporting evidence, not as a primary grouping edge.
+
+---
+
+# Strong Symbol Relationships
+
+Good candidates for grouping edges include:
+
+```text
+changed caller → changed callee
+changed implementation → changed interface declaration
+changed derived type → changed base/interface
+changed factory → changed constructed type
+changed serializer → changed serialized type
+changed test → changed production symbol
+```
+
+These indicate coordinated changes more strongly than generic references.
+
+---
+
+# Weak Symbol Relationships
+
+Avoid merging groups solely because of:
+
+```text
+shared utility usage
+shared common type
+shared logging dependency
+shared allocator
+shared standard-library type
+widely referenced enum
+global configuration access
+```
+
+These relationships create giant groups and reduce review focus.
+
+---
+
+# Relationship Must Involve Changed Code
+
+Prefer edges where the relevant reference itself is part of changed code.
+
+For example:
+
+```text
+Worker::Run changed to call Foo::Open
+Foo::Open also changed
+```
+
+is a strong grouping signal.
+
+But:
+
+```text
+Worker::Run unchanged and has always called Foo::Open
+Foo::Open changed
+```
+
+does not justify putting `Worker` in the group because `Worker` is not even a changed file.
+
+---
+
+# Stage 5 — Test Affinity
+
+Changed tests should usually follow the production code they directly test.
+
+Example:
+
+```text
+src/render/image.cpp
+tests/render/image_test.cpp
+```
+
+should likely share a review group if the semantic index shows that the test directly references the changed production symbols.
+
+Do not group all tests in the same module together automatically.
+
+Prefer direct test-to-symbol relationship.
+
+---
+
+# Test File Naming Hints
+
+Naming may be used as supporting evidence:
+
+```text
+foo.cpp
+foo_test.cpp
+test_foo.cpp
+foo_tests.cpp
+```
+
+but should not be the only mechanism when semantic information is available.
+
+Use deterministic naming heuristics as fallback.
+
+---
+
+# Stage 6 — Build a Small Affinity Graph
+
+Represent changed files as nodes.
+
+Add bounded edges for meaningful relationships:
+
+```text
+pair
+same logical module
+changed-symbol dependency
+test-target relationship
+```
+
+Conceptually:
+
+```text
+A ---- B
+|      |
+C      D
+```
+
+Then construct review groups from the relevant connected structure.
+
+However, do not blindly use unrestricted connected components.
+
+A single weak bridge must not merge large unrelated subsystems.
+
+---
+
+# Edge Strength
+
+Classify relationships into simple strengths.
+
+Suggested:
+
+```text
+Strong:
+- explicit header/source pair
+- declaration/definition
+- direct changed-symbol call
+- direct changed interface/implementation
+- direct test target
+
+Medium:
+- same logical component/module
+- direct changed type dependency
+- direct changed field/type relationship
+
+Weak:
+- include/import
+- shared generic dependency
+- shared utility
+```
+
+Weak edges should generally not merge groups by themselves.
+
+Do not over-engineer a large scoring model.
+
+A small discrete classification is sufficient.
+
+---
+
+# Merge Rules
+
+A conservative initial strategy:
+
+```text
+1. Merge all strong edges.
+2. Use medium edges when files also have module affinity.
+3. Do not merge using weak edges alone.
+```
+
+This is easier to understand and test than a complex weighted clustering algorithm.
+
+---
+
+# Transitive Merge Protection
+
+Avoid accidental giant groups caused by transitivity.
+
+Example:
+
+```text
+A strongly related to B
+B weakly related to C
+C strongly related to D
+```
+
+Do not automatically produce:
+
+```text
+A B C D
+```
+
+if the B-C relationship is weak.
+
+Only edges accepted by the merge policy should contribute to connected grouping.
+
+---
+
+# Group Size Limit
+
+Introduce:
+
+```text
+MaxFilesPerReviewGroup
+```
+
+or equivalent.
+
+Even semantically related changes can become too large for a focused Turn 1 review.
+
+When a connected semantic group exceeds the limit, split it deterministically.
+
+Do not rely only on Turn 1 context truncation to handle an oversized group.
+
+---
+
+# Oversized Group Splitting
+
+When a group exceeds the configured size, split using:
+
+```text
+module/submodule boundaries
+strongly connected local clusters
+pair preservation
+changed-symbol locality
+```
+
+Never split an explicit header / implementation pair unless unavoidable.
+
+Prefer:
+
+```text
+render/image
+render/texture
+```
+
+over arbitrary chunks based on file order.
+
+---
+
+# Token-Aware Group Size
+
+If existing context-size estimation is available from Phase 5, group size may also consider estimated Turn 1 source cost.
+
+A group with:
+
+```text
+4 huge files
+```
+
+may be more expensive than:
+
+```text
+10 tiny files
+```
+
+Consider a configurable:
+
+```text
+MaxEstimatedTurn1TokensPerGroup
+```
+
+or allow the Phase 5 context builder to report group cost.
+
+Do not duplicate token estimation logic.
+
+---
+
+# Pair Preservation During Splitting
+
+When splitting an oversized group:
 
 ```text
 foo.h
 foo.cpp
 ```
 
-include both in full.
+must normally remain together.
 
-## Unchanged pair file
+Treat explicit pair edges as indivisible units during the first split pass.
 
-If:
-
-```text
-foo.cpp changed
-foo.h unchanged
-```
-
-do not automatically include the entire header solely because it is a pair.
-
-Instead, prefer a compact semantic summary or relevant declaration.
-
-Turn 2 can retrieve detailed declarations if a candidate requires verification.
-
-An exception is allowed for very small headers when including the complete file is cheaper and clearer than extracting declarations.
-
-Keep this deterministic and bounded.
+The same applies to tightly coupled declaration / definition pairs.
 
 ---
 
-# Diff Anchors
+# Group Topic Generation
 
-Do not send a plain full file without identifying changed regions.
+Generate a useful deterministic display topic.
 
-The model must be able to distinguish:
-
-```text
-changed code
-```
-
-from:
+Avoid topics such as:
 
 ```text
-unchanged context
+foo
 ```
 
-Use explicit, unambiguous annotations.
+when ambiguous.
 
-Do not rely on normal source characters such as `+` or `-` alone if they could be confused with valid C/C++ syntax.
-
-Preferred design:
+Prefer:
 
 ```text
-/* REVIEW_CHANGE_BEGIN */
-
-<changed/current source>
-
-/* REVIEW_CHANGE_END */
+render/image
+network/config
+storage/config
+parser/lexer
 ```
 
-with metadata describing removed lines separately where necessary.
-
-Alternatively, use a line-oriented representation such as:
+Possible topic sources:
 
 ```text
-  unchanged line
-+ changed/additional current line
-  unchanged line
+logical module
+dominant changed symbol
+paired base name
+common semantic component
 ```
 
-only if this representation is already reliable in the current implementation.
-
-The important requirement is that annotations must not make current source semantics ambiguous.
+Do not ask an LLM to generate group names.
 
 ---
 
-# Added and Modified Code
-
-For current-file contents, highlight added or modified current lines.
+# Topic Examples
 
 Example:
 
-```cpp
-void Foo::Open()
-{
-    Initialize();
+```text
+Files:
+include/render/image.h
+src/render/image.cpp
+src/render/image_loader.cpp
 
-    /* REVIEW_CHANGE_BEGIN */
-    resource_ = Resource::Create();
-    return resource_.get();
-    /* REVIEW_CHANGE_END */
-}
+Topic:
+render/image
 ```
 
-The complete function remains visible.
+Another:
 
-Only the changed region is marked.
+```text
+Files:
+src/network/config.cpp
+include/network/config.h
+
+Topic:
+network/config
+```
+
+Another:
+
+```text
+Files:
+src/parser/lexer.cpp
+tests/parser/lexer_test.cpp
+
+Topic:
+parser/lexer
+```
 
 ---
 
-# Deleted Code
+# Same Filename in Different Modules
 
-Deleted code is not present in the current source file, but it can be important for understanding regressions.
-
-Preserve deleted code separately.
-
-Preferred representation:
+This case must be explicitly tested:
 
 ```text
-[REMOVED CODE near Foo::Open]
+src/network/config.cpp
+src/storage/config.cpp
+```
 
-- return ResourceHandle(resource_);
-+ return resource_.get();
+They must not be grouped solely because both have base name:
+
+```text
+config
+```
+
+This is one of the primary motivations for Phase 6.
+
+---
+
+# Related Files with Different Names
+
+Also explicitly support:
+
+```text
+image.cpp
+image_loader.cpp
+image_factory.cpp
+```
+
+when changed-symbol relationships show coordinated behavior.
+
+Do not require identical base names.
+
+---
+
+# Cross-Module Changes
+
+Sometimes a valid change spans module boundaries.
+
+Example:
+
+```text
+api/foo.h
+backend/foo_impl.cpp
 ```
 
 or:
 
 ```text
-[CHANGE HISTORY]
-Symbol: Foo::Open
-
-Before:
-    return ResourceHandle(resource_);
-
-After:
-    return resource_.get();
+parser/ast.cpp
+semantic/resolver.cpp
 ```
 
-Do not splice deleted lines into current source in a way that makes the file syntactically invalid or confusing.
+Do not enforce module boundaries as hard barriers.
 
-The model should be able to distinguish:
+A strong changed-symbol relationship may merge files across modules.
 
-```text
-current source
-```
-
-from:
-
-```text
-previous source
-```
-
-clearly.
+Module affinity is a default boundary, not an absolute rule.
 
 ---
 
-# Preferred Representation
+# Public API Changes
 
-Prefer a two-part representation for each changed file:
-
-```text
-[FILE]
-full current source with changed current lines marked
-
-[DIFF SUMMARY]
-only relevant old/new hunks
-```
+Changed public interfaces may affect multiple changed implementations.
 
 Example:
 
 ```text
-================================
-FILE: src/foo.cpp
-================================
-
-<complete current source with markers>
-
---------------------------------
-DIFF
---------------------------------
-
-@@ Foo::Open @@
-- return ResourceHandle(resource_);
-+ return resource_.get();
+include/backend.h
+src/linux_backend.cpp
+src/windows_backend.cpp
 ```
 
-This provides:
+If all implementations are changed because of the same interface change, they may belong in one group if the size remains manageable.
 
-* syntactically coherent current code;
-* historical change information;
-* clear attention anchors.
+Use interface/implementation relationships as strong semantic edges.
 
 ---
 
-# Do Not Duplicate Excessively
+# Inheritance
 
-Avoid sending:
-
-```text
-full file
-+
-entire git diff
-+
-expanded diff
-+
-AST JSON
-+
-full pair file
-```
-
-for every changed file.
-
-That wastes context and dilutes attention.
-
-After Phase 4, the intended hierarchy is:
+If a changed base class and changed derived class are directly related:
 
 ```text
-full changed source
-small diff summary
-small semantic summary
+Base
+Derived
 ```
 
-Everything else should be added only when justified.
+they may be grouped.
+
+Do not traverse the entire inheritance hierarchy.
+
+Only direct changed relationships are relevant for grouping.
 
 ---
 
-# Semantic Summary
+# Factory / Product Relationship
 
-Turn 1 should receive a compact summary generated from existing AST / semantic information.
-
-Suggested structure:
+If a changed factory implementation directly constructs a changed product type:
 
 ```text
-[SEMANTIC SUMMARY]
-
-Changed symbols:
-- Foo::Open
-- Foo::Close
-- Worker::Run
-
-Direct relationships:
-- Worker::Run -> Foo::Open
-- Foo::Open -> Resource::Create
-- Foo::Open reads/writes Foo::resource_
-
-Related declarations:
-- Foo declared in include/foo.h
+FooFactory::Create → Foo
 ```
 
-Keep this small.
+this can be a grouping edge.
 
-The semantic summary is not a serialized AST.
+Again, require both files to be changed review targets.
 
 ---
 
-# Semantic Summary Content
+# Call Graph Usage
 
-Include only high-value information such as:
+Use only direct changed-symbol call relationships.
 
-```text
-changed symbols
-declaration / definition relationships
-direct calls involving changed symbols
-referenced fields
-directly relevant types
-header / source relationships
-```
-
-Do not include:
+Do not use:
 
 ```text
-full AST nodes
-source ranges for every node
-all imports
-all references
-all call graph edges
-all inheritance information
-all unrelated declarations
+callers of callers
+callees of callees
 ```
 
-The model can read the full changed file.
+for grouping.
 
-Do not narrate what it can already see.
+Phase 6 must not introduce multi-hop semantic expansion.
 
 ---
 
-# AST Role After Phase 4
+# Reference Graph Usage
 
-The intended AST responsibilities become:
-
-```text
-Turn 1:
-generate lightweight semantic summary
-
-Turn 2:
-select targeted verification source context
-```
-
-AST should no longer dominate Turn 1 input.
-
-Conceptually:
-
-```text
-                AST
-                 │
-        ┌────────┴─────────┐
-        │                  │
-        ▼                  ▼
-small Turn 1 summary   Turn 2 context resolver
-```
-
-This distinction is important.
-
----
-
-# Remove Large AST Context from Turn 1
-
-If Turn 1 currently receives something like:
-
-```text
-ReviewContext.AstJson
-```
-
-directly in the prompt, stop including the large raw representation by default.
-
-Do not necessarily remove `AstJson` from the data model yet.
-
-It may still be required by:
-
-* learned-rule retrieval;
-* debugging;
-* existing analytics;
-* other internal features.
-
-The change in this phase is specifically:
-
-> do not expose large raw AST JSON to Candidate Discovery unless explicitly required as a fallback.
-
----
-
-# Full File Source Acquisition
-
-The existing review pipeline already fetches the complete changed file contents.
-
-Reuse those contents.
-
-Do not introduce redundant repository requests.
-
-Prefer:
-
-```text
-ReviewContext.ChangedFile
-```
-
-or equivalent already-fetched source data.
-
-Do not re-fetch each file while building the prompt.
-
----
-
-# File Ordering
-
-Use deterministic ordering.
-
-Recommended order inside a file group:
-
-1. public/header declarations;
-2. primary implementation;
-3. additional changed implementation files;
-4. tests if changed;
-5. other changed files.
-
-Within a category, sort by normalized path.
-
-If the current grouping already provides a stable meaningful order, preserve it.
-
-The same merge request should produce the same Turn 1 input ordering.
-
----
-
-# Header / Implementation Presentation
-
-When a header and implementation are both changed, keep them adjacent.
-
-Example:
-
-```text
-FILE: include/foo.h
-
-...
-
-FILE: src/foo.cpp
-
-...
-```
-
-This helps the model compare:
-
-* declaration;
-* implementation;
-* API contract;
-* ownership;
-* method signatures.
-
-Do not separate related pair files unnecessarily.
-
----
-
-# File Path Metadata
-
-Every source section must include the complete repository-relative path.
-
-Use:
-
-```text
-src/render/image.cpp
-```
-
-not:
-
-```text
-image.cpp
-```
-
-This reduces ambiguity when identical filenames exist in different modules.
-
----
-
-# Line Numbers
-
-If practical, include stable source line numbers.
-
-Example:
-
-```text
-  118 | void Foo::Open()
-  119 | {
-+ 120 |     resource_ = Resource::Create();
-  121 | }
-```
-
-Line numbers can improve candidate location accuracy.
-
-However:
-
-* do not make line-number generation expensive;
-* do not corrupt source indentation;
-* do not require the model to use line numbers if symbol names are more reliable.
-
-Symbol-based locations should remain preferred when available.
-
----
-
-# Prompt Instructions
-
-Update `review1.en.md` so that the model understands the new context format.
-
-The prompt should state clearly:
-
-```text
-The full current contents of changed files are provided.
-
-Changed regions are explicitly marked.
-
-Review changed code and its direct consequences.
-
-Use unchanged code only to understand:
-- invariants
-- ownership
-- lifetime
-- control flow
-- state
-- API contracts
-- synchronization
-- relevant surrounding behavior
-
-Do not report unrelated pre-existing problems found in unchanged code.
-```
-
-This instruction is critical.
-
-Full files must not cause Turn 1 to become a general legacy-code reviewer.
-
----
-
-# Candidate Scope
-
-A candidate must still originate from the change.
-
-Allowed:
-
-```text
-changed code creates a bug
-changed code exposes an existing latent bug
-changed code violates an existing invariant visible elsewhere in the file
-changed API breaks unchanged callers
-```
-
-Not allowed:
-
-```text
-unrelated bug discovered elsewhere in the full file
-old style issue
-pre-existing complexity
-unrelated cleanup opportunity
-```
-
----
-
-# Attention Priority
-
-Tell Turn 1 to inspect in this order:
-
-```text
-1. changed lines / changed regions
-2. containing function or type
-3. directly affected state or contract
-4. nearby unchanged code necessary to validate the suspicion
-5. semantic summary when additional orientation is useful
-```
-
-Do not encourage broad scanning of every unchanged function.
-
----
-
-# Context Budget
-
-Even with a 256K-capable model, bound the input.
-
-Do not treat maximum model context as the target prompt size.
-
-Introduce configuration such as:
-
-```text
-MaxTurn1SourceChars
-MaxTurn1SourceTokens
-MaxFilesPerGroup
-```
-
-Use existing token estimation if available.
-
-Otherwise, a deterministic character budget is acceptable temporarily.
-
----
-
-# Budget Priority
-
-When the file group exceeds the Turn 1 budget, preserve content in this order:
-
-```text
-1. files containing changed lines
-2. changed header / implementation pairs
-3. files with the largest or most significant changes
-4. changed functions / types
-5. remaining unchanged portions of very large changed files
-```
-
-Do not silently drop changed regions.
-
-Every changed hunk in a reviewable file must remain represented.
-
----
-
-# Large File Fallback
-
-For very large changed files, full-file inclusion may be wasteful.
-
-Introduce a fallback.
+Generic symbol references should be weaker than call or declaration relationships.
 
 For example:
 
 ```text
-if file <= FullFileThreshold:
-    include full file
-else:
-    include:
-        complete changed semantic scopes
-        surrounding class/type context
-        diff hunks
-        relevant file-level declarations
+file A references constant from file B
 ```
 
-The threshold should be configurable.
+does not necessarily justify grouping.
 
-Do not hard-code a model-specific magic value unless existing configuration conventions make that appropriate.
+Use reference relationships only when:
+
+* the referenced symbol is itself changed; and
+* the reference is directly relevant to the changed logic; and
+* module affinity or another supporting relationship exists.
 
 ---
 
-# Large File Rule
+# Include / Import Information
 
-A large file should never be reduced to:
+Include/import information may help identify module context but should not directly drive merging.
 
-```text
-diff only
-```
-
-if doing so removes the containing function or type required for understanding the change.
-
-Minimum large-file context should include:
+Treat:
 
 ```text
-complete changed function/method
-or
-complete changed type declaration
+#include "foo.h"
 ```
 
-plus relevant local context.
+as weak evidence.
 
----
-
-# Multiple Changed Scopes
-
-If a large file has several unrelated changed functions:
+The stronger relationship is:
 
 ```text
-Foo::Open
-Foo::Close
-Foo::Reset
+changed symbol in caller uses changed declaration in foo.h
 ```
 
-include each complete changed scope.
-
-Do not include only the first changed region because the context budget was consumed earlier.
-
-Allocate budget across changed scopes fairly.
-
----
-
-# Removed Files
-
-For deleted files, there is no current source.
-
-Represent them using the previous file contents or deletion diff.
-
-Example:
-
-```text
-================================
-DELETED FILE: src/legacy.cpp
-================================
-
-<previous source or bounded relevant deleted scopes>
-```
-
-Candidate Discovery should be able to detect removal-related compatibility or behavior issues.
-
-Use existing diff/repository data where available.
-
-Do not invent current contents.
-
----
-
-# Renamed Files
-
-Represent rename metadata explicitly.
-
-Example:
-
-```text
-RENAMED:
-src/old_name.cpp
-→
-src/new_name.cpp
-```
-
-If source contents are changed as well, include the new full file contents and the relevant diff.
+Prefer semantic identity over text-level include edges.
 
 ---
 
 # New Files
 
-For newly added files:
+New files may have limited historical semantic relationships.
+
+Group them using:
 
 ```text
-full current source
+module path
+direct changed-symbol references
+test naming
+pair relationships
 ```
 
-is sufficient.
-
-Mark:
-
-```text
-NEW FILE
-```
-
-clearly.
-
-There is no need for a redundant before-state section.
+Do not isolate every new file automatically.
 
 ---
 
-# Binary / Generated / Unsupported Files
+# Deleted Files
 
-Preserve existing filtering rules.
+Deleted files should still participate in grouping using available pre-change semantic information where reliable.
 
-Do not include:
-
-* binary files;
-* generated files excluded by policy;
-* unsupported extensions;
-* irrelevant assets.
-
-Do not expand Phase 4 into file-target policy redesign.
-
----
-
-# Tests
-
-Add tests for the new Turn 1 source formatting.
-
-At minimum cover:
-
-## Full changed file
-
-A small changed source file is included in full.
-
-## Change markers
-
-Changed current lines are clearly identifiable.
-
-## Deleted lines
-
-Removed code is represented separately from current source.
-
-## Header and source
-
-Changed header and implementation are both included and ordered together.
-
-## Unchanged pair
-
-An unchanged pair file is not automatically included in full.
-
-## Semantic summary
-
-Changed symbols and direct high-value relationships are included.
-
-## AST JSON removal
-
-Large raw AST JSON is absent from the default Turn 1 prompt.
-
-## Large file fallback
-
-A file above the configured threshold produces complete changed semantic scopes rather than full-file content.
-
-## Multiple changed scopes
-
-All changed scopes remain represented under truncation.
-
-## Deterministic ordering
-
-Identical input produces identical file ordering.
-
-## New file
-
-New-file content is represented correctly.
-
-## Deleted file
-
-Deleted-file context is represented without pretending current source exists.
-
-## Rename
-
-Rename metadata is preserved.
-
----
-
-# Prompt Tests
-
-Verify that `review1.en.md` clearly instructs the model to:
+If semantic data is unavailable, fall back to:
 
 ```text
-review the change
-use unchanged code as context
-not review unrelated legacy code
-not perform final verification
-not assign severity
-not produce final review prose
+module path
+pair relationship
+previous path
 ```
+
+Do not fail grouping because a current source representation is absent.
 
 ---
 
-# Candidate Location Accuracy
+# Renamed Files
 
-Use the new full-source representation to improve locations where possible.
+Treat a rename as identity continuity where possible.
 
-Prefer:
+Example:
 
 ```text
-repository/path.cpp: Namespace::Class::Method
+old/path/foo.cpp
+→
+new/path/foo.cpp
 ```
 
-over vague locations.
+Do not treat the old and new names as separate semantic files.
 
-If line numbers are available, they may supplement but should not replace semantic locations.
+Use the new path for grouping output.
+
+Retain rename metadata separately.
+
+---
+
+# Generated Files
+
+Preserve existing review filtering.
+
+Generated files excluded from review should not become group nodes merely because semantic analysis sees references to them.
+
+---
+
+# Group Ordering
+
+Groups must have deterministic ordering.
+
+Recommended order:
+
+```text
+normalized topic
+then minimum normalized member path
+```
+
+or another stable strategy.
+
+Do not depend on dictionary iteration order.
+
+---
+
+# File Ordering Inside Group
+
+Use stable ordering.
+
+Recommended:
+
+```text
+1. public headers / declarations
+2. private headers
+3. main implementation
+4. related implementations
+5. tests
+6. other files
+```
+
+Within each category, sort by normalized path.
+
+Pair files should remain adjacent where practical.
+
+---
+
+# Grouping Determinism
+
+The same:
+
+```text
+changed files
+AST relationships
+configuration
+```
+
+must produce the same grouping.
+
+Do not use:
+
+```text
+LLM output
+randomness
+hash iteration order
+timing-dependent discovery
+```
+
+for grouping decisions.
+
+---
+
+# Explainability
+
+Provide diagnostic information such as:
+
+```text
+Group render/image:
+- include/render/image.h
+  joined via pair with src/render/image.cpp
+
+- src/render/image_loader.cpp
+  joined via changed-symbol dependency ImageLoader::Load -> Image
+```
+
+This may be emitted only in debug logs or internal metadata.
+
+Explainability will be important when a grouping decision produces unexpected review behavior.
 
 ---
 
 # Metrics
 
-Extend Turn 1 diagnostics with:
+Record at least:
 
 ```text
-full file count
-partial large-file count
-source characters
-estimated source tokens
-diff characters
-semantic-summary characters
-number of changed scopes
-number of truncated files
+changed file count
+group count
+average files per group
+maximum files per group
+pair-edge count
+symbol-dependency edge count
+module-affinity merge count
+oversized group split count
 ```
 
-This should make it possible to correlate:
+Also correlate with review metrics from Phase 5:
 
 ```text
-input size
-    ↓
-Turn 1 latency
-    ↓
-candidate quality
+Turn 1 input tokens per group
+Turn 1 latency per group
+candidate count per group
+verified count per group
+final finding count per group
 ```
+
+This will show whether semantic grouping improves both context quality and latency.
+
+---
+
+# Useful Derived Metrics
+
+Make it possible to calculate:
+
+```text
+files per candidate
+tokens per candidate
+tokens per verified finding
+groups with zero candidates
+groups split by budget
+```
+
+A large number of zero-candidate groups may indicate over-splitting.
+
+Very large groups with many unrelated candidates may indicate under-splitting.
+
+---
+
+# Do Not Optimize Group Count Alone
+
+Fewer groups are not inherently better.
+
+For example:
+
+```text
+1 group with 30 unrelated files
+```
+
+is worse than:
+
+```text
+5 coherent groups
+```
+
+even if it requires more Turn 1 calls.
+
+Optimize for:
+
+```text
+semantic coherence
+bounded context
+review accuracy
+latency
+```
+
+rather than minimum LLM invocation count.
+
+---
+
+# Avoid Excessive Fragmentation
+
+At the same time, do not create one group per file by default.
+
+That loses cross-file change context, especially for C/C++:
+
+```text
+header ↔ implementation
+interface ↔ implementation
+factory ↔ object
+test ↔ production code
+```
+
+Grouping should preserve meaningful coordinated changes.
+
+---
+
+# Interaction with Turn 1
+
+Turn 1 behavior must not change semantically.
+
+Each new semantic group should be passed to the existing:
+
+```text
+Turn1ContextBuilder
+```
+
+The context builder remains responsible for:
+
+```text
+full-file vs semantic-scope selection
+diff anchors
+budget enforcement
+semantic summary
+```
+
+The group builder should not duplicate context formatting.
+
+---
+
+# Interaction with Semantic Summary
+
+The Phase 4 semantic summary should be generated per new semantic group.
+
+Do not include relationships to unrelated groups unless they are useful as a compact boundary hint.
+
+For example, it is acceptable to say:
+
+```text
+Foo::Open is called by changed symbol Worker::Run in another review group.
+```
+
+only if that information helps discovery.
+
+Do not automatically merge groups merely to avoid such cross-group references.
+
+---
+
+# Interaction with Verification
+
+Verification remains candidate-specific.
+
+A candidate may require source from another review group or an unchanged file.
+
+That is acceptable.
+
+The VerificationContextResolver should remain independent from Turn 1 grouping boundaries.
+
+This is important:
+
+```text
+review grouping != verification context boundary
+```
+
+Turn 2 may cross group boundaries when necessary to verify a concrete candidate.
+
+---
+
+# Cross-Group Dependencies
+
+If two groups have a direct changed-symbol dependency but were kept separate due to size or module boundaries, preserve enough relationship metadata for Verification.
+
+Do not duplicate the complete second group into Turn 1.
+
+Verification can resolve the required symbol later.
+
+---
+
+# Interaction with Learned Rules
+
+Do not redesign learned-rule retrieval.
+
+If RAG currently runs once per review execution, preserve that.
+
+If rules are attached to all groups, continue doing so unless existing architecture says otherwise.
+
+Semantic grouping should not change rule lifecycle semantics.
+
+---
+
+# Interaction with Candidate IDs
+
+Candidate IDs may currently restart per group.
+
+Preserve existing behavior unless it causes ambiguity in execution-wide tracking.
+
+If IDs need to become globally unique, prefer deterministic composition such as:
+
+```text
+g2-c3
+```
+
+or internal group ID + candidate index.
+
+Do not change public output merely for internal convenience.
+
+---
+
+# Group IDs
+
+If persistence or metrics require stable group IDs, generate them deterministically from:
+
+```text
+topic
+member paths
+```
+
+or another stable canonical representation.
+
+Do not use random GUIDs when a deterministic ID is sufficient.
+
+---
+
+# Configuration
+
+Introduce only necessary configuration.
+
+Potential values:
+
+```text
+MaxFilesPerReviewGroup
+MaxEstimatedTokensPerReviewGroup
+EnableSemanticGrouping
+```
+
+A feature flag may be useful for benchmarking against the old grouping.
+
+Do not expose dozens of edge weights as configuration in the first implementation.
+
+Keep relationship policy in code unless real tuning data shows a need.
+
+---
+
+# Feature Flag / Fallback
+
+Provide a safe fallback to the previous grouping behavior during rollout if practical.
+
+Example:
+
+```text
+GroupingMode:
+    BaseFilename
+    Semantic
+```
+
+This makes A/B benchmarking and rollback easier.
+
+Do not maintain two architectures indefinitely if semantic grouping proves stable.
+
+---
+
+# Fallback Behavior
+
+If semantic analysis is unavailable or fails:
+
+```text
+use path-aware conservative grouping
+```
+
+rather than immediately falling back to bare base filename.
+
+A reasonable fallback might be:
+
+```text
+logical module + base filename
+```
+
+Example:
+
+```text
+network/config
+storage/config
+```
+
+This already avoids one major class of collision.
+
+---
+
+# Path-Aware Fallback
+
+Conceptually:
+
+```text
+src/network/config.cpp → network/config
+src/storage/config.cpp → storage/config
+```
+
+If pair metadata exists, merge the pair.
+
+This fallback should remain deterministic and safe without AST.
+
+---
+
+# Group-Build Failure
+
+A grouping exception must not abort the whole review.
+
+Log the failure and use the conservative fallback grouping.
+
+The review pipeline should continue.
+
+---
+
+# Tests
+
+Add focused unit tests for grouping.
+
+At minimum cover the following.
+
+## Header / implementation pair
+
+```text
+include/foo.h
+src/foo.cpp
+```
+
+Expected:
+
+```text
+same group
+```
+
+---
+
+## Same base name, different modules
+
+```text
+src/network/config.cpp
+src/storage/config.cpp
+```
+
+Expected:
+
+```text
+different groups
+```
+
+unless a strong explicit semantic relationship exists.
+
+---
+
+## Different names, direct changed-symbol relationship
+
+```text
+src/image.cpp
+src/image_loader.cpp
+```
+
+where:
+
+```text
+ImageLoader::Load → Image
+```
+
+and both relevant symbols are changed.
+
+Expected:
+
+```text
+same group
+```
+
+when within limits.
+
+---
+
+## Unrelated files in same directory
+
+```text
+src/render/image.cpp
+src/render/shader.cpp
+```
+
+with no meaningful changed-symbol relationship.
+
+Expected:
+
+```text
+do not merge solely because both are under render
+```
+
+unless module policy intentionally uses that directory as one small component.
+
+Use the conservative interpretation.
+
+---
+
+## Changed test and production file
+
+```text
+src/foo.cpp
+tests/foo_test.cpp
+```
+
+with direct test reference.
+
+Expected:
+
+```text
+same group
+```
+
+---
+
+## Unchanged caller
+
+```text
+src/foo.cpp changed
+src/worker.cpp unchanged
+```
+
+Expected:
+
+```text
+worker.cpp is not added to the group
+```
+
+---
+
+## Strong cross-module relationship
+
+```text
+api/foo.h
+backend/foo_impl.cpp
+```
+
+with explicit interface/implementation relation.
+
+Expected:
+
+```text
+same group
+```
+
+---
+
+## Weak include relationship
+
+Two files include the same changed header but otherwise have no direct changed-symbol relationship.
+
+Expected:
+
+```text
+do not merge solely because of shared include
+```
+
+---
+
+## Oversized semantic group
+
+Create more related files than:
+
+```text
+MaxFilesPerReviewGroup
+```
+
+Expected:
+
+```text
+deterministic semantic split
+```
+
+with explicit pair relationships preserved.
+
+---
+
+## Token-heavy group
+
+A group exceeds estimated Turn 1 budget despite a small file count.
+
+Expected:
+
+```text
+group splitting or bounded handling according to configured policy
+```
+
+without arbitrary file loss.
+
+---
+
+## New file
+
+A new implementation and its changed test are grouped correctly.
+
+---
+
+## Deleted file
+
+A deleted implementation remains associated with its changed declaration when available.
+
+---
+
+## Rename
+
+A renamed file keeps semantic identity and does not appear twice.
+
+---
+
+## Missing AST
+
+Grouping uses path-aware fallback.
+
+---
+
+## Determinism
+
+Repeated runs with identical data produce identical:
+
+```text
+group count
+member sets
+group order
+topics
+```
+
+---
+
+# Integration Tests
+
+Add at least one representative C++ merge request with:
+
+```text
+include/render/image.h
+src/render/image.cpp
+src/render/image_loader.cpp
+src/network/config.cpp
+src/storage/config.cpp
+tests/render/image_test.cpp
+```
+
+Use semantic relationships such that:
+
+```text
+image.h
+image.cpp
+image_loader.cpp
+image_test.cpp
+```
+
+form one coherent review group.
+
+Ensure:
+
+```text
+network/config.cpp
+```
+
+and:
+
+```text
+storage/config.cpp
+```
+
+remain separate.
+
+Verify the resulting groups flow correctly through Turn 1, Verification, and Finalization.
 
 ---
 
 # Benchmark
 
-Compare the Phase 3 input strategy against Phase 4.
+Compare:
+
+```text
+Baseline:
+base-filename grouping
+
+New:
+semantic grouping
+```
+
+Using the same MRs and model configuration.
 
 Measure:
 
 ```text
-Turn 1 input tokens
-Turn 1 latency
-Turn 1 output tokens
+group count
+Turn 1 calls
+Turn 1 total input tokens
+Turn 1 total latency
+average Turn 1 tokens per group
 candidate count
-candidate → verified survival rate
+verified count
 final finding count
 overall review latency
 ```
 
-Quality evaluation should focus on whether full-file context improves detection of:
+---
+
+# Quality Evaluation
+
+Manually inspect whether semantic grouping improves detection of cross-file issues such as:
 
 ```text
-ownership issues
-lifetime issues
-class invariants
-state transitions
-macro / conditional behavior
-constructor / destructor relationships
-local API consistency
-error paths
-synchronization
+header / implementation mismatch
+changed API + changed caller
+ownership across related classes
+factory / object contract
+test / implementation consistency
+interface / implementation compatibility
+```
+
+Also inspect for regressions caused by:
+
+```text
+unrelated files merged together
+related files split unnecessarily
+groups becoming too large
+cross-group dependencies being lost
 ```
 
 ---
 
-# Expected Outcomes
+# Diagnostic Interpretation
 
-A successful Phase 4 should reduce situations where Turn 1 misses an issue because the relevant code was omitted by context extraction.
+## Too many tiny groups
 
-At the same time, it should not significantly increase:
+Possible causes:
 
 ```text
-unrelated findings
-legacy-code findings
-speculative candidates
+semantic edges too strict
+module affinity too weak
+test relations not recognized
+pair resolver incomplete
 ```
 
-If unrelated candidate generation increases, tighten prompt scope before reducing source context.
+Do not immediately loosen all edge rules.
+
+Inspect real examples first.
 
 ---
 
-# Do Not Optimize for Maximum Context Usage
+## Very large groups
 
-Do not aim to fill the model's available context window.
-
-For example:
+Possible causes:
 
 ```text
-256K available
+module affinity too broad
+generic references treated as strong
+include edges incorrectly used for merging
+transitive merging too permissive
 ```
 
-does NOT imply:
-
-```text
-target 256K input
-```
-
-Use only context that materially helps review.
-
-The large context window should remove pressure to aggressively compress changed files, not justify dumping the repository.
+Prefer tightening weak relationships before lowering hard group-size limits.
 
 ---
 
-# RAG Compatibility
+## Candidate recall decreases
 
-Keep learned-rule retrieval unchanged in this phase.
+Check whether related changed files that previously shared Turn 1 context were separated.
 
-If it currently uses AST JSON internally, preserve that.
-
-The Turn 1 prompt may still include selected learned rules.
-
-Do not include the entire RAG query context in the review prompt.
+Use group diagnostics to identify missing semantic edges.
 
 ---
 
-# Verification Compatibility
+## Turn 1 latency increases
 
-Do not weaken Turn 2 because Turn 1 now receives more source.
-
-The architecture remains:
+Check:
 
 ```text
-Turn 1:
-discover suspicion
-
-Turn 2:
-verify suspicion with targeted source
-
-Turn 3:
-decide reporting policy and severity
+group count
+group source size
+duplicate source across groups
 ```
 
-Full changed files in Turn 1 do not eliminate the need for Verification.
+Do not assume more groups are necessarily the cause.
 
----
-
-# Avoid Cross-Stage Leakage
-
-Turn 1 must not start producing:
-
-```text
-detailed verification evidence
-final severity
-final review wording
-```
-
-simply because it now has more source code.
-
-Keep the Phase 1 Candidate Discovery contract unchanged.
-
-Only the input representation changes.
-
----
-
-# Suggested Internal Components
-
-A clean implementation may introduce components similar to:
-
-```text
-Turn1ContextBuilder
-    ├── ChangedFileFormatter
-    ├── DiffFormatter
-    ├── SemanticSummaryBuilder
-    └── Turn1ContextBudget
-```
-
-Exact naming is flexible.
-
-Avoid putting all formatting and budget logic directly inside `PromptBuilder.BuildTurn1()`.
-
-The PromptBuilder should compose already-prepared context rather than become a source-analysis subsystem.
-
----
-
-# Separation of Responsibilities
-
-Preferred design:
-
-```text
-AST / semantic analysis
-    ↓
-SemanticSummaryBuilder
-
-ReviewContext + Diff
-    ↓
-ChangedFileFormatter
-
-Both
-    ↓
-Turn1ContextBuilder
-
-Result
-    ↓
-PromptBuilder.BuildTurn1()
-```
-
-This keeps source preparation testable independently from prompt composition.
+Smaller groups may still reduce total generation cost.
 
 ---
 
@@ -1176,20 +1849,24 @@ This keeps source preparation testable independently from prompt composition.
 Recommended implementation order:
 
 ```text
-1. Add Turn1ContextBuilder.
-2. Add changed-file full-source formatting.
-3. Add safe diff/change annotations.
-4. Add lightweight SemanticSummaryBuilder.
-5. Switch BuildTurn1() to the new context representation.
-6. Remove raw AST JSON from the default Turn 1 prompt.
-7. Add context budgeting.
-8. Add large-file fallback.
-9. Add metrics.
-10. Update tests.
-11. Benchmark against Phase 3.
+1. Extract existing grouping into a dedicated ReviewGroupBuilder abstraction.
+2. Add path normalization and logical module detection.
+3. Add path-aware fallback grouping.
+4. Integrate existing pair relationships.
+5. Add changed-symbol dependency edges.
+6. Add test-target relationships.
+7. Add strong / medium / weak edge classification.
+8. Build deterministic groups.
+9. Add group-size and token-size safeguards.
+10. Add deterministic topic generation.
+11. Add grouping diagnostics / metrics.
+12. Add feature flag for old vs semantic grouping.
+13. Add unit and integration tests.
+14. Benchmark against base-filename grouping.
+15. Make semantic grouping the default only after validation.
 ```
 
-Keep each step buildable where practical.
+Keep each stage independently testable where practical.
 
 ---
 
@@ -1198,18 +1875,22 @@ Keep each step buildable where practical.
 Preserve:
 
 ```text
+Turn 1 Candidate Discovery contract
+Turn1ContextBuilder
+context budgeting
 CandidateIssue schema
-candidate IDs
 VerificationContextResolver
-Turn 2 Verification
+Turn 2 Verification semantics
+VerifiedIssue schema
 Turn 3 Finalization
+severity policy
 learned-rule tracking
 GitLab output behavior
-file-grouping behavior
-review metrics
+English/Japanese output
+review execution metrics
 ```
 
-Do not introduce schema churn unless required by context formatting.
+Grouping should change which changed files are reviewed together, not what the individual review stages mean.
 
 ---
 
@@ -1218,79 +1899,86 @@ Do not introduce schema churn unless required by context formatting.
 Explicitly exclude:
 
 ```text
-semantic file grouping redesign
-repository-wide full-file context
-automatic dependency-file inclusion
-multi-hop relationship expansion
-dynamic LLM context requests
-verification batching optimization
-parallel verification optimization
+repository-wide graph partitioning
+multi-hop dependency grouping
+LLM-generated groups
+LLM-generated group names
+dynamic group merging during review
+dynamic group splitting based on LLM output
+cross-group candidate sharing
+verification batching
+parallel verification redesign
 RAG redesign
-severity redesign
-new review categories
+severity changes
+review-policy changes
 ```
 
-These belong to later phases.
+These belong to later optimization work if needed.
 
 ---
 
 # Acceptance Criteria
 
-Phase 4 is complete when:
+Phase 6 is complete when:
 
-1. Turn 1 receives full current contents of normal-sized changed files.
-2. Changed regions are explicitly and unambiguously marked.
-3. Deleted code is represented separately from current source.
-4. Changed header / implementation pairs are shown together.
-5. Unchanged dependency files are not automatically included in full.
-6. Turn 1 receives a compact semantic summary.
-7. Large raw AST JSON is removed from the default Turn 1 prompt.
-8. AST remains available internally for semantic summaries and Verification.
-9. Full-file input remains bounded by configurable limits.
-10. Large changed files use semantic-scope fallback.
-11. Every changed region remains represented after budgeting.
-12. File ordering is deterministic.
-13. Candidate Discovery responsibilities are unchanged.
-14. Turn 2 Verification behavior is unchanged.
-15. Turn 3 Finalization behavior is unchanged.
-16. Learned-rule behavior remains functional.
-17. Turn 1 context-size metrics are available.
-18. New, deleted, and renamed files are handled correctly.
-19. Relevant tests pass.
-20. The project builds successfully.
+1. Base-filename grouping is no longer the primary grouping strategy.
+2. Group construction is implemented in a dedicated component.
+3. Paths are normalized consistently.
+4. Logical module affinity is available.
+5. Existing header / source pair relationships are preserved.
+6. Direct changed-symbol relationships can merge related changed files.
+7. Direct test-to-production relationships can influence grouping.
+8. Generic includes/imports do not merge groups by themselves.
+9. Same-name files in unrelated modules remain separate.
+10. Related files with different names can be grouped.
+11. Only changed review-target files normally become group members.
+12. Unchanged dependencies remain Verification context rather than group members.
+13. Strong cross-module relationships can override module boundaries.
+14. Multi-hop dependency traversal is not used.
+15. Groups are bounded by file and/or estimated context size.
+16. Oversized groups are split deterministically.
+17. Header / implementation pairs are preserved during splitting where practical.
+18. Group topics are deterministic and path-aware.
+19. Group ordering and member ordering are deterministic.
+20. Semantic-analysis failure has a safe path-aware fallback.
+21. Group diagnostics and metrics are available.
+22. Existing review stages require no semantic changes.
+23. Unit and integration tests cover the major grouping cases.
+24. Benchmark results compare semantic grouping against the previous strategy.
+25. The project builds successfully.
 
 ---
 
 # Implementation Principle
 
-Do not compress source code merely because AST can describe it.
+Do not group files because their names happen to look similar.
 
-For Candidate Discovery, prefer giving the model the actual changed program.
+Do not group files because they happen to share a common dependency.
 
-Use AST to orient the model, not replace the program.
+Group files because the change itself shows that they belong to the same review concern.
 
-The intended Phase 4 architecture is:
+The intended architecture after Phase 6 is:
 
 ```text
 Changed files
-    │
-    ├── full current source
-    ├── explicit change anchors
-    └── small semantic summary
-            │
-            ▼
-     Turn 1 Discovery
-            │
-            ▼
-        Candidates
-            │
-            ▼
-    AST-driven targeted context
-            │
-            ▼
-     Turn 2 Verification
+    ↓
+path / module analysis
+    ↓
+pair relationships
+    ↓
+changed-symbol relationships
+    ↓
+bounded semantic review groups
+    ↓
+Turn 1 Candidate Discovery
+    ↓
+candidate-specific Verification
+    ↓
+Turn 3 Finalization
 ```
 
 The core principle is:
 
-> Use the large context window to preserve source semantics, while using diff markers to preserve attention.
+> Review together what changed together semantically.
+
+Use path information to establish boundaries, pair relationships to preserve obvious C/C++ structure, and changed-symbol relationships to connect coordinated changes that filenames alone cannot identify.

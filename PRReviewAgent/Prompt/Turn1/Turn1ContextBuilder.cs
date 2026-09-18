@@ -10,17 +10,24 @@ namespace PRReviewAgent.Prompt.Turn1
         public const int DefaultMaxTurn1SourceChars = 128_000;
         public const int DefaultFullFileThreshold = 32_000;
 
-        /// <summary>
-        /// Builds the Turn 1 context for a file group.
-        /// </summary>
         public static string Build(
             IReadOnlyList<ReviewContext> reviewContexts,
-            int maxSourceChars = DefaultMaxTurn1SourceChars,
-            int fullFileThreshold = DefaultFullFileThreshold)
-        {
-            string semanticSummary = SemanticSummaryBuilder.Build(reviewContexts);
+            ReviewBudgetConfig? budget = null)
+            => BuildWithMetrics(reviewContexts, budget).Context;
 
-            // Order: headers first, then by path
+        public static (string Context, Turn1ContextMetrics Metrics) BuildWithMetrics(
+            IReadOnlyList<ReviewContext> reviewContexts,
+            ReviewBudgetConfig? budget = null)
+        {
+            budget ??= new ReviewBudgetConfig();
+            Turn1ContextMetrics metrics = new Turn1ContextMetrics
+            {
+                FileCount = reviewContexts.Count,
+            };
+
+            string semanticSummary = SemanticSummaryBuilder.Build(reviewContexts, budget.Turn1SemanticSummaryMaxChars);
+            metrics.SemanticSummaryChars = semanticSummary.Length;
+
             IEnumerable<ReviewContext> ordered = reviewContexts
                 .OrderBy(c => IsHeaderFile(c.Path) ? 0 : 1)
                 .ThenBy(c => c.Path);
@@ -33,11 +40,15 @@ namespace PRReviewAgent.Prompt.Turn1
                 sb.AppendLine();
             }
 
-            int remainingBudget = maxSourceChars;
+            int remainingBudget = budget.Turn1MaxSourceChars;
 
             foreach (ReviewContext context in ordered)
             {
-                if (remainingBudget <= 0) break;
+                if (remainingBudget <= 0)
+                {
+                    metrics.Truncated = true;
+                    break;
+                }
 
                 string path = context.Path;
                 string source = context.ChangedFile ?? string.Empty;
@@ -47,21 +58,25 @@ namespace PRReviewAgent.Prompt.Turn1
                 if (string.IsNullOrEmpty(source))
                 {
                     section = FormatDiffOnlySection(path, context.Diff);
+                    metrics.DiffOnlyCount++;
                 }
-                else if (source.Length <= fullFileThreshold || remainingBudget >= source.Length)
+                else if (source.Length <= budget.Turn1FullFileThresholdChars || remainingBudget >= source.Length)
                 {
                     section = Turn1SourceFormatter.FormatFileSection(path, source, context.Diff, isNew);
+                    metrics.FullFileCount++;
                 }
                 else
                 {
                     section = FormatLargeFileSection(path, source, context.Diff, context.AstJson, isNew);
+                    metrics.PartialFileCount++;
                 }
 
                 sb.Append(section);
+                metrics.EstimatedSourceChars += section.Length;
                 remainingBudget -= section.Length;
             }
 
-            return sb.ToString();
+            return (sb.ToString(), metrics);
         }
 
         private static string FormatDiffOnlySection(string path, string? diff)
@@ -85,7 +100,6 @@ namespace PRReviewAgent.Prompt.Turn1
             StringBuilder sb = new StringBuilder();
             sb.Append($"================================\nFILE: {path} [partial — file exceeds size threshold]\n================================\n\n");
 
-            // Parse AST to find changed function scopes
             List<(int Start, int End)> functionRanges = new List<(int Start, int End)>();
 
             if (!string.IsNullOrEmpty(astJson))
@@ -98,38 +112,27 @@ namespace PRReviewAgent.Prompt.Turn1
                         foreach (FunctionInfo fn in output.Functions)
                         {
                             if (fn.Change != null && fn.StartLine > 0 && fn.EndLine >= fn.StartLine)
-                            {
                                 functionRanges.Add((fn.StartLine, fn.EndLine));
-                            }
                         }
                     }
                 }
-                catch
-                {
-                    // Ignore parse errors; fall back to diff only
-                }
+                catch { }
             }
 
             if (functionRanges.Count > 0)
             {
                 string[] sourceLines = source.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-
-                // Sort ranges by start line
                 functionRanges = functionRanges.OrderBy(r => r.Start).ToList();
 
                 foreach ((int Start, int End) range in functionRanges)
                 {
-                    int startIdx = range.Start - 1; // 0-based
-                    int endIdx = range.End - 1;
-
-                    if (startIdx < 0) startIdx = 0;
-                    if (endIdx >= sourceLines.Length) endIdx = sourceLines.Length - 1;
+                    int startIdx = Math.Max(0, range.Start - 1);
+                    int endIdx = Math.Min(sourceLines.Length - 1, range.End - 1);
                     if (startIdx > endIdx) continue;
 
                     string[] excerptLines = sourceLines.Skip(startIdx).Take(endIdx - startIdx + 1).ToArray();
                     string excerpt = string.Join("\n", excerptLines);
 
-                    // Create a range list that's relative to the excerpt (shifted to 1-based within excerpt)
                     List<(int Start, int End)> relativeRanges = new List<(int Start, int End)>
                     {
                         (1, excerptLines.Length)

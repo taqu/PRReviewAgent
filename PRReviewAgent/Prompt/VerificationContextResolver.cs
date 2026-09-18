@@ -21,6 +21,9 @@ namespace PRReviewAgent.Prompt
         private sealed class State
         {
             private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
+            private readonly int _maxItems;
+            private readonly int _maxChars;
+
             public List<SourceContextItem> Items { get; } = new();
             public List<string> Unresolved { get; } = new();
             public bool Truncated { get; private set; }
@@ -28,11 +31,17 @@ namespace PRReviewAgent.Prompt
             public int CallerCount { get; set; }
             public int CalleeCount { get; set; }
 
+            public State(int maxItems, int maxChars)
+            {
+                _maxItems = maxItems;
+                _maxChars = maxChars;
+            }
+
             public bool TryAdd(string path, string symbol, VerificationContextKind kind, string source)
             {
                 if (string.IsNullOrEmpty(source)) return false;
-                if (Items.Count >= DefaultMaxTotalItems) { Truncated = true; return false; }
-                if (TotalChars + source.Length > DefaultMaxSourceChars) { Truncated = true; return false; }
+                if (Items.Count >= _maxItems) { Truncated = true; return false; }
+                if (TotalChars + source.Length > _maxChars) { Truncated = true; return false; }
                 if (!_seen.Add($"{path}\0{symbol}")) return false;
                 Items.Add(new SourceContextItem { Path = path, Symbol = symbol, Kind = kind, Source = source });
                 TotalChars += source.Length;
@@ -43,9 +52,11 @@ namespace PRReviewAgent.Prompt
         public VerificationContext Resolve(
             CandidateIssue candidate,
             IReadOnlyList<ReviewContext> reviewContexts,
+            PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig? budget = null,
             ILogger? logger = null)
         {
-            var state = new State();
+            budget ??= new PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig();
+            var state = new State(budget.VerificationMaxContextItems, budget.VerificationMaxContextChars);
             (string? locFile, string? locSymbol) = ParseLocation(candidate.location);
 
             Dictionary<string, OutputResult?> astCache = BuildAstCache(reviewContexts);
@@ -66,15 +77,14 @@ namespace PRReviewAgent.Prompt
             {
                 foreach (string hint in candidate.verify_symbols)
                 {
-                    if (state.Items.Count >= DefaultMaxTotalItems) { break; }
-                    ResolveHint(state, hint, locSymbol, primary, primaryAst, reviewContexts, astCache);
+                    if (state.Items.Count >= budget.VerificationMaxContextItems) { break; }
+                    ResolveHint(state, hint, locSymbol, primary, primaryAst, reviewContexts, astCache, budget);
                 }
             }
 
-            logger?.LogDebug(
-                "VerificationContext: id={Id} location={Location} items={Count} unresolved={Unresolved} chars={Chars} truncated={Truncated}",
-                candidate.candidate_id ?? "?", candidate.location,
-                state.Items.Count, state.Unresolved.Count, state.TotalChars, state.Truncated);
+            logger?.LogInformation(
+                "Verification: candidate={Id} items={Count} estimated_chars={Chars} truncated={Truncated} unresolved={Unresolved}",
+                candidate.candidate_id ?? "?", state.Items.Count, state.TotalChars, state.Truncated, state.Unresolved.Count);
 
             return new VerificationContext
             {
@@ -179,7 +189,8 @@ namespace PRReviewAgent.Prompt
             State state, string hint, string? locSymbol,
             ReviewContext? primary, OutputResult? primaryAst,
             IReadOnlyList<ReviewContext> contexts,
-            Dictionary<string, OutputResult?> astCache)
+            Dictionary<string, OutputResult?> astCache,
+            PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig budget)
         {
             (HintKind hintKind, string target) = ClassifyHint(hint);
 
@@ -190,8 +201,8 @@ namespace PRReviewAgent.Prompt
                     string sym = string.IsNullOrEmpty(target) ? (locSymbol ?? string.Empty) : target;
                     foreach ((ReviewContext ctx, FunctionInfo caller) in FindCallers(sym, contexts, astCache))
                     {
-                        if (state.CallerCount >= DefaultMaxDirectCallers) break;
-                        if (state.Items.Count >= DefaultMaxTotalItems) break;
+                        if (state.CallerCount >= budget.VerificationMaxDirectCallers) break;
+                        if (state.Items.Count >= budget.VerificationMaxContextItems) break;
                         string src = ExtractLines(ctx.ChangedFile, caller.StartLine, caller.EndLine);
                         if (state.TryAdd(ctx.Path, caller.QualifiedName, VerificationContextKind.DirectCaller, src))
                             state.CallerCount++;
@@ -206,8 +217,8 @@ namespace PRReviewAgent.Prompt
                         string simple = SimpleName(sym);
                         foreach (CallEdge edge in primaryAst.CallGraph)
                         {
-                            if (state.CalleeCount >= DefaultMaxDirectCallees) break;
-                            if (state.Items.Count >= DefaultMaxTotalItems) break;
+                            if (state.CalleeCount >= budget.VerificationMaxDirectCallees) break;
+                            if (state.Items.Count >= budget.VerificationMaxContextItems) break;
                             if (!MatchesSymbol(edge.Caller, sym, simple)) continue;
                             (string? path, string? src) = FindSymbolSource(
                                 edge.Callee, primary, primaryAst, contexts, astCache);
@@ -393,6 +404,8 @@ namespace PRReviewAgent.Prompt
         {
             string simple = SimpleName(target);
             var seen = new HashSet<string>(StringComparer.Ordinal);
+            var all = new List<(ReviewContext Ctx, FunctionInfo Fn)>();
+
             foreach (ReviewContext ctx in contexts)
             {
                 if (!astCache.TryGetValue(ctx.Path, out OutputResult? ast) || ast?.CallGraph == null) continue;
@@ -402,9 +415,13 @@ namespace PRReviewAgent.Prompt
                     FunctionInfo? callerFn = FindFunction(ast, edge.Caller);
                     if (callerFn == null) continue;
                     if (!seen.Add(callerFn.QualifiedName)) continue;
-                    yield return (ctx, callerFn);
+                    all.Add((ctx, callerFn));
                 }
             }
+
+            // Prioritize changed callers, then same-file callers, then stable order
+            return all.OrderBy(x => x.Fn.Change != null ? 0 : 1)
+                      .ThenBy(x => x.Ctx.Path, StringComparer.OrdinalIgnoreCase);
         }
 
         private static (string? Path, string? Source) FindSymbolSource(

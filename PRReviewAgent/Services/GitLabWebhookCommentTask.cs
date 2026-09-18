@@ -350,6 +350,7 @@ namespace PRReviewAgent.Services
                 }
             }
 
+            PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig budget = Context.Instance.Settings.GetReviewBudgetConfig();
             List<string> reviews = new List<string>();
             int totalCandidates = 0, totalSelected = 0;
             logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
@@ -357,7 +358,11 @@ namespace PRReviewAgent.Services
             {
                 foreach (FileGroup fileGroup in reviewRequest.FileGroups)
                 {
-                    string promptTurn1 = PromptBuilder.BuildTurn1(reviewRequest, fileGroup, stringBuilder_);
+                    var (promptTurn1, turn1Metrics) = PromptBuilder.BuildTurn1WithMetrics(reviewRequest, fileGroup, stringBuilder_, budget);
+                    logger.LogInformation(
+                        "Turn1Context: files={Files} full={Full} partial={Partial} diff_only={DiffOnly} estimated_chars={Chars} semantic_chars={SemChars} truncated={Truncated}",
+                        turn1Metrics.FileCount, turn1Metrics.FullFileCount, turn1Metrics.PartialFileCount,
+                        turn1Metrics.DiffOnlyCount, turn1Metrics.EstimatedSourceChars, turn1Metrics.SemanticSummaryChars, turn1Metrics.Truncated);
                     if (string.IsNullOrEmpty(promptTurn1)) continue;
                     try
                     {
@@ -429,16 +434,42 @@ namespace PRReviewAgent.Services
                             }
                         }
 
+                        // Deterministic pre-filtering
+                        var (filteredCandidates, rejectedCandidates) = PRReviewAgent.Prompt.CandidatePreFilter.Filter(issuesResponse.issues);
+                        if (rejectedCandidates.Length > 0)
+                        {
+                            foreach (var (rc, reason) in rejectedCandidates)
+                                logger.LogDebug("Pre-filtered candidate {Id} ({Loc}): {Reason}", rc.candidate_id ?? "?", rc.location, reason);
+                        }
+
+                        // Candidate cap: select top N by priority category
+                        CandidateIssue[] candidatesForVerification = filteredCandidates;
+                        if (candidatesForVerification.Length > budget.MaxVerificationCandidatesPerGroup)
+                        {
+                            candidatesForVerification = filteredCandidates
+                                .OrderBy(c => PRReviewAgent.Prompt.CandidatePreFilter.GetCategoryPriority(c.category))
+                                .Take(budget.MaxVerificationCandidatesPerGroup)
+                                .ToArray();
+                            int skipped = filteredCandidates.Length - candidatesForVerification.Length;
+                            logger.LogInformation("Candidate cap: kept {Kept} of {Total}, skipped {Skipped} (SkippedBudget)",
+                                candidatesForVerification.Length, filteredCandidates.Length, skipped);
+                        }
+
                         int fileGroupCandidates = issuesResponse.issues.Length;
                         totalCandidates += fileGroupCandidates;
 
                         // Verification turn (one per candidate)
                         List<VerifiedIssue> verifiedIssues = new List<VerifiedIssue>();
-                        foreach (CandidateIssue candidate in issuesResponse.issues)
+                        foreach (CandidateIssue candidate in candidatesForVerification)
                         {
                             try
                             {
-                                VerificationContext verCtx = new VerificationContextResolver().Resolve(candidate, fileGroup.ReviewContexts, logger);
+                                VerificationContext verCtx = new VerificationContextResolver().Resolve(candidate, fileGroup.ReviewContexts, budget, logger);
+                                if (verCtx.Items.Count == 0)
+                                {
+                                    logger.LogWarning("Skipping verification for candidate {Id}: no context resolved (NoContext)", candidate.candidate_id ?? "?");
+                                    continue;
+                                }
                                 string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, candidate, verCtx, stringBuilder_);
 
                                 DateTimeOffset verStart = DateTimeOffset.UtcNow;
@@ -474,6 +505,14 @@ namespace PRReviewAgent.Services
                                         catch (Exception rex) { logger.LogError(rex, "Failed to complete Verification turn record"); }
                                     }
                                 }
+
+                                logger.LogInformation(
+                                    "Verification: candidate={Id} items={Items} estimated_chars={Chars} truncated={Truncated} unresolved={Unresolved}",
+                                    candidate.candidate_id ?? "?",
+                                    verCtx.Items.Count,
+                                    verCtx.Items.Sum(i => i.Source.Length),
+                                    verCtx.Truncated,
+                                    verCtx.UnresolvedTargets.Count);
 
                                 if (verResp != null)
                                 {

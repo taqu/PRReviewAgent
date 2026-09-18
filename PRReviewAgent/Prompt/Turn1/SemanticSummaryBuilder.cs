@@ -11,7 +11,7 @@ namespace PRReviewAgent.Prompt.Turn1
         /// Builds a combined semantic summary for a file group.
         /// Returns empty string if no useful information is available.
         /// </summary>
-        public static string Build(IReadOnlyList<ReviewContext> contexts)
+        public static string Build(IReadOnlyList<ReviewContext> contexts, int maxChars = 8_000)
         {
             List<string> changedSymbols = new List<string>();
             List<string> callEdges = new List<string>();
@@ -160,7 +160,10 @@ namespace PRReviewAgent.Prompt.Turn1
                     sb.AppendLine($"- {cp}");
             }
 
-            return sb.ToString();
+            string result = sb.ToString();
+            if (result.Length > maxChars)
+                result = result[..maxChars];
+            return result;
         }
 
         private static string GetSimpleName(string qualifiedName)
