@@ -84,6 +84,7 @@ namespace PRReviewAgent
             {
                 review1Templates_ = LoadTemplate("review1");
                 review2Templates_ = LoadTemplate("review2");
+                review3Templates_ = LoadTemplate("review3");
                 learnedTemplates_ = LoadTemplate("learned");
                 noproblemTemplates_ = LoadTemplate("noproblem");
                 localPolicy_ = LoadOneTemplate("localpolicy");
@@ -140,7 +141,7 @@ namespace PRReviewAgent
         /// <returns>True if both review and organize templates exist; otherwise, false.</returns>
         public bool HasTemplate(string lang)
         {
-            return review1Templates_.ContainsKey(lang) && review2Templates_.ContainsKey(lang) &&learnedTemplates_.ContainsKey(lang);
+            return review1Templates_.ContainsKey("en") && review2Templates_.ContainsKey("en") && review3Templates_.ContainsKey(lang) && learnedTemplates_.ContainsKey(lang);
         }
 
         /// <summary>
@@ -164,6 +165,18 @@ namespace PRReviewAgent
         {
             string? template = null;
             review2Templates_.TryGetValue(lang, out template);
+            return template;
+        }
+
+        /// <summary>
+        /// Gets the finalization template for the specified language.
+        /// </summary>
+        /// <param name="lang">The language code.</param>
+        /// <returns>The review template text, or null if not found.</returns>
+        public string? GetReview3Template(string lang)
+        {
+            string? template = null;
+            review3Templates_.TryGetValue(lang, out template);
             return template;
         }
 
@@ -207,6 +220,15 @@ namespace PRReviewAgent
         public IEnumerable<string> GetReview2Templates()
         {
             return review2Templates_.Values.AsEnumerable<string>();
+        }
+
+        /// <summary>
+        /// Gets all finalization templates.
+        /// </summary>
+        /// <returns>An enumerable of review template texts.</returns>
+        public IEnumerable<string> GetReview3Templates()
+        {
+            return review3Templates_.Values.AsEnumerable<string>();
         }
 
         /// <summary>
@@ -306,6 +328,7 @@ namespace PRReviewAgent
         private Tomlyn.Model.TomlTable? config_;
         private Dictionary<string, string> review1Templates_ = new();
         private Dictionary<string, string> review2Templates_ = new();
+        private Dictionary<string, string> review3Templates_ = new();
         private Dictionary<string, string> learnedTemplates_ = new();
         private Dictionary<string, string> noproblemTemplates_ = new();
         private string[] extensions_ = new string[0];

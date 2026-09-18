@@ -70,6 +70,41 @@ namespace PRReviewAgent.Services
             return stringBuilder.ToString();
         }
 
+        public static string BuildTurn2(ReviewRequest reviewRequest, CandidateIssue candidate, VerificationContext verificationContext, StringBuilder stringBuilder)
+        {
+            stringBuilder.Clear();
+            stringBuilder.Append(reviewRequest.ReviewRulesTurn2);
+            stringBuilder.Append('\n');
+            stringBuilder.Append(VerificationContextFormatter.Format(verificationContext, candidate));
+            return stringBuilder.ToString();
+        }
+
+        public static string BuildTurn3(ReviewRequest reviewRequest, VerifiedIssue[] verifiedIssues, StringBuilder stringBuilder)
+        {
+            stringBuilder.Clear();
+            stringBuilder.Append(reviewRequest.ReviewRulesTurn3);
+            foreach (VerifiedIssue issue in verifiedIssues)
+            {
+                stringBuilder.Append($"\n### {issue.candidate_id}\n\n");
+                if (!string.IsNullOrEmpty(issue.evidence))
+                    stringBuilder.Append($"**Evidence:** {issue.evidence}\n\n");
+                if (!string.IsNullOrEmpty(issue.impact))
+                    stringBuilder.Append($"**Impact:** {issue.impact}\n\n");
+                if (!string.IsNullOrEmpty(issue.suggested_fix))
+                    stringBuilder.Append($"**Suggested fix:** {issue.suggested_fix}\n\n");
+                if (!string.IsNullOrEmpty(issue.confidence))
+                    stringBuilder.Append($"**Confidence:** {issue.confidence}\n\n");
+            }
+            bool hasCandidateIds = verifiedIssues.Any(i => i.candidate_id != null);
+            if (hasCandidateIds)
+            {
+                stringBuilder.Append("\n\nAfter your review, append exactly one hidden metadata line on its own line at the very end in this exact format (no spaces around the colon, comma-separated, no extra text):\n");
+                stringBuilder.Append("<!-- SELECTED_CANDIDATES: c0,c1 -->\n");
+                stringBuilder.Append("Replace c0,c1 with the candidate_id values of findings you included. If you included none, omit the line entirely.");
+            }
+            return stringBuilder.ToString();
+        }
+
         public static string BuildTurn2(ReviewRequest reviewRequest, CandidateResponse candidateResponse, StringBuilder stringBuilder)
         {
             stringBuilder.Clear();

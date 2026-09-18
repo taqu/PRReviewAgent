@@ -257,8 +257,9 @@ namespace PRReviewAgent.Services
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = payloadIssueComment_.issue.title ?? string.Empty;
             reviewRequest.MergeRequestDescription = payloadIssueComment_.issue.body?? string.Empty;
-            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template(language_);
-            reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
+            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
+            reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template("en");
+            reviewRequest.ReviewRulesTurn3 = Context.Instance.Settings.GetReview3Template(language_);
 
             Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
             foreach (ReviewContext reviewContext in reviewContexts)
@@ -428,41 +429,109 @@ namespace PRReviewAgent.Services
                         int fileGroupCandidates = issuesResponse.issues.Length;
                         totalCandidates += fileGroupCandidates;
 
-                        // Selection turn
-                        string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
-                        DateTimeOffset selectionStart = DateTimeOffset.UtcNow;
-                        Stopwatch selectionSw = Stopwatch.StartNew();
-                        long? selectionTurnId = null;
+                        // Verification turn (one per candidate)
+                        List<VerifiedIssue> verifiedIssues = new List<VerifiedIssue>();
+                        foreach (CandidateIssue candidate in issuesResponse.issues)
+                        {
+                            try
+                            {
+                                VerificationContext verCtx = new VerificationContextResolver().Resolve(candidate, fileGroup.ReviewContexts, logger);
+                                string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, candidate, verCtx, stringBuilder_);
+
+                                DateTimeOffset verStart = DateTimeOffset.UtcNow;
+                                Stopwatch verSw = Stopwatch.StartNew();
+                                long? verTurnId = null;
+                                if (turnRecorder != null && executionId.HasValue)
+                                {
+                                    try { verTurnId = await turnRecorder.StartAsync(executionId.Value, ReviewTurnType.Verification, context.Agents.Model, verStart, cancellationToken); }
+                                    catch (Exception ex) { logger.LogError(ex, "Failed to start Verification turn record"); }
+                                }
+
+                                VerifiedResponse? verResp = null;
+                                int? verInputTokens = null, verOutputTokens = null;
+                                Exception? verException = null;
+                                try
+                                {
+                                    (verResp, verInputTokens, verOutputTokens) = await context.Agents.RunJsonWithUsageAsync<VerifiedResponse>(promptTurn2, context.CancellationToken);
+                                }
+                                catch (Exception ex) { verException = ex; throw; }
+                                finally
+                                {
+                                    verSw.Stop();
+                                    if (turnRecorder != null && verTurnId.HasValue)
+                                    {
+                                        try
+                                        {
+                                            int validCount = verResp?.issues.Count(i => i.valid) ?? 0;
+                                            if (verException != null)
+                                                await turnRecorder.CompleteFailureAsync(verTurnId.Value, verInputTokens, verOutputTokens, ClassifyError(verException), DateTimeOffset.UtcNow, verSw.ElapsedMilliseconds, cancellationToken);
+                                            else
+                                                await turnRecorder.CompleteSuccessAsync(verTurnId.Value, verInputTokens, verOutputTokens, validCount, DateTimeOffset.UtcNow, verSw.ElapsedMilliseconds, cancellationToken);
+                                        }
+                                        catch (Exception rex) { logger.LogError(rex, "Failed to complete Verification turn record"); }
+                                    }
+                                }
+
+                                if (verResp != null)
+                                {
+                                    foreach (VerifiedIssue vi in verResp.issues)
+                                    {
+                                        if (!vi.valid) continue;
+                                        VerifiedIssue withRule = vi;
+                                        if (string.IsNullOrEmpty(vi.rule_id) && candidateToRuleId.TryGetValue(vi.candidate_id, out string? rid))
+                                            withRule.rule_id = rid;
+                                        verifiedIssues.Add(withRule);
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogError(ex, $"Verification failed for candidate {candidate.candidate_id}");
+                            }
+                        }
+
+                        if (verifiedIssues.Count == 0)
+                        {
+                            logger.LogInformation($"No verified issues for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
+                            PromptBuilder.AddNotFound(fileGroup, reviews, language_, stringBuilder_);
+                            continue;
+                        }
+
+                        // Finalization turn
+                        string promptTurn3 = PromptBuilder.BuildTurn3(reviewRequest, verifiedIssues.ToArray(), stringBuilder_);
+                        DateTimeOffset finStart = DateTimeOffset.UtcNow;
+                        Stopwatch finSw = Stopwatch.StartNew();
+                        long? finTurnId = null;
                         if (turnRecorder != null && executionId.HasValue)
                         {
-                            try { selectionTurnId = await turnRecorder.StartAsync(executionId.Value, ReviewTurnType.Selection, context.Agents.Model, selectionStart, cancellationToken); }
-                            catch (Exception ex) { logger.LogError(ex, "Failed to start Selection turn record"); }
+                            try { finTurnId = await turnRecorder.StartAsync(executionId.Value, ReviewTurnType.Finalization, context.Agents.Model, finStart, cancellationToken); }
+                            catch (Exception ex) { logger.LogError(ex, "Failed to start Finalization turn record"); }
                         }
 
                         string reviewResponse = string.Empty;
                         string cleanedResponse = string.Empty;
                         IReadOnlyList<string> selectedCandidateIds = Array.Empty<string>();
-                        int? selInputTokens = null, selOutputTokens = null;
-                        Exception? selException = null;
+                        int? finInputTokens = null, finOutputTokens = null;
+                        Exception? finException = null;
                         try
                         {
-                            (reviewResponse, selInputTokens, selOutputTokens) = await context.Agents.RunWithUsageAsync(promptTurn2, context.CancellationToken);
+                            (reviewResponse, finInputTokens, finOutputTokens) = await context.Agents.RunWithUsageAsync(promptTurn3, context.CancellationToken);
                             (cleanedResponse, selectedCandidateIds) = PromptBuilder.ExtractSelectionMetadata(reviewResponse);
                         }
-                        catch (Exception ex) { selException = ex; throw; }
+                        catch (Exception ex) { finException = ex; throw; }
                         finally
                         {
-                            selectionSw.Stop();
-                            if (turnRecorder != null && selectionTurnId.HasValue)
+                            finSw.Stop();
+                            if (turnRecorder != null && finTurnId.HasValue)
                             {
                                 try
                                 {
-                                    if (selException != null)
-                                        await turnRecorder.CompleteFailureAsync(selectionTurnId.Value, selInputTokens, selOutputTokens, ClassifyError(selException), DateTimeOffset.UtcNow, selectionSw.ElapsedMilliseconds, cancellationToken);
+                                    if (finException != null)
+                                        await turnRecorder.CompleteFailureAsync(finTurnId.Value, finInputTokens, finOutputTokens, ClassifyError(finException), DateTimeOffset.UtcNow, finSw.ElapsedMilliseconds, cancellationToken);
                                     else
-                                        await turnRecorder.CompleteSuccessAsync(selectionTurnId.Value, selInputTokens, selOutputTokens, selectedCandidateIds.Count, DateTimeOffset.UtcNow, selectionSw.ElapsedMilliseconds, cancellationToken);
+                                        await turnRecorder.CompleteSuccessAsync(finTurnId.Value, finInputTokens, finOutputTokens, selectedCandidateIds.Count, DateTimeOffset.UtcNow, finSw.ElapsedMilliseconds, cancellationToken);
                                 }
-                                catch (Exception rex) { logger.LogError(rex, "Failed to complete Selection turn record"); }
+                                catch (Exception rex) { logger.LogError(rex, "Failed to complete Finalization turn record"); }
                             }
                         }
 
@@ -472,7 +541,7 @@ namespace PRReviewAgent.Services
                             continue;
                         }
 
-                        // Mark produced_final_finding for rules whose candidates survived Selection.
+                        // Mark produced_final_finding for rules whose candidates survived Finalization.
                         if (usageRepo != null && executionId.HasValue && project != null && selectedCandidateIds.Count > 0)
                         {
                             string[] finalRuleIds = selectedCandidateIds
