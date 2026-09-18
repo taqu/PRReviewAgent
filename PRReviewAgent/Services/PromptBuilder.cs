@@ -1,4 +1,5 @@
 using PRReviewAgent.Prompt;
+using PRReviewAgent.Prompt.Turn1;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -26,42 +27,10 @@ namespace PRReviewAgent.Services
                 stringBuilder.Append(reviewRequest.MergeRequestDescription);
                 stringBuilder.Append("\n\n");
             }
-            stringBuilder.Append("# Files\n");
-            foreach (ReviewContext reviewContext in fileGroup.ReviewContexts)
-            {
-                stringBuilder.Append($"{reviewContext.Filename}\n");
-            }
-            stringBuilder.Append("\n");
 
-            int countAST = fileGroup.ReviewContexts.Count(x => !string.IsNullOrEmpty(x.AstJson));
-            if (0 < countAST)
-            {
-                stringBuilder.Append("# Structures(JSON)\n");
-                foreach (ReviewContext reviewContext in fileGroup.ReviewContexts)
-                {
-                    if (!string.IsNullOrEmpty(reviewContext.AstJson))
-                    {
-                        stringBuilder.Append($"```json:{reviewContext.Filename}\n");
-                        stringBuilder.Append(reviewContext.AstJson);
-                        stringBuilder.Append("\n```\n");
-                    }
-                }
-            }
+            string turn1Context = Turn1ContextBuilder.Build(fileGroup.ReviewContexts);
+            stringBuilder.Append(turn1Context);
 
-            int countDiff = fileGroup.ReviewContexts.Count(x => !string.IsNullOrEmpty(x.ExpandedDiff));
-            if (0 < countAST)
-            {
-                stringBuilder.Append("# Diffs\n");
-                foreach (ReviewContext reviewContext in fileGroup.ReviewContexts)
-                {
-                    if (!string.IsNullOrEmpty(reviewContext.ExpandedDiff))
-                    {
-                        stringBuilder.Append($"```diff:{reviewContext.Filename}\n");
-                        stringBuilder.Append(reviewContext.ExpandedDiff);
-                        stringBuilder.Append("\n```\n");
-                    }
-                }
-            }
             if (!string.IsNullOrEmpty(reviewRequest.LearnedRules))
             {
                 stringBuilder.Append("\n----\n");

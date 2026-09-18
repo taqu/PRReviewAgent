@@ -215,7 +215,7 @@ namespace PRReviewAgent.Services
                 try
                 {
                     string file = await GetPullRequestFileContentAsync(gitHubClient, payloadIssueComment_.repository.id, pullRequest.Head.Sha, reviewContext.Path);
-                    if (string.IsNullOrEmpty(file))
+                    if (!string.IsNullOrEmpty(file))
                     {
                         reviewContext.ChangedFile = file;
                     }
