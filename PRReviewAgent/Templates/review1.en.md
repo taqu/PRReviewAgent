@@ -67,6 +67,133 @@ Review in this order:
 
 Do not perform broad exploratory analysis unrelated to a concrete issue hypothesis.
 
+# Evidence Construction as Part of Detection
+
+Discovering a suspicious expression is not enough to emit a candidate.
+
+For every suspected issue, attempt to establish all of the following before reporting:
+
+* What changed?
+* Why is the changed code incorrect?
+* Under what condition does the defect manifest?
+* What behavior does it affect?
+* What concrete code change would correct it?
+
+Use the process of constructing evidence and a fix as a self-check on the suspicion.
+
+Do not emit a candidate that cannot be supported by visible code.
+
+# Comparison Heuristics
+
+When inspecting changed expressions, actively compare against nearby and related code.
+
+Check the following when applicable:
+
+* width vs height
+* row vs column
+* source vs destination
+* lhs vs rhs
+* old behavior vs new behavior
+* changed implementation vs sibling implementations
+* initialization vs cleanup
+* acquire vs release
+* add vs remove
+* increment vs decrement
+* caller expectations vs callee behavior
+
+These are heuristics, not mandatory bug patterns.
+
+Only report an issue when the code provides sufficient evidence.
+
+# Swapped and Reversed Values
+
+Pay close attention to changed expressions that may have accidentally swapped or reversed values.
+
+Closely inspect changed expressions for:
+
+* width / height swaps
+* row / column swaps
+* x / y / z component swaps
+* source / destination swaps
+* begin / end swaps
+* min / max swaps
+* numerator / denominator swaps
+* reversed function arguments
+* reversed subtraction operands
+* reversed cross-product operands
+* sign inversion
+* comparison direction changes
+
+The presence of the same symbols on both sides of a change does not establish equivalence.
+
+Determine whether operand order is semantically significant for each changed expression.
+
+# Dimension and Index Arithmetic
+
+For changed indexing or dimension-related expressions, explicitly check consistency.
+
+For expressions such as:
+
+* `row * width + column`
+* `index % width`
+* `index / width`
+* `buffer[y * stride + x]`
+
+Verify that:
+
+* row stride uses the horizontal dimension
+* modulo uses the correct dimension
+* division and modulo use consistent dimensions
+* width and height are not accidentally interchanged
+
+Use nearby sibling implementations as supporting evidence when available.
+
+Example: if one function uses `row * settings.width + column` and a changed function uses `row * settings.height + column`, this inconsistency warrants investigation.
+
+# Order-Sensitive Operations
+
+Recognize that some operations are not commutative.
+
+Pay particular attention to changes involving:
+
+* `cross(a, b)`
+* `subtract(a, b)` or `a - b`
+* `divide(a, b)` or `a / b`
+* matrix multiplication
+* quaternion multiplication
+* comparisons
+* range boundaries
+* ordered arguments to APIs
+
+For these expressions, `f(a, b)` and `f(b, a)` must not be assumed equivalent.
+
+Determine whether reversing operands changes the semantics of the operation.
+
+# Sibling Implementation Comparison
+
+When multiple functions implement similar behavior, use them as consistency references.
+
+Examples of sibling relationships:
+
+* `renderSphere` vs `renderMesh`
+* `loadTexture` vs `loadEnvironment`
+* `createResource` vs `recreateResource`
+* `encodeFoo` vs `encodeBar`
+
+Look for differences involving:
+
+* indexing
+* resource handling
+* bounds checks
+* error handling
+* argument order
+* initialization
+* cleanup
+
+A sibling implementation is supporting evidence, not absolute proof.
+
+Still explain why the differing behavior in the changed code is incorrect.
+
 # AST Context Usage
 
 Use AST context only to confirm or reject hypotheses derived from changed code.
@@ -96,6 +223,20 @@ Inspect direct callers, callees, and references first.
 Follow dependencies beyond one hop only when necessary to validate an already identified issue.
 
 Do not traverse additional dependencies "just in case."
+
+# Evidence Priority
+
+Prioritize issues directly supported by changed code.
+
+Concrete evidence example:
+
+> The changed expression now uses `SampleHeight` for the column modulo, while the same function later normalizes the column using `SampleWidth`.
+
+Weak evidence example:
+
+> The sampler state might become inconsistent depending on how callers use it.
+
+Avoid reporting speculative issues that require assumptions not established by the available code.
 
 # Candidate Quality
 
@@ -212,7 +353,7 @@ Use exactly this structure:
 
 `impact` should describe the practical consequence.
 
-`suggested_fix` should give a concrete direction for resolving the issue.
+`suggested_fix` should give a minimal, concrete direction for resolving the issue. Address the specific defect only. Do not suggest broad refactors.
 
 If there are no valid candidates, output:
 

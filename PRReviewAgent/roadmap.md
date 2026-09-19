@@ -1,1221 +1,813 @@
-# AI Code Review System – Multi-Project Usage Statistics Roadmap
-
-## 1. Objective
-
-Extend the existing ASP.NET AI code review system with a usage statistics and monitoring subsystem that:
-
-* Supports multiple projects cleanly.
-* Tracks review usage, model usage, latency, and errors.
-* Tracks the two-stage review pipeline separately.
-* Tracks learned-rule lifecycle and effectiveness.
-* Measures full-table vector search cost as the learned-rule dataset grows.
-* Provides project-level and cross-project dashboards through ASP.NET web pages.
-* Reuses the existing SQLite database.
-* Keeps statistics collection isolated from the core review logic.
-
-The initial goal is observability and operational insight rather than billing, distributed telemetry, or external analytics infrastructure.
-
----
-
-# 2. Current System Assumptions
-
-## Review Flow
-
-A normal code review uses a regular model in two turns.
-
-### Turn 1 — Detection
-
-The model identifies review candidates and assigns one of:
-
-* Critical
-* Major
-* Minor
-
-### Turn 2 — Selection and Formatting
-
-The second model call:
-
-* Selects the findings worth reporting.
-* Removes weak or redundant findings.
-* Converts selected findings into the final review text.
-
-Conceptually:
-
-```text
-Merge Request
-    |
-    v
-Detection
-    |
-    | Critical / Major / Minor candidates
-    v
-Selection + Formatting
-    |
-    v
-Final Review
-```
-
----
-
-## Learned Rule Flow
-
-Project-specific rules are learned from merge events using a smaller model.
-
-Existing rules are re-evaluated against merged changes.
-
-Conceptually:
-
-```text
-Merge Event
-    |
-    v
-Rule Extraction / Evaluation
-    |
-    +-- bad pattern still exists
-    |       -> decrease confidence
-    |
-    +-- bad pattern disappeared
-            -> increase confidence
-```
-
-Rules expire by default after approximately three months when they are both:
-
-* Old enough.
-* Below the configured minimum confidence score.
-
-Expired rules are removed from the active `learned_rules` table.
-
----
-
-## Rule Retrieval
-
-Learned rules are currently retrieved by:
-
-1. Loading the relevant learned-rule set.
-2. Performing vector similarity comparison.
-3. Selecting candidate rules.
-4. Passing selected rules into the review process.
-
-The current implementation performs vector search by scanning the stored rule set.
-
-Because this may become a scalability bottleneck as projects and learned rules increase, rule-count and search-latency statistics must be collected before introducing a more complex vector-storage solution.
-
----
-
-# 3. Multi-Project Design Principles
-
-Multi-project support should be introduced at the storage and service layers before building the statistics dashboard.
-
-Every project-specific entity must have an explicit project association.
-
-The following data must never be implicitly global:
-
-* Merge requests
-* Review executions
-* Learned rules
-* Rule-learning history
-* Rule-search executions
-* Review-rule usage
-* Project statistics
-
-The system should allow both:
-
-```text
-Single Project View
-```
-
-and:
-
-```text
-All Projects View
-```
-
-without duplicating data or maintaining separate databases.
-
----
-
-# 4. Phase 1 — Introduce the Project Entity
-
 ## Goal
 
-Establish a stable project identity that can be referenced by all review, rule, and statistics records.
-
-## Add a `projects` Table
-
-Recommended minimum schema:
+最終目標は、
 
 ```text
-projects
---------------------------------
-id
-external_project_id
-name
-display_name
-repository_url
-is_active
-created_at
-updated_at
+旧 pipeline
+Turn 1: thinking OFF
+Turn 2: thinking OFF
 ```
 
-`external_project_id` should represent the stable project identifier from the source system, such as GitLab or another SCM provider.
+のまま、
 
-Do not rely on the project name as the primary identifier because repositories can be renamed.
+```text
+品質 ≒ 旧 Turn 1 thinking ON
+latency < thinking ON
+false positive ≦ thinking ON
+```
+
+に持っていくことです。
+
+今回の3件で言えば、最低ラインは、
+
+```text
+Environment::sample     検出
+traceMesh               検出
+renderSphere            検出
+false positive          0
+```
+
+です。
+
+thinking off が落としているのは `traceMesh` の `cross(T, normal)` だけなので、まずここを取り戻すのが最初のターゲットです。thinking on はこのbitangent反転を高confidenceで検出しています。
 
 ---
 
-## Add `project_id` to Existing Project-Specific Data
+# Phase 0 — Baselineを固定する
 
-At minimum, associate the following with `project_id`:
-
-```text
-learned_rules
-review executions
-merge events
-rule extraction operations
-```
-
-Any current uniqueness constraints must be reviewed.
-
-For example, a rule identifier that was previously globally unique may need to become:
+まず旧実装を基準点として凍結します。
 
 ```text
-UNIQUE(project_id, rule_id)
+Baseline-Q:
+old pipeline
+Turn1 thinking ON
+Turn2 current
 ```
 
-or use an internal globally unique database key while retaining project-local rule IDs.
+```text
+Baseline-F:
+old pipeline
+Turn1 thinking OFF
+Turn2 current
+```
+
+最低限、各benchmarkについて保存します。
+
+```text
+seeded bugs
+detected true positives
+false positives
+Turn1 input tokens
+Turn1 output tokens
+Turn1 latency
+Turn2 latency
+total latency
+```
+
+今回のケースなら基準は、
+
+```text
+Baseline-Q
+TP = 3
+FN = 0
+
+Baseline-F
+TP = 2
+FN = 1
+```
+
+です。
+
+ここを以後絶対に動かさないようにします。
+
+**目的:** 改修ごとの差分を正確に測れる状態にする。
 
 ---
 
-## Repository Layer
+# Phase 1 — thinking off用promptを「削らず」に整理する
 
-Introduce explicit project scoping.
+ここは前回と逆です。
 
-Avoid APIs such as:
+`impact` や `suggested_fix` を削りません。
 
-```csharp
-GetLearnedRulesAsync()
+むしろ旧promptの、
+
+```text
+problem
+evidence
+impact
+suggested_fix
+confidence
 ```
 
-Prefer:
+を維持します。
 
-```csharp
-GetLearnedRulesAsync(
-    long projectId,
-    CancellationToken cancellationToken);
+今回、thinking offでも `Environment::sample` と `renderSphere` について、かなり強い根拠を自力で構築できています。特に `renderSphere` では `renderMesh` の正しい実装との比較までできています。
+
+なので、この構造を思考補助として残します。
+
+ただしpromptの指示を少し強めます。
+
+```text
+For every changed expression, actively compare:
+
+- width vs height
+- row vs column
+- lhs vs rhs
+- old behavior vs new behavior
+- sibling implementations
+- inverse/order-sensitive operations
+- ownership/lifetime symmetry
+- initialization/cleanup symmetry
 ```
 
-Likewise:
+特にC/C++レビュー向けに、
 
-```csharp
-IncrementConfidenceByChunkIdAsync(
-    long projectId,
-    string ruleId,
-    CancellationToken cancellationToken);
+```text
+Pay special attention to:
+- swapped dimensions
+- reversed operands
+- reversed cross-product order
+- sign inversions
+- off-by-one
+- width/height confusion
+- row/column confusion
 ```
 
-```csharp
-DecrementConfidenceByChunkIdAsync(
-    long projectId,
-    string ruleId,
-    CancellationToken cancellationToken);
-```
+を追加します。
 
-The repository must make accidental cross-project queries difficult.
+今回の3バグは実はほぼ全部このカテゴリです。
+
+**目的:** thinkingなしでも「比較軸」をprompt側から与える。
 
 ---
 
-## Deliverables
+# Phase 2 — Diff-centric attentionを強化する
 
-* `projects` table.
-* Migration for existing installations.
-* Existing data assigned to a default project where necessary.
-* Project-aware learned-rule repository.
-* Project-aware merge handling.
-* Project-aware review pipeline.
+次はASTではなく、まず変更行を強調します。
+
+入力を、
+
+```text
+full file
+```
+
+だけにせず、
+
+```text
+[CHANGED]
+- const Vector3 B = cross(normal, T);
++ const Vector3 B = cross(T, normal);
+[/CHANGED]
+```
+
+のように明示します。
+
+もしくは、
+
+```text
+<<<< CHANGED
+const Vector3 B = cross(T, normal);
+>>>>
+```
+
+でも構いません。
+
+重要なのは、non-thinkingモデルに、
+
+> 「この行はレビュー対象の中心」
+
+というattention hintを与えることです。
+
+今回thinking offが `cross(T, normal)` を落とした理由の一つとして、変更点自体への注意が弱かった可能性があります。
+
+Phase 2ではまだAST情報は追加しません。
+
+```text
+old prompt
++
+old code context
++
+explicit diff markers
+```
+
+だけです。
+
+**Success condition:** 3/3が出るか確認。
 
 ---
 
-# 5. Phase 2 — Add Review Execution Statistics
+# Phase 3 — Sibling implementation comparisonを自動追加する
 
-## Goal
-
-Record one top-level execution for every reviewed merge request.
-
-Add:
+今回の `renderSphere` がthinking offでも見つかった大きな理由は、
 
 ```text
-review_executions
---------------------------------
-id
-project_id
-merge_request_id
+renderSphere:
+row * height
 
-started_at
-completed_at
-duration_ms
-
-candidate_finding_count
-selected_finding_count
-
-critical_count
-major_count
-minor_count
-
-status
-error_type
+renderMesh:
+row * width
 ```
 
-Recommended relationship:
+という比較材料が同じcontext内にあったことです。
+
+この「似たコードとの比較」をsystem側で意図的に作ります。
+
+ASTまたはsemantic indexから、
 
 ```text
-projects
-   |
-   +-- review_executions
+Changed function:
+renderSphere
+
+Similar / related functions:
+renderMesh
 ```
+
+を抽出して、
+
+```text
+Related implementation:
+<renderMesh body>
+```
+
+をTurn 1に追加します。
+
+ただし最初は高度な類似度計算は不要です。
+
+候補は、
+
+```text
+same class
+same call target
+same constructor call
+same field accesses
+same return type
+same naming prefix
+```
+
+程度で十分です。
+
+例えば、
+
+```text
+renderSphere -> Sampler::Sampler
+renderMesh   -> Sampler::Sampler
+```
+
+なら sibling として採用します。
+
+**目的:** thinking onが自力で行っている「比較対象探索」をdeterministicに補助する。
 
 ---
 
-## Important Metrics
+# Phase 4 — Operator-sensitive semantic hintsを追加する
 
-At this level, track:
+今回の最大の取りこぼしである、
 
-* Number of reviews.
-* Number of reviewed merge requests.
-* Total review duration.
-* Candidate finding count.
-* Final selected finding count.
-* Critical count.
-* Major count.
-* Minor count.
-* Failed review count.
-
-Derived metric:
-
-```text
-Selection Rate =
-Selected Finding Count
-/
-Candidate Finding Count
+```cpp
+cross(T, normal)
 ```
 
-This provides a useful signal for detecting excessive noise from the first review stage.
+は単純なsymbol relationだけでは検出しにくいです。
+
+そこでsemantic indexに、単なる、
+
+```text
+traceMesh calls cross
+```
+
+ではなく、
+
+```text
+Changed expression:
+cross(T, normal)
+
+Argument semantic roles:
+T      = tangent
+normal = surface normal
+
+Nearby related expression:
+cross(normal, T)
+```
+
+のような情報を付けます。
+
+特に以下の演算を対象にします。
+
+```text
+cross(a, b)
+subtract(a, b)
+divide(a, b)
+comparison operands
+matrix multiplication
+quaternion multiplication
+min/max
+clamp
+index arithmetic
+```
+
+これらは**引数順序に意味がある**ためです。
+
+ここでASTは初めて本格的に使います。
+
+ただしJSON treeはLLMに見せません。
+
+LLMには、
+
+```text
+Semantic hints:
+- cross() is called with tangent and normal
+- this expression was changed by swapping argument order
+```
+
+程度を出します。
+
+**目的:** thinkingが拾っていた「演算の意味」を低tokenで補う。
 
 ---
 
-# 6. Phase 3 — Track the Two Review Turns Separately
+# Phase 5 — Changed-expression classificationを導入する
 
-## Goal
+ここからかなり有効だと思います。
 
-Measure the cost and behavior of Detection and Selection independently.
+変更されたAST nodeをsystem側で分類します。
 
-Add:
-
-```text
-review_turns
---------------------------------
-id
-review_execution_id
-
-turn_type
-model
-
-input_tokens
-output_tokens
-duration_ms
-
-finding_count
-success
-error_type
-
-created_at
-```
-
-Supported values:
+例えば今回なら、
 
 ```text
-Detection
-Selection
+index % SampleHeight
+→ dimension/index expression
+
+cross(T, normal)
+→ order-sensitive function call
+
+row * settings.height
+→ stride/index expression
 ```
 
-Conceptually:
+と分類します。
+
+Turn 1に、
 
 ```text
-ReviewExecution
-    |
-    +-- Detection
-    |
-    +-- Selection
+Changed expression categories:
+- dimension arithmetic
+- order-sensitive vector operation
+- image indexing arithmetic
 ```
+
+だけを渡します。
+
+これならLLMが0から「何を見るべきか」を考える必要が減ります。
+
+分類器は最初から賢くなくていいです。
+
+```text
+%, *, / + width/height
+→ indexing/dimension
+
+cross/dot/mul
+→ vector/math operation
+
+new/delete/free/reset
+→ lifetime
+
+lock/unlock
+→ synchronization
+
+size/count/length
+→ bounds
+```
+
+くらいのheuristicでも十分です。
 
 ---
 
-## Statistics to Expose
+# Phase 6 — Review checklistを変更タイプ別に動的生成する
 
-Per project and globally:
+固定promptに全部書くのではなく、変更タイプによって短いchecklistを追加します。
 
-```text
-Detection
-- Calls
-- Average input tokens
-- Average output tokens
-- Average latency
-- Average candidate findings
-
-Selection
-- Calls
-- Average input tokens
-- Average output tokens
-- Average latency
-- Average final findings
-```
-
-Also expose:
+例えばindexing changeなら、
 
 ```text
-Candidate -> Final Selection Rate
+Check:
+- Is row stride based on width?
+- Is modulo based on width?
+- Are width and height used consistently?
 ```
 
-This should be one of the primary review-quality indicators.
+vector operationなら、
+
+```text
+Check:
+- Is operand order significant?
+- Does the result preserve coordinate-system handedness?
+- Does the basis remain consistent with neighboring code?
+```
+
+これをsystem側で生成します。
+
+つまり、
+
+```text
+AST classification
+      ↓
+review heuristic selection
+      ↓
+tiny prompt hint
+```
+
+です。
+
+これならtoken増加は非常に小さいです。
 
 ---
 
-# 7. Phase 4 — Add Learned Rule Lifecycle Statistics
+# Phase 7 — Confidenceをthinking offにも復活させる
 
-## Goal
+今回、thinking offではconfidenceが消えています。
 
-Preserve rule history even after active learned rules expire and are deleted.
+これは戻した方がいいです。
 
-Add:
-
-```text
-rule_learning_events
---------------------------------
-id
-project_id
-rule_id
-
-merge_request_id
-
-event_type
-
-confidence_before
-confidence_after
-
-created_at
+```json
+"confidence": "high | medium | low"
 ```
 
-Supported event types:
+を必須にします。
+
+ただしconfidenceを単なる自己評価として使わず、
 
 ```text
-Created
-ConfidenceIncreased
-ConfidenceDecreased
-Expired
+high:
+changed code itself establishes the bug
+
+medium:
+requires a plausible semantic assumption
+
+low:
+speculative or missing context
 ```
 
-The existing `learned_rules` table remains the active working set.
+と定義します。
 
-`rule_learning_events` becomes the historical audit and statistics stream.
+Turn 2では、
+
+```text
+high
+→ 通常検証
+
+medium
+→ 厳しく検証
+
+low
+→ 原則棄却候補
+```
+
+と使えます。
+
+これだけでもfalse positive制御に使えます。
 
 ---
 
-## Update the Existing Confidence Logic
+# Phase 8 — Turn 2は大きく変えない
 
-The current confidence update flow should additionally emit a lifecycle event.
+ここが重要です。
 
-Conceptually:
+今の失敗からすると、Turn 2をVerification専用に再設計する必要はありません。
+
+旧Turn 2は、
 
 ```text
-Load current confidence
-        |
-        v
-Evaluate merged diff
-        |
-        +-- pattern still present
-        |      |
-        |      v
-        |  confidence -
-        |
-        +-- pattern removed
-               |
-               v
-           confidence +
-        |
-        v
-Write RuleLearningEvent
+candidate validation
+dedupe
+severity
+formatting
 ```
+
+をまとめてやっていて、少なくとも今回のthinking offでは2件とも正しく通しています。
+
+なので当面、
+
+```text
+Turn 1を改善する
+Turn 2は固定
+```
+
+です。
+
+Turn 1が3/3になる前にTurn 2を触ると、原因切り分けが難しくなります。
 
 ---
 
-## Rule Expiration
+# Phase 9 — Full changed fileを基本化する
 
-Keep expired rules out of the active vector-search table.
+ここでようやくfull-file contextを試します。
 
-Before deletion, record:
+順序としては、
 
 ```text
-EventType = Expired
+Diff
++
+changed function
++
+関連関数
 ```
 
-This preserves historical information without increasing active vector-search cost.
+より、
+
+```text
+full changed file
++
+diff markers
+```
+
+の方が精度が高いか比較します。
+
+256K contextが使えるなら、C/C++ではかなり有望です。
+
+今回もthinking offは、同一ファイル内の `renderMesh` と `renderSphere` を比較してバグを発見しています。
+
+なので、
+
+```text
+changed file全文
+```
+
+はむしろsemantic signalとして役立つ可能性があります。
+
+ただし巨大ファイル用に、
+
+```text
+if file <= budget:
+    full file
+else:
+    changed regions + related symbols
+```
+
+とします。
 
 ---
 
-# 8. Phase 5 — Make Rule Retrieval Project-Aware
+# Phase 10 — AST Context Selectorを追加する
 
-## Goal
+full changed fileだけで足りない場合にのみ、unchanged dependencyを展開します。
 
-Prevent rule leakage between projects and establish meaningful per-project search metrics.
-
-Rule retrieval must only search rules belonging to the current project unless explicit cross-project sharing is added in the future.
-
-Current flow:
+例えば、
 
 ```text
-All learned rules
-    |
-    v
-Vector search
+changed function
+↓
+referenced type
+↓
+field declaration
+↓
+callee
+↓
+caller
 ```
 
-Target flow:
+から必要部分だけ追加します。
+
+ここでもモデルには、
 
 ```text
-Project
-    |
-    v
-Project learned rules
-    |
-    v
-Vector similarity
-    |
-    v
-Candidate rules
-    |
-    v
-Rules supplied to review
+AST JSON
 ```
 
-The SQL filtering step should happen before vector comparison:
+を見せません。
 
-```sql
-SELECT ...
-FROM learned_rules
-WHERE project_id = @projectId;
+```text
+Relevant declarations:
+...
+
+Related implementation:
+...
 ```
 
-This is important for both correctness and performance.
+としてコードそのものを出します。
+
+優先順位は、
+
+```text
+1. same-file sibling implementation
+2. declaration
+3. referenced fields
+4. direct callee
+5. direct caller
+6. base/derived implementation
+```
+
+くらいで良いと思います。
 
 ---
 
-# 9. Phase 6 — Add Rule Search Performance Statistics
+# Phase 11 — Miss-driven context expansion
 
-## Goal
+ここは少し後でいいですが、有効です。
 
-Measure the cost of the current full-scan vector search before attempting optimization.
-
-Add:
+Turn 1が低confidenceしか出せなかった場合だけ、
 
 ```text
-rule_search_executions
---------------------------------
-id
-review_execution_id
-project_id
-
-total_rule_count
-candidate_rule_count
-selected_rule_count
-
-embedding_duration_ms
-search_duration_ms
-
-created_at
+additional context pass
 ```
 
-Definitions:
+を挟みます。
+
+ただし3-turn reviewにはしません。
+
+あくまでTurn 1入力生成側で、
 
 ```text
-total_rule_count
-    Number of active project rules scanned.
-
-candidate_rule_count
-    Number of rules surviving similarity filtering.
-
-selected_rule_count
-    Number of rules actually supplied to the review prompt.
+Initial static context
+      ↓
+LLM
 ```
+
+ではなく、
+
+```text
+Static context builder
+      ↓
+rich enough context
+      ↓
+one LLM call
+```
+
+を目指します。
+
+理想はLLM呼び出し回数を増やさないことです。
 
 ---
 
-## Key Metric
+# Phase 12 — Benchmark corpusを増やす
 
-Track:
+3件だけでは最終判断できません。
+
+最低でもバグタイプ別に用意します。
 
 ```text
-Active Rule Count
-vs.
-Vector Search Duration
+indexing
+width/height swap
+argument reversal
+sign reversal
+lifetime
+null handling
+bounds
+error propagation
+resource cleanup
+locking
+iterator invalidation
+integer narrowing
+overflow
+API contract mismatch
 ```
 
-per project.
+各カテゴリ5〜10件くらい欲しいです。
 
-This will provide evidence for deciding whether SQLite full-table vector search remains sufficient or whether a dedicated index/vector solution is justified later.
+目標は例えば、
 
-Do not replace the existing implementation solely because the number of projects increases.
+```text
+50 seeded bugs
+```
 
-Optimize only when actual measurements show a meaningful bottleneck.
+程度。
+
+ここで初めて、
+
+```text
+thinking ON vs optimized thinking OFF
+```
+
+を判断します。
 
 ---
 
-# 10. Phase 7 — Track Rule Usage During Reviews
+# Phase 13 — Acceptance gate
 
-## Goal
+thinking offを本番採用する条件を先に決めておきます。
 
-Determine whether learned rules actually improve review output.
-
-Add:
+例えば、
 
 ```text
-review_rule_usage
---------------------------------
-id
-review_execution_id
-project_id
-rule_id
+Recall:
+>= thinking ON - 2%
 
-similarity_score
+False positive:
+<= thinking ON + 1 finding / 100 reviews
 
-used_in_prompt
-produced_candidate
-produced_final_finding
+Latency:
+<= 60% of thinking ON
 
-created_at
+Token cost:
+<= thinking ON
 ```
 
-This creates the following observable pipeline:
+などです。
+
+品質差が大きいなら、
 
 ```text
-Learned Rule
-     |
-     v
-Matched by Vector Search
-     |
-     v
-Included in Prompt
-     |
-     v
-Detection Candidate
-     |
-     v
-Selected Final Finding
+thinking ONを残す
 ```
+
+という判断でいいです。
+
+latencyのためにレビュー品質を落とす必要はありません。
 
 ---
 
-## Derived Rule Metrics
+# 実装順序
 
-### Candidate Hit Rate
-
-```text
-Produced Candidate
-/
-Used in Prompt
-```
-
-### Final Hit Rate
+実際にはこの順番が良いと思います。
 
 ```text
-Produced Final Finding
-/
-Used in Prompt
+1. old thinking-on / off benchmark固定
+
+2. thinking-off promptに
+   comparison checklistを追加
+
+3. diff marker強化
+
+4. confidence復活
+
+5. benchmark
+
+6. sibling implementation抽出
+
+7. benchmark
+
+8. changed-expression classification
+
+9. operation-specific review hints
+
+10. benchmark
+
+11. full changed file投入
+
+12. benchmark
+
+13. AST-selected related source追加
+
+14. benchmark
+
+15. corpus拡大
+
+16. production判定
 ```
 
-These metrics should be calculated per:
-
-* Rule.
-* Project.
-* Time period.
-
-This allows the system to identify rules that are frequently retrieved but rarely produce useful final findings.
+ポイントは**毎回1要素しか変えないこと**です。
 
 ---
 
-# 11. Phase 8 — Introduce a Statistics Service Layer
-
-## Goal
-
-Keep statistics SQL and aggregation logic out of controllers and review services.
-
-Introduce:
-
-```csharp
-IUsageRecorder
-```
-
-for write operations and:
-
-```csharp
-IStatisticsService
-```
-
-for reporting.
-
-Example:
-
-```csharp
-public interface IStatisticsService
-{
-    Task<OverviewStatistics> GetOverviewAsync(
-        long? projectId,
-        DateTimeOffset from,
-        DateTimeOffset to,
-        CancellationToken cancellationToken);
-
-    Task<ReviewStatistics> GetReviewStatisticsAsync(
-        long? projectId,
-        DateTimeOffset from,
-        DateTimeOffset to,
-        CancellationToken cancellationToken);
-
-    Task<RuleStatistics> GetRuleStatisticsAsync(
-        long? projectId,
-        DateTimeOffset from,
-        DateTimeOffset to,
-        CancellationToken cancellationToken);
-}
-```
-
-A null `projectId` can represent the all-project aggregate view.
-
----
-
-## Architecture
+# 最終的に狙う構成
 
 ```text
-Review Engine
-     |
-     v
-UsageRecorder
-     |
-     v
-SQLite
+GitLab MR
+   │
+   ▼
+Changed files
+   │
+   ├── diff markers
+   │
+   ├── changed-expression classifier
+   │
+   ├── sibling implementation finder
+   │
+   └── AST semantic index
+   │
+   ▼
+Context Builder
+   │
+   ├── full changed file
+   ├── related implementation
+   ├── tiny semantic hints
+   └── operation-specific checklist
+   │
+   ▼
+Turn 1
+OLD review logic
+thinking OFF
 
-
-ASP.NET Dashboard
-     |
-     v
-StatisticsService
-     |
-     v
-SQLite
+problem
+evidence
+impact
+suggested_fix
+confidence
+   │
+   ▼
+Turn 2
+existing validation /
+dedupe / severity /
+Japanese formatting
+   │
+   ▼
+GitLab Review
 ```
 
-The dashboard must never contain raw SQL.
+この構成なら、**thinkingそのものをpipelineで再実装しようとするのではなく、thinkingが見つけていた「比較対象」と「見るべき観点」をdeterministicに前処理する**ことになります。
 
----
+今回の結果から見ると、これが一番筋が良いです。
 
-# 12. Phase 9 — Add the ASP.NET Statistics Dashboard
+特に優先度を付けるなら、最初に試すべき3つは **① diff marker強化、② sibling implementation提示、③ order-sensitive operation hint** です。
 
-## Goal
-
-Provide a lightweight web UI for system usage and behavior.
-
-Razor Pages or MVC is sufficient initially.
-
-A separate SPA is not required.
-
-Recommended routes:
-
-```text
-/statistics
-/statistics/reviews
-/statistics/rules
-/statistics/projects
-```
-
----
-
-# 13. Phase 10 — Add Global and Project Filters
-
-## Goal
-
-Make multi-project usage understandable without creating separate dashboards for every repository.
-
-Add a shared filter:
-
-```text
-Project:
-[ All Projects v ]
-
-Period:
-[ Last 7 Days v ]
-```
-
-Possible project values:
-
-```text
-All Projects
-Project A
-Project B
-Project C
-```
-
-Every dashboard query should respect the selected project.
-
----
-
-# 14. Dashboard — Overview
-
-Route:
-
-```text
-/statistics
-```
-
-Show:
-
-```text
-Projects                  12
-Reviews                  842
-Merge Requests           731
-
-Input Tokens            28.4M
-Output Tokens            3.1M
-
-Average Review          12.4 sec
-Error Rate                0.8%
-
-Candidates               3,421
-Final Findings           1,287
-Selection Rate            37.6%
-```
-
-Charts:
-
-```text
-Reviews over time
-Tokens over time
-Average review latency
-Findings by severity
-```
-
----
-
-# 15. Dashboard — Reviews
-
-Route:
-
-```text
-/statistics/reviews
-```
-
-Focus on the two-stage review pipeline.
-
-Show:
-
-```text
-Detection
-
-Calls
-Average input tokens
-Average output tokens
-Average duration
-Average candidates
-```
-
-and:
-
-```text
-Selection
-
-Calls
-Average input tokens
-Average output tokens
-Average duration
-Average selected findings
-```
-
-Also show:
-
-```text
-Candidate -> Final Selection Rate
-```
-
-and severity distribution:
-
-```text
-Critical
-Major
-Minor
-```
-
----
-
-# 16. Dashboard — Learned Rules
-
-Route:
-
-```text
-/statistics/rules
-```
-
-Show:
-
-```text
-Active Learned Rules
-Rules Created
-Rules Expired
-
-Confidence Increases
-Confidence Decreases
-
-Average Rules Scanned
-Average Search Duration
-Average Candidate Rules
-Average Prompt Rules
-```
-
-Also provide a rule table:
-
-```text
-Rule
-Project
-Confidence
-Prompt Uses
-Candidates
-Final Findings
-Candidate Hit Rate
-Final Hit Rate
-```
-
-This page should become the primary observability surface for the learned-rule subsystem.
-
----
-
-# 17. Dashboard — Projects
-
-Route:
-
-```text
-/statistics/projects
-```
-
-Provide a cross-project comparison.
-
-Example:
-
-```text
-Project       Reviews   Tokens   Avg Time   Active Rules
---------------------------------------------------------
-Project A       210      8.2M      11.2s        184
-Project B       183      7.1M      15.8s        421
-Project C        89      2.4M       8.7s         52
-```
-
-Additional useful columns:
-
-```text
-Selection Rate
-Final Findings / Review
-Vector Search Duration
-Error Rate
-```
-
-This view is especially useful for detecting a single repository whose rule set or review workload behaves abnormally compared with the others.
-
----
-
-# 18. Phase 11 — Add Supporting SQLite Indexes
-
-## Goal
-
-Prevent statistics queries from degrading normal review performance as data accumulates.
-
-At minimum, evaluate indexes equivalent to:
-
-```text
-review_executions(project_id, started_at)
-
-review_turns(review_execution_id)
-
-rule_learning_events(project_id, created_at)
-
-rule_search_executions(project_id, created_at)
-
-review_rule_usage(project_id, rule_id)
-
-learned_rules(project_id)
-```
-
-Additional indexes should be added based on measured query plans, not preemptively.
-
----
-
-# 19. Phase 12 — Add Statistics Retention Policy
-
-## Goal
-
-Avoid uncontrolled growth of high-volume execution telemetry.
-
-Different data classes should have different retention behavior.
-
-Recommended approach:
-
-```text
-learned_rules
-    Active operational data.
-
-rule_learning_events
-    Long-lived historical data.
-
-review_executions
-    Long-lived aggregated execution history.
-
-review_turns
-    Medium/long-term usage history.
-
-review_rule_usage
-    Potentially high volume.
-
-rule_search_executions
-    Potentially high volume.
-```
-
-Initially, retain everything.
-
-Add retention only after actual storage growth is measured.
-
-If necessary, older detailed telemetry can later be aggregated into daily statistics.
-
----
-
-# 20. Phase 13 — Optional Daily Aggregation
-
-Do not implement this in the first version unless dashboard queries become slow.
-
-Possible future table:
-
-```text
-daily_project_statistics
---------------------------------
-date
-project_id
-
-review_count
-
-detection_input_tokens
-detection_output_tokens
-
-selection_input_tokens
-selection_output_tokens
-
-candidate_count
-selected_count
-
-critical_count
-major_count
-minor_count
-
-average_review_duration_ms
-
-rule_search_count
-average_rule_search_duration_ms
-```
-
-This can reduce dashboard aggregation cost while retaining raw data for a configurable period.
-
----
-
-# 21. Phase 14 — Future Review Quality Feedback
-
-This phase should remain optional until the SCM integration can reliably determine user reactions to review findings.
-
-Potential signals:
-
-```text
-AI finding accepted
-AI finding rejected
-AI suggestion applied
-AI comment resolved
-```
-
-This could eventually extend:
-
-```text
-review_rule_usage
-```
-
-with outcome information and enable stronger rule-quality metrics.
-
-For example:
-
-```text
-Rule Retrieved
-    |
-    v
-Candidate Produced
-    |
-    v
-Final Finding
-    |
-    v
-Accepted / Rejected
-```
-
-This should not block the initial statistics implementation.
-
----
-
-# 22. Recommended Implementation Order
-
-Implement in this order:
-
-```text
-Phase 1
-Project entity and project scoping
-
-        ↓
-
-Phase 2
-ReviewExecution
-
-        ↓
-
-Phase 3
-ReviewTurn
-
-        ↓
-
-Phase 4
-RuleLearningEvent
-
-        ↓
-
-Phase 5
-Project-scoped learned-rule vector search
-
-        ↓
-
-Phase 6
-RuleSearchExecution
-
-        ↓
-
-Phase 7
-ReviewRuleUsage
-
-        ↓
-
-Phase 8
-StatisticsService / UsageRecorder
-
-        ↓
-
-Phase 9
-ASP.NET statistics pages
-
-        ↓
-
-Phase 10
-Global / per-project filtering
-
-        ↓
-
-Phase 11
-SQLite indexing
-
-        ↓
-
-Phase 12+
-Retention and optional aggregation
-```
-
----
-
-# 23. Recommended Initial Scope
-
-The first production-ready version should stop after Phase 11.
-
-It should provide:
-
-* Multi-project isolation.
-* Global and project-specific statistics.
-* Review count.
-* Model/token usage.
-* Detection vs Selection statistics.
-* Severity statistics.
-* Candidate-to-final selection rate.
-* Learned-rule lifecycle history.
-* Active learned-rule count.
-* Vector-search latency.
-* Number of scanned rules.
-* Rule prompt usage.
-* Rule candidate hit rate.
-* Rule final hit rate.
-* ASP.NET dashboard.
-* SQLite indexes for the main reporting queries.
-
-Do not initially add:
-
-* External telemetry systems.
-* Dedicated time-series databases.
-* Dedicated vector databases.
-* Distributed tracing infrastructure.
-* Complex data warehouses.
-* Automatic model-quality scoring.
-* Cross-project learned-rule sharing.
-
-The existing ASP.NET + SQLite architecture should remain sufficient until actual measurements indicate otherwise.
-
----
-
-# 24. Target Architecture
-
-```text
-                         +----------------------+
-                         |       Projects       |
-                         +----------+-----------+
-                                    |
-                    +---------------+---------------+
-                    |                               |
-                    v                               v
-           Review Pipeline                  Learned Rule Pipeline
-                    |                               |
-                    v                               v
-           ReviewExecution                   learned_rules
-             /          \                         |
-            v            v                        v
-       Detection      Selection            RuleLearningEvent
-            |
-            v
-      Rule Search
-            |
-            +------------------+
-            |                  |
-            v                  v
-   RuleSearchExecution   ReviewRuleUsage
-
-
-                    SQLite
-                       |
-                       v
-               StatisticsService
-                       |
-                       v
-                ASP.NET Dashboard
-                       |
-          +------------+-------------+
-          |            |             |
-          v            v             v
-       Overview      Reviews        Rules
-          |
-          v
-       Projects
-```
-
-The key architectural rule is:
-
-**Every operational and statistical record must be explicitly associated with a project whenever the underlying operation is project-specific.**
-
-This keeps multi-project support predictable, prevents learned-rule leakage between repositories, and allows the same telemetry to serve both per-project debugging and system-wide monitoring.
+`Environment::sample` と `renderSphere` はthinking offでも既に取れているので、当面の勝負は **`cross(T, normal)` をthinkingなしで安定して拾わせられるか** です。そこが取れたら、かなり有望です。
