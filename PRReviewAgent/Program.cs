@@ -158,9 +158,9 @@ namespace PRReviewAgent
             }
 
             // Determine database path (used by both status comment services and auto-improve).
-            string reviewDbPath = "AppData/review_rules.db";
+            string reviewDbPath = "AppData/review.db";
             Tomlyn.Model.TomlTable? autoImproveSection = null;
-            if (Context.Instance.Settings.Config.TryGetValue("auto_improve", out object? aiCfgObj)
+            if (Context.Instance.Settings.Config.TryGetValue("common", out object? aiCfgObj)
                 && aiCfgObj is Tomlyn.Model.TomlTable aiCfgTbl)
             {
                 autoImproveSection = aiCfgTbl;

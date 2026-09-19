@@ -19,7 +19,8 @@ namespace PRReviewAgent.Services.Verification
             long? executionId,
             string model,
             ILogger logger,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            SemaphoreSlim? globalSemaphore = null)
         {
             // Build order map: candidate_id -> slot index
             var orderMap = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -36,7 +37,7 @@ namespace PRReviewAgent.Services.Verification
 
             VerifiedIssue?[] resultSlots = new VerifiedIssue?[orderMap.Count];
 
-            SemaphoreSlim sem = new SemaphoreSlim(Math.Max(1, budget.MaxConcurrentBatches));
+            SemaphoreSlim sem = globalSemaphore ?? new SemaphoreSlim(Math.Max(1, budget.MaxConcurrentBatches));
 
             var metrics = new VerificationExecutorMetrics
             {

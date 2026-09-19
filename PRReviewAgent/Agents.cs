@@ -424,6 +424,32 @@ namespace PRReviewAgent
                 Context.Instance.Log(LogLevel.Information, $"input tokens:{inputTokens} output tokens:{outputTokens}");
             }
             catch { }
+#if DEBUG
+            try
+            {
+                string jsonText = response.GetRawResponse().Content.ToString();
+                using (JsonDocument doc = JsonDocument.Parse(response.GetRawResponse().Content))
+                {
+                    JsonElement root = doc.RootElement;
+                    if (root.TryGetProperty("choices", out JsonElement choices) && choices.GetArrayLength() > 0)
+                    {
+                        if (choices[0].TryGetProperty("message", out JsonElement message))
+                        {
+                            if (message.TryGetProperty("reasoning_content", out JsonElement reasoningElement))
+                            {
+                                string reasoningContent = reasoningElement.GetString() ?? string.Empty;
+                                if (!string.IsNullOrEmpty(reasoningContent))
+                                {
+                                    Context.Instance.Log(LogLevel.Information, reasoningContent);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+#endif
+
             if (response.Value.Content.Count <= 0) return (null, inputTokens, outputTokens);
             try
             {

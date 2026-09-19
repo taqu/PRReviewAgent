@@ -346,6 +346,11 @@ namespace PRReviewAgent.Services
             }
 
             PRReviewAgent.Prompt.Turn1.ReviewBudgetConfig budget = Context.Instance.Settings.GetReviewBudgetConfig();
+            PRReviewAgent.Services.Verification.AdaptiveVerificationConfig adaptiveConfig = Context.Instance.Settings.GetAdaptiveVerificationConfig();
+            int globalMaxConcurrent = adaptiveConfig.Policy == PRReviewAgent.Services.Verification.VerificationPolicy.Adaptive
+                ? adaptiveConfig.HardMaxConcurrentBatches
+                : budget.MaxConcurrentBatches;
+            System.Threading.SemaphoreSlim globalVerificationSem = new System.Threading.SemaphoreSlim(Math.Max(1, globalMaxConcurrent));
             List<string> reviews = new List<string>();
             int totalCandidates = 0, totalSelected = 0;
             logger.LogInformation($"Generating reviews for {reviewRequest.FileGroups.Count} file groups.");
@@ -453,22 +458,65 @@ namespace PRReviewAgent.Services
                         int fileGroupCandidates = issuesResponse.issues.Length;
                         totalCandidates += fileGroupCandidates;
 
-                        // Verification: build batches and execute with bounded parallelism
+                        // Phase 8: Context resolution + adaptive planning + batched verification
+                        List<PRReviewAgent.Services.Verification.VerificationBatchItem> workItems = new();
+                        foreach (CandidateIssue candidate in candidatesForVerification)
+                        {
+                            PRReviewAgent.Prompt.VerificationContext vCtx = new PRReviewAgent.Prompt.VerificationContextResolver().Resolve(candidate, fileGroup.ReviewContexts, budget, logger);
+                            if (vCtx.Items.Count == 0)
+                            {
+                                logger.LogWarning("Skipping candidate {Id}: no context resolved (NoContext)", candidate.candidate_id ?? "?");
+                                continue;
+                            }
+                            workItems.Add(new PRReviewAgent.Services.Verification.VerificationBatchItem { Candidate = candidate, Context = vCtx });
+                        }
+
+                        int planMaxCandidates = budget.MaxCandidatesPerBatch;
+                        int planMaxChars = budget.MaxBatchInputChars;
+
+                        if (adaptiveConfig.Policy == PRReviewAgent.Services.Verification.VerificationPolicy.Adaptive && workItems.Count > 0)
+                        {
+                            try
+                            {
+                                PRReviewAgent.Services.Verification.ReviewWorkloadProfile profile =
+                                    PRReviewAgent.Services.Verification.ReviewWorkloadProfileBuilder.Build(workItems);
+                                PRReviewAgent.Services.Verification.VerificationExecutionPlan activePlan =
+                                    PRReviewAgent.Services.Verification.VerificationExecutionPlanner.Plan(profile, adaptiveConfig, budget, logger);
+                                logger.LogInformation(
+                                    "VerificationPlan: mode={Mode} candidates={Candidates} estimated_chars={Chars} avg_chars={Avg} max_chars={Max} batch_size={BatchSize} concurrency={Concurrency} reason={Reason}",
+                                    activePlan.Mode, profile.CandidateCount, profile.EstimatedVerificationCharsTotal,
+                                    profile.EstimatedVerificationCharsAverage, profile.EstimatedVerificationCharsMax,
+                                    activePlan.MaxCandidatesPerBatch, activePlan.MaxConcurrentBatches, activePlan.Reason);
+                                if (activePlan.Mode == PRReviewAgent.Services.Verification.VerificationExecutionMode.NoOp)
+                                {
+                                    PromptBuilder.AddNotFound(fileGroup, reviews, language_, stringBuilder_);
+                                    continue;
+                                }
+                                planMaxCandidates = activePlan.MaxCandidatesPerBatch;
+                                planMaxChars = activePlan.MaxBatchInputChars;
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogError(ex, "VerificationExecutionPlanner failed; falling back to fixed mode.");
+                            }
+                        }
+
                         string groupId = fileGroup.Topic.Replace('/', '-').Replace(' ', '_');
                         IReadOnlyList<PRReviewAgent.Services.Verification.VerificationBatch> verBatches =
-                            PRReviewAgent.Services.Verification.VerificationBatchBuilder.Build(
-                                candidatesForVerification, fileGroup.ReviewContexts, budget, groupId, logger);
+                            PRReviewAgent.Services.Verification.VerificationBatchBuilder.BuildFromResolved(
+                                workItems, planMaxCandidates, planMaxChars, groupId);
+
                         logger.LogInformation(
-                            "Verification batches: group={Group} candidates={Candidates} batches={Batches} maxBatch={MaxBatch} maxConcurrent={MaxConcurrent}",
-                            fileGroup.Topic, candidatesForVerification.Length, verBatches.Count,
-                            budget.MaxCandidatesPerBatch, budget.MaxConcurrentBatches);
+                            "Verification batches: group={Group} candidates={Candidates} batches={Batches} maxBatch={MaxBatch} concurrency={Concurrency}",
+                            fileGroup.Topic, workItems.Count, verBatches.Count, planMaxCandidates, globalMaxConcurrent);
 
                         Func<string, CancellationToken, Task<(PRReviewAgent.Prompt.VerifiedResponse?, int?, int?)>> verLlmCall =
                             (prompt, ct) => context.Agents.RunJsonWithUsageAsync<PRReviewAgent.Prompt.VerifiedResponse>(prompt, ct);
 
                         var (verResults, verMetrics) = await PRReviewAgent.Services.Verification.VerificationExecutor.ExecuteAsync(
                             reviewRequest, verBatches, verLlmCall, budget,
-                            turnRecorder, executionId, context.Agents.Model, logger, cancellationToken);
+                            turnRecorder, executionId, context.Agents.Model, logger, cancellationToken,
+                            globalSemaphore: globalVerificationSem);
 
                         logger.LogInformation(
                             "VerificationMetrics: batches={Batches} success={Success} failed={Failed} retries={Retries} splits={Splits} singleFallback={Single} wallMs={WallMs} totalBatchMs={TotalMs}",
@@ -476,7 +524,7 @@ namespace PRReviewAgent.Services
                             verMetrics.BatchRetryCount, verMetrics.BatchSplitCount, verMetrics.SingleCandidateFallbackCount,
                             verMetrics.WallClockMs, verMetrics.TotalBatchDurationMs);
 
-                        List<VerifiedIssue> verifiedIssues = new List<VerifiedIssue>();
+                        List<VerifiedIssue> verifiedIssues = new();
                         foreach (VerifiedIssue vi in verResults)
                         {
                             if (!vi.valid) continue;

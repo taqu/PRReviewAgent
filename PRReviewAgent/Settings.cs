@@ -416,6 +416,46 @@ namespace PRReviewAgent
             };
         }
 
+        public PRReviewAgent.Services.Verification.AdaptiveVerificationConfig GetAdaptiveVerificationConfig()
+        {
+            var policy = PRReviewAgent.Services.Verification.VerificationPolicy.Fixed;
+            int hardMaxBatch = 8, hardMaxConcurrent = 4;
+            int smallCount = 3, smallChars = 24_000, largeChars = 16_000;
+            int prefSmallBatch = 2, prefMedBatch = 2, prefConcurrency = 2;
+
+            if (config_ != null
+                && config_.TryGetValue("review", out object? reviewObj)
+                && reviewObj is Tomlyn.Model.TomlTable reviewTable
+                && reviewTable.TryGetValue("adaptive", out object? adaptObj)
+                && adaptObj is Tomlyn.Model.TomlTable adaptTable)
+            {
+                if (adaptTable.TryGetValue("policy", out object? policyVal) && policyVal is string policyStr
+                    && System.Enum.TryParse<PRReviewAgent.Services.Verification.VerificationPolicy>(policyStr, true, out var parsedPolicy))
+                    policy = parsedPolicy;
+                hardMaxBatch = GetIntSetting(adaptTable, "hard_max_candidates_per_batch", hardMaxBatch);
+                hardMaxConcurrent = GetIntSetting(adaptTable, "hard_max_concurrent_batches", hardMaxConcurrent);
+                smallCount = GetIntSetting(adaptTable, "small_candidate_count_threshold", smallCount);
+                smallChars = GetIntSetting(adaptTable, "small_total_chars_threshold", smallChars);
+                largeChars = GetIntSetting(adaptTable, "large_candidate_chars_threshold", largeChars);
+                prefSmallBatch = GetIntSetting(adaptTable, "preferred_small_batch_size", prefSmallBatch);
+                prefMedBatch = GetIntSetting(adaptTable, "preferred_medium_batch_size", prefMedBatch);
+                prefConcurrency = GetIntSetting(adaptTable, "preferred_concurrency", prefConcurrency);
+            }
+
+            return new PRReviewAgent.Services.Verification.AdaptiveVerificationConfig
+            {
+                Policy = policy,
+                HardMaxCandidatesPerBatch = Math.Max(1, hardMaxBatch),
+                HardMaxConcurrentBatches = Math.Max(1, hardMaxConcurrent),
+                SmallCandidateCountThreshold = Math.Max(1, smallCount),
+                SmallTotalCharsThreshold = Math.Max(1, smallChars),
+                LargeCandidateCharsThreshold = Math.Max(1, largeChars),
+                PreferredSmallBatchSize = Math.Max(1, prefSmallBatch),
+                PreferredMediumBatchSize = Math.Max(1, prefMedBatch),
+                PreferredConcurrency = Math.Max(1, prefConcurrency),
+            };
+        }
+
         private static int GetIntSetting(Tomlyn.Model.TomlTable table, string key, int defaultValue)
         {
             if (table.TryGetValue(key, out object? val) && val is long l) return (int)l;

@@ -31,9 +31,16 @@ namespace PRReviewAgent.Services.Verification
             return BuildFromResolved(items, budget, groupId);
         }
 
-        internal static IReadOnlyList<VerificationBatch> BuildFromResolved(
+        public static IReadOnlyList<VerificationBatch> BuildFromResolved(
             IReadOnlyList<VerificationBatchItem> items,
             ReviewBudgetConfig budget,
+            string groupId)
+            => BuildFromResolved(items, budget.MaxCandidatesPerBatch, budget.MaxBatchInputChars, groupId);
+
+        public static IReadOnlyList<VerificationBatch> BuildFromResolved(
+            IReadOnlyList<VerificationBatchItem> items,
+            int maxCandidatesPerBatch,
+            int maxBatchInputChars,
             string groupId)
         {
             var batches = new List<VerificationBatch>();
@@ -62,7 +69,7 @@ namespace PRReviewAgent.Services.Verification
                 int itemChars = item.EstimatedChars;
 
                 // Single item exceeds char budget — emit as oversized single-item batch
-                if (current.Count == 0 && itemChars > budget.MaxBatchInputChars)
+                if (current.Count == 0 && itemChars > maxBatchInputChars)
                 {
                     current.Add(item);
                     FlushBatch(isOversized: true);
@@ -70,8 +77,8 @@ namespace PRReviewAgent.Services.Verification
                 }
 
                 // Would exceed candidate or char limit — flush first
-                bool exceedsCandidateLimit = current.Count >= budget.MaxCandidatesPerBatch;
-                bool exceedsCharLimit = current.Count > 0 && (currentChars + itemChars > budget.MaxBatchInputChars);
+                bool exceedsCandidateLimit = current.Count >= maxCandidatesPerBatch;
+                bool exceedsCharLimit = current.Count > 0 && (currentChars + itemChars > maxBatchInputChars);
 
                 if (exceedsCandidateLimit || exceedsCharLimit)
                 {
