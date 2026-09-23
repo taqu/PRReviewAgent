@@ -290,6 +290,17 @@ namespace PRReviewAgent.Services
                 catch (Exception ex) { logger.LogError(ex, "Failed to start review execution record"); }
             }
 
+            BenchmarkRunRecorder? benchmarkRecorder = null;
+            try
+            {
+                benchmarkRecorder = BenchmarkRunRecorder.Start(
+                    Path.Combine(AppContext.BaseDirectory, "benchmark-logs"),
+                    reviewStartedAt, logger,
+                    mergeRequestId: mergeRequestId,
+                    model: context.Agents.Model);
+            }
+            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to start recorder"); }
+
             // Retrieve learned rules via RAG and attach to request (after execution start so executionId is available).
             RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
             RuleLifecycleService? ruleLifecycleService = serviceProvider.GetService<RuleLifecycleService>();
@@ -394,6 +405,12 @@ namespace PRReviewAgent.Services
                             }
                         }
 
+                        if (benchmarkRecorder != null && issuesResponse != null)
+                        {
+                            try { await benchmarkRecorder.RecordTurn1Async(fileGroup.Topic, issuesResponse, detectionSw.ElapsedMilliseconds, detInputTokens, detOutputTokens); }
+                            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record turn1"); }
+                        }
+
                         if (null == issuesResponse || issuesResponse.issues.Length <= 0)
                         {
                             logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
@@ -478,6 +495,12 @@ namespace PRReviewAgent.Services
                             }
                         }
 
+                        if (benchmarkRecorder != null && !string.IsNullOrEmpty(reviewResponse))
+                        {
+                            try { await benchmarkRecorder.RecordTurn2Async(fileGroup.Topic, reviewResponse, selectionSw.ElapsedMilliseconds, selInputTokens, selOutputTokens); }
+                            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record turn2"); }
+                        }
+
                         if (string.IsNullOrEmpty(reviewResponse))
                         {
                             logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
@@ -532,6 +555,12 @@ namespace PRReviewAgent.Services
                     }
                     catch (Exception ex) { logger.LogError(ex, "Failed to complete review execution record"); }
                 }
+
+                if (benchmarkRecorder != null)
+                {
+                    try { await benchmarkRecorder.CompleteAsync(DateTimeOffset.UtcNow, reviewStopwatch.ElapsedMilliseconds); }
+                    catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to complete"); }
+                }
             }
             catch (Exception ex)
             {
@@ -544,6 +573,11 @@ namespace PRReviewAgent.Services
                         await recorder.CompleteFailureAsync(executionId.Value, ex.GetType().Name, DateTimeOffset.UtcNow, reviewStopwatch.ElapsedMilliseconds, cancellationToken);
                     }
                     catch (Exception rex) { logger.LogError(rex, "Failed to record review execution failure"); }
+                }
+                if (benchmarkRecorder != null)
+                {
+                    try { await benchmarkRecorder.MarkFailedAsync("failed", DateTimeOffset.UtcNow); }
+                    catch (Exception rex) { logger.LogWarning(rex, "Benchmark: failed to mark failed"); }
                 }
                 if (statusService != null && statusProvider != null)
                 {

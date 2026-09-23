@@ -7,3 +7,5 @@ publish/
 
 config.toml
 secrets.toml
+
+benchmark-logs/
