@@ -9,6 +9,7 @@ using PRReviewAgent.Services.ReviewStatus;
 using PRReviewAgent.Services.Statistics;
 using PRReviewAget.Prompt;
 using PRReviewAgent.Services.AutoReview;
+using PRReviewAgent.Services.Grouping;
 using System;
 using System.Diagnostics;
 using System.Text;
@@ -255,7 +256,7 @@ namespace PRReviewAgent.Services
                 }
             }
 
-            // Step 6: Build file groups deterministically by base filename.
+            // Step 6: Build semantic file groups.
             logger.LogInformation($"Building file groups for {reviewContexts.Count} files.");
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = gitLabMrNoteWebhook_.MergeRequest.Title ?? string.Empty;
@@ -263,18 +264,9 @@ namespace PRReviewAgent.Services
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
-            Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
-            foreach (ReviewContext reviewContext in reviewContexts)
-            {
-                string baseName = Path.GetFileNameWithoutExtension(reviewContext.Path);
-                if (!groups.TryGetValue(baseName, out FileGroup? group))
-                {
-                    group = new FileGroup { Topic = baseName };
-                    groups[baseName] = group;
-                    reviewRequest.FileGroups.Add(group);
-                }
-                group.ReviewContexts.Add(reviewContext);
-            }
+            GroupingConfig groupingConfig = Context.Instance.Settings.GetGroupingConfig();
+            foreach (FileGroup fg in SemanticReviewGroupBuilder.Build(reviewContexts, groupingConfig, logger))
+                reviewRequest.FileGroups.Add(fg);
 
             // Step 7: Execute 2 turn review for each file group.
             IReviewExecutionRecorder? recorder = serviceProvider.GetService<IReviewExecutionRecorder>();
@@ -298,6 +290,8 @@ namespace PRReviewAgent.Services
                     reviewStartedAt, logger,
                     mergeRequestId: mergeRequestId,
                     model: context.Agents.Model);
+                if (benchmarkRecorder != null)
+                    await benchmarkRecorder.RecordGroupsAsync(reviewRequest.FileGroups);
             }
             catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to start recorder"); }
 

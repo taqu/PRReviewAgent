@@ -63,6 +63,27 @@ internal sealed class BenchmarkRunRecorder
         return recorder;
     }
 
+    public async Task RecordGroupsAsync(IReadOnlyList<FileGroup> groups)
+    {
+        try
+        {
+            string path = Path.Combine(runDir_, "groups.json");
+            var data = groups.Select((g, i) => new
+            {
+                group_id = $"g{i}",
+                topic = g.Topic,
+                files = g.ReviewContexts.Select(rc => rc.Path).ToArray(),
+                file_count = g.ReviewContexts.Count,
+                reasons = g.GroupingReasons.ToArray(),
+            }).ToArray();
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new { groups = data }, JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            logger_.LogWarning(ex, "Benchmark: failed to write groups.json");
+        }
+    }
+
     public async Task RecordTurn1Async(string topic, IssuesResponse issuesResponse,
         long durationMs, int? inputTokens, int? outputTokens)
     {

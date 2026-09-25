@@ -1,662 +1,422 @@
-# Task: Add Temporary File-Based Benchmark Logging for Review Runs
+# Task: Use Per-File Review Groups for Non-C/C++ Files
 
 ## Objective
 
-Add temporary benchmark logging to the existing code review pipeline so repeated `thinking off` and `thinking on` benchmark runs can be compared without manually collecting results.
+Restrict semantic multi-file grouping to C and C++ sources.
 
-This is an experimental instrumentation change.
+For all non-C/C++ languages, use simple per-file review grouping:
 
-Do not redesign the review pipeline.
+```text
+one changed file = one review group
+```
 
-Do not change review prompts, review behavior, candidate selection, or model configuration.
-
-The application cannot determine whether the model is running with thinking enabled or disabled, so **do not attempt to detect or infer the thinking mode**.
-
-Instead, assign every review execution a unique `review_run_id` based primarily on the review start timestamp.
+This change should keep the grouping behavior predictable and prevent Phase 1 from expanding into generic cross-file semantic grouping for every supported language.
 
 ---
 
-# Requirements
+## Required Behavior
 
-## 1. Generate a Review Run ID at Review Start
+### C / C++
 
-Generate one ID when the complete review begins.
+C and C++ files may continue to use semantic grouping.
 
-Use UTC time and include milliseconds.
-
-Recommended format:
+Examples include:
 
 ```text
-yyyyMMdd_HHmmss_fff
+.c
+.cc
+.cpp
+.cxx
+.h
+.hh
+.hpp
+.hxx
 ```
+
+C/C++ grouping may combine related changed files based on the Phase 1 grouping logic, such as:
+
+```text
+header/source relationships
+same containing class or struct
+direct relationships between changed symbols
+```
+
+Do not change or weaken the intended C/C++ semantic grouping behavior as part of this task.
+
+---
+
+### All Other Languages
+
+For every non-C/C++ file:
+
+```text
+one changed file = one review group
+```
+
+Examples:
+
+```text
+foo.py      -> its own review group
+Foo.cs      -> its own review group
+Foo.java    -> its own review group
+foo.rs      -> its own review group
+foo.ts      -> its own review group
+foo.go      -> its own review group
+```
+
+Do not combine non-C/C++ files based on:
+
+```text
+same directory
+same module
+same class name
+shared callees
+shared imports
+similar filenames
+semantic relationships
+```
+
+in this phase.
+
+---
+
+## Mixed-Language Changes
+
+If a merge request contains both C/C++ and other languages, handle them independently.
 
 Example:
 
 ```text
-20260920_015843_217
+include/foo.h
+src/foo.cpp
+scripts/build.py
+tools/check.py
 ```
 
-To avoid accidental collisions if multiple reviews start within the same millisecond, append a short uniqueness suffix.
-
-For example:
+Expected grouping:
 
 ```text
-20260920_015843_217_4f2a
+Group 1:
+  include/foo.h
+  src/foo.cpp
+
+Group 2:
+  scripts/build.py
+
+Group 3:
+  tools/check.py
 ```
 
-The exact suffix implementation can be:
-
-- a short random hexadecimal value,
-- a short GUID prefix,
-- or another simple process-local collision-safe value.
-
-Prefer a compact ID that remains readable and naturally sortable by start time.
-
-Example:
-
-```text
-20260920_015843_217_a83f
-```
-
-Create this ID exactly once per review and pass/reuse it for all Turn 1, Turn 2, and final logging associated with that review.
-
-Do not generate a new run ID for each turn.
+Non-C/C++ files must not be merged into a C/C++ semantic group merely because they are in the same directory or reference related concepts.
 
 ---
 
-# 2. Do Not Encode Thinking Mode in the Run ID
+## Language Classification
 
-The application does not know whether the external model is configured with thinking enabled or disabled.
+Use the existing language/file-type detection mechanism if one already exists.
 
-Therefore, do not add fields such as:
+Do not introduce a new parser or large language-classification subsystem for this change.
 
-```text
-thinking_on
-thinking_off
-reasoning_mode
-```
+If grouping is currently based on file extensions, keep the implementation simple and deterministic.
 
-unless that information is already explicitly available from the existing application configuration.
+C/C++ extensions should be recognized consistently with the rest of the codebase.
 
-Do not guess it from:
-
-- latency,
-- token count,
-- model response,
-- model name,
-- output structure,
-- or any other indirect signal.
-
-The benchmark operator will associate run IDs with thinking mode externally.
+Avoid broad assumptions such as treating every header-like file as C++ unless that is already the project's convention.
 
 ---
 
-# 3. Write Benchmark Logs to Files
+## Preserve Existing Review Pipeline
 
-Create a temporary benchmark log directory.
-
-For example:
+Do not modify:
 
 ```text
-benchmark-logs/
-```
-
-Create one directory per review run:
-
-```text
-benchmark-logs/
-└── 20260920_015843_217_a83f/
-```
-
-Store all data belonging to that review under the same directory.
-
-Recommended layout:
-
-```text
-benchmark-logs/
-└── 20260920_015843_217_a83f/
-    ├── summary.json
-    ├── turn1.json
-    ├── turn2.txt
-    └── metadata.json
-```
-
-If the current architecture has structured Turn 2 output available before rendering, JSON may be used instead of text.
-
-Do not introduce complicated persistence infrastructure.
-
-Plain files are sufficient.
-
----
-
-# 4. Write Review Metadata
-
-Write basic run metadata to:
-
-```text
-metadata.json
-```
-
-Include at least:
-
-```json
-{
-  "review_run_id": "20260920_015843_217_a83f",
-  "started_at_utc": "2026-09-19T16:58:43.217Z",
-  "completed_at_utc": "2026-09-19T16:58:51.842Z"
-}
-```
-
-If already available without additional architectural changes, also include useful identifiers such as:
-
-```text
-repository
-merge request ID
-commit SHA
-file group/topic
-model name
-```
-
-Do not add expensive lookups just for benchmark metadata.
-
-Only record information already available in the review execution path.
-
----
-
-# 5. Record Existing Turn Timing Information
-
-Turn-level inference timing is already measured by the application.
-
-Reuse the existing measurements.
-
-Do not add a second independent timing implementation unless necessary.
-
-Record at least:
-
-```text
-turn1 duration
-turn2 duration
-total review duration
-```
-
-Use milliseconds as the serialized unit.
-
-Example:
-
-```json
-{
-  "turn1_duration_ms": 4218,
-  "turn2_duration_ms": 1634,
-  "total_duration_ms": 6027
-}
-```
-
-If existing metrics distinguish model inference time from prompt construction or other processing time, preserve those values as separate fields where convenient.
-
-Do not change the existing timing semantics.
-
----
-
-# 6. Record Turn 1 Output Exactly Enough for Benchmarking
-
-Save the Turn 1 result before Turn 2 modifies, filters, or formats it.
-
-The benchmark must make it possible to inspect:
-
-```text
-number of Turn 1 candidates
-candidate locations
-problem
-evidence
-impact
-suggested_fix
-confidence
-```
-
-If Turn 1 already deserializes into the existing `IssuesResponse`, serialize that object directly where practical.
-
-Example:
-
-```text
-turn1.json
-```
-
-```json
-{
-  "issues": [
-    {
-      "location": "renderer.cpp: traceMesh",
-      "problem": "...",
-      "evidence": "...",
-      "impact": "...",
-      "suggested_fix": "...",
-      "confidence": "high"
-    }
-  ]
-}
-```
-
-Do not transform or normalize the candidate content solely for logging.
-
-The logged output should reflect what Turn 1 actually returned.
-
----
-
-# 7. Record Turn 2 Final Output
-
-Save the Turn 2 result as well.
-
-If Turn 2 produces final review text, save the exact generated review text:
-
-```text
-turn2.txt
-```
-
-If Turn 2 also has a useful structured representation already available, it may additionally be serialized.
-
-Do not change Turn 2 output behavior for the sake of logging.
-
-The purpose is only to capture what the existing pipeline produced.
-
----
-
-# 8. Create a Machine-Friendly Summary
-
-Create:
-
-```text
-summary.json
-```
-
-This should contain the fields useful for later automated aggregation.
-
-Suggested structure:
-
-```json
-{
-  "review_run_id": "20260920_015843_217_a83f",
-  "started_at_utc": "2026-09-19T16:58:43.217Z",
-
-  "turn1": {
-    "duration_ms": 4218,
-    "candidate_count": 8,
-    "input_tokens": 12345,
-    "output_tokens": 1834
-  },
-
-  "turn2": {
-    "duration_ms": 1634,
-    "input_tokens": 2941,
-    "output_tokens": 811
-  },
-
-  "overall": {
-    "duration_ms": 6027,
-    "input_tokens": 15286,
-    "output_tokens": 2645
-  }
-}
-```
-
-Only include token fields that are already available from the model/API response.
-
-Do not invent estimates if exact token usage is unavailable.
-
-If some token information is unavailable, omit it or serialize it as `null`.
-
----
-
-# 9. Candidate Count Must Be Recorded
-
-Turn 1 currently has:
-
-```text
-Maximum 10 candidates
-```
-
-Record the actual number of returned candidates.
-
-Example:
-
-```json
-"candidate_count": 7
-```
-
-This is important for determining whether a benchmark run:
-
-- found only a subset of the seeded bugs,
-- reached the 10-candidate cap,
-- or produced extra false-positive candidates.
-
-Do not infer correctness in the application.
-
-The logger only records outputs.
-
----
-
-# 10. Do Not Automatically Score Bugs
-
-Do not add hard-coded knowledge of the intentionally seeded bugs.
-
-Do not implement:
-
-```text
-true positive detection
-false positive detection
-false negative detection
-bug location matching
-benchmark scoring
-```
-
-in this change.
-
-This instrumentation should remain generic enough to log any review execution.
-
-Scoring can be performed later from the generated files.
-
----
-
-# 11. Prefer One Run Directory Over One Global Append-Only Log
-
-Prefer:
-
-```text
-benchmark-logs/<review_run_id>/
-```
-
-over a single large log file.
-
-Reasons:
-
-- individual runs are easy to inspect,
-- Turn 1 and Turn 2 outputs remain intact,
-- failed/incomplete runs can be identified,
-- runs can be copied or deleted independently,
-- later aggregation scripts can simply enumerate directories.
-
-A global index file is not required.
-
----
-
-# 12. Handle Failed or Partial Reviews
-
-Logging must not break the review.
-
-Benchmark logging is secondary to the actual review execution.
-
-If logging fails:
-
-- log a warning using the existing application logger,
-- continue the review where possible.
-
-If Turn 1 succeeds but Turn 2 fails, preserve the Turn 1 files.
-
-The metadata/summary should make an incomplete run identifiable if practical.
-
-For example:
-
-```json
-{
-  "status": "turn2_failed"
-}
-```
-
-Possible simple statuses:
-
-```text
-running
-completed
-turn1_failed
-turn2_failed
-failed
-```
-
-Do not add a complex state machine.
-
----
-
-# 13. Create the Run Directory Early
-
-Create the run ID and benchmark directory near the start of the review, before Turn 1 inference begins.
-
-This ensures that even interrupted reviews can leave useful diagnostic data.
-
-Suggested flow:
-
-```text
-Review starts
-    ↓
-Generate review_run_id
-    ↓
-Create benchmark run directory
-    ↓
-Record initial metadata
-    ↓
-Turn 1
-    ↓
-Write Turn 1 result + metrics
-    ↓
-Turn 2
-    ↓
-Write Turn 2 result + metrics
-    ↓
-Write final summary / completion metadata
-```
-
----
-
-# 14. Keep Instrumentation Separate From Review Logic
-
-Avoid scattering direct file writes throughout review logic.
-
-Prefer a small helper such as:
-
-```csharp
-BenchmarkRunRecorder
-```
-
-or similarly named temporary component.
-
-Possible API:
-
-```csharp
-var recorder = BenchmarkRunRecorder.Start(...);
-
-recorder.RecordTurn1(...);
-recorder.RecordTurn2(...);
-recorder.Complete(...);
-```
-
-The exact design should fit the existing codebase.
-
-Keep it simple.
-
-This is temporary benchmarking infrastructure, not a new permanent subsystem.
-
----
-
-# 15. Use Asynchronous File I/O Where Convenient
-
-If the surrounding review execution is asynchronous, prefer async file operations.
-
-However, do not introduce unnecessary complexity.
-
-The amount of benchmark data is small.
-
-Correctness and minimal invasiveness are more important than optimizing file-writing performance.
-
----
-
-# 16. Preserve Raw Timing Comparability
-
-Do not perform benchmark file writes inside the measured LLM inference interval.
-
-For example, avoid:
-
-```text
-start Turn1 timer
-→ invoke model
-→ write turn1.json
-→ stop Turn1 timer
-```
-
-Prefer:
-
-```text
-start Turn1 timer
-→ invoke model
-→ stop Turn1 timer
-→ write turn1.json
-```
-
-The existing Turn 1 / Turn 2 latency values must continue representing the same work they represented before this instrumentation.
-
-The benchmark logger itself should not materially inflate the measured inference latency.
-
----
-
-# 17. Add Benchmark Logs to Git Ignore
-
-Add the benchmark output directory to `.gitignore`.
-
-For example:
-
-```gitignore
-benchmark-logs/
-```
-
-Do not commit benchmark result files.
-
----
-
-# 18. Temporary Nature of the Change
-
-Mark the benchmark recorder clearly as temporary if appropriate.
-
-A short comment such as:
-
-```csharp
-// Temporary benchmark instrumentation for thinking-on/off comparison.
-```
-
-is sufficient.
-
-Do not over-engineer configuration, persistence, database support, or UI around this functionality.
-
----
-
-# Suggested Output Example
-
-After several benchmark runs:
-
-```text
-benchmark-logs/
-├── 20260920_015843_217_a83f/
-│   ├── metadata.json
-│   ├── summary.json
-│   ├── turn1.json
-│   └── turn2.txt
-│
-├── 20260920_020011_084_91cd/
-│   ├── metadata.json
-│   ├── summary.json
-│   ├── turn1.json
-│   └── turn2.txt
-│
-└── 20260920_020154_662_f127/
-    ├── metadata.json
-    ├── summary.json
-    ├── turn1.json
-    └── turn2.txt
-```
-
-The benchmark operator can then separately record:
-
-```text
-20260920_015843_217_a83f = thinking off
-20260920_020011_084_91cd = thinking off
-20260920_020154_662_f127 = thinking on
-```
-
-without requiring the review application to know the model's external thinking configuration.
-
----
-
-# Out of Scope
-
-Do not change:
-
-```text
-review1.en.md
-review2.en.md
-Turn 1 output constraints
-Maximum 10 candidate behavior
-candidate validation logic
-severity rules
+Turn 1 prompt
+Turn 2 prompt
+candidate schema
+Maximum 10 candidate rule
+confidence rules
+severity logic
 review formatting
-AST/context generation
-file grouping
-model configuration
 thinking configuration
+model configuration
+number of LLM calls
 ```
 
-Do not implement the previous Phase 1 prompt optimization as part of this task.
-
-The benchmark must use the restored pre-modification review behavior.
+This task changes grouping behavior only.
 
 ---
 
-# Acceptance Criteria
+## Preserve Deterministic Ordering
+
+Non-C/C++ file groups should be created in a stable order.
+
+Prefer the existing changed-file order or normalized repository path ordering.
+
+The same set of changed files should produce the same group order across benchmark runs.
+
+Do not depend on unstable dictionary/hash iteration order.
+
+---
+
+## Avoid Duplicate Inclusion
+
+Each non-C/C++ changed file should belong to exactly one review group.
+
+Do not duplicate the same non-C/C++ file across multiple groups.
+
+For this phase:
+
+```text
+non-C/C++ file
+    ↓
+exactly one group
+```
+
+---
+
+## C/C++ and Header Handling
+
+Do not accidentally split valid C/C++ header/source relationships because of this change.
+
+For example:
+
+```text
+foo.h
+foo.cpp
+```
+
+should still be eligible for the same C/C++ group.
+
+Likewise, project layouts such as:
+
+```text
+include/render/foo.hpp
+src/render/foo.cpp
+```
+
+should continue to use C/C++ grouping logic when the relationship is recognized.
+
+---
+
+## Out of Scope
+
+Do not implement special cross-file grouping for:
+
+```text
+C# partial classes
+Java packages
+Kotlin source sets
+Rust modules
+TypeScript interfaces and implementations
+Python packages
+Go packages
+```
+
+Even if those languages could benefit from semantic grouping, they are intentionally out of scope for this phase.
+
+They should remain file-local until benchmark evidence shows a need for language-specific grouping.
+
+Also do not add:
+
+```text
+generic semantic clustering
+embedding similarity
+LLM-based grouping
+repository-wide grouping
+cross-language grouping
+```
+
+---
+
+## Suggested Implementation Shape
+
+Prefer a clear branch near the group-construction boundary.
+
+Conceptually:
+
+```text
+for each changed file:
+    if file is C or C++:
+        send it through C/C++ semantic grouping
+    else:
+        create a standalone review group
+```
+
+If the current implementation first partitions files and then builds groups, an equivalent design is fine.
+
+Keep the language-specific decision localized rather than scattering extension checks throughout the grouping code.
+
+---
+
+## Diagnostics
+
+If grouping diagnostics already exist, make the distinction visible.
+
+Example:
+
+```text
+Review group 0
+strategy: cpp-semantic
+files:
+  include/foo.h
+  src/foo.cpp
+```
+
+```text
+Review group 1
+strategy: per-file
+files:
+  scripts/build.py
+```
+
+Do not expose these diagnostics to the LLM prompt.
+
+They are only for debugging and benchmark analysis.
+
+---
+
+## Tests
+
+Add or update tests covering at least the following cases.
+
+### Case 1 — Two Non-C/C++ Files
+
+Input:
+
+```text
+a.py
+b.py
+```
+
+Expected:
+
+```text
+2 groups
+1 file per group
+```
+
+---
+
+### Case 2 — C++ Header / Source Pair
+
+Input:
+
+```text
+foo.h
+foo.cpp
+```
+
+Expected:
+
+```text
+eligible for one C/C++ semantic group
+```
+
+---
+
+### Case 3 — Mixed Languages
+
+Input:
+
+```text
+foo.h
+foo.cpp
+build.py
+tool.cs
+```
+
+Expected:
+
+```text
+C/C++ group:
+  foo.h
+  foo.cpp
+
+Standalone group:
+  build.py
+
+Standalone group:
+  tool.cs
+```
+
+---
+
+### Case 4 — Same Directory, Non-C/C++
+
+Input:
+
+```text
+src/a.py
+src/b.py
+```
+
+Expected:
+
+```text
+two separate groups
+```
+
+Directory affinity must not merge them.
+
+---
+
+### Case 5 — Similar Names, Non-C/C++
+
+Input:
+
+```text
+Foo.cs
+FooTests.cs
+```
+
+Expected:
+
+```text
+two separate groups
+```
+
+Filename similarity must not merge them.
+
+---
+
+## Acceptance Criteria
 
 The task is complete when:
 
-1. Every review receives one unique, timestamp-based `review_run_id`.
+1. C/C++ files continue to use semantic grouping.
 
-2. The same ID is used for Turn 1 and Turn 2.
+2. Every non-C/C++ changed file gets its own review group.
 
-3. Each run produces its own benchmark directory.
+3. Non-C/C++ files are not grouped by directory, symbol relationships, shared callees, or filename similarity.
 
-4. The raw Turn 1 output is persisted.
+4. Mixed-language merge requests correctly separate C/C++ semantic groups from standalone non-C/C++ groups.
 
-5. The Turn 2/final review output is persisted.
+5. Existing Turn 1 and Turn 2 behavior is unchanged.
 
-6. Existing per-turn inference durations are persisted.
+6. No additional LLM calls are introduced.
 
-7. Total review duration is persisted.
+7. Grouping remains deterministic.
 
-8. Candidate count is persisted.
+8. No non-C/C++ file is duplicated across groups.
 
-9. Existing token counts are persisted when available.
+9. Existing C/C++ header/source grouping does not regress.
 
-10. Benchmark logging does not change review behavior.
-
-11. Benchmark logging does not alter the semantics of existing latency measurements.
-
-12. The application does not attempt to determine whether thinking is enabled or disabled.
-
-13. Benchmark files are excluded from Git.
-
-14. Partial results remain available if a later turn fails.
+10. Tests cover C/C++, non-C/C++, and mixed-language cases.
 
 ---
 
-# Primary Design Principle
+## Design Principle
 
-This change is measurement infrastructure only.
+Keep Phase 1 language-specific and narrow:
 
 ```text
-Same review pipeline
-Same prompts
-Same code context
-Same model
+C / C++
+    ↓
+semantic multi-file grouping
 
-Only external thinking configuration differs
-        ↓
-Timestamp-based review_run_id
-        ↓
-Persist Turn 1 / Turn 2 outputs and existing metrics
-        ↓
-Compare runs afterward
+everything else
+    ↓
+one changed file per review group
 ```
 
-Keep the implementation small, isolated, and easy to remove after the benchmark is complete.
+Do not generalize cross-file semantic grouping until there is benchmark evidence that another language needs it.

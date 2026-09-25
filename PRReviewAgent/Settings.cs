@@ -1,3 +1,5 @@
+using PRReviewAgent.Services.Grouping;
+
 namespace PRReviewAgent
 {
     /// <summary>
@@ -290,6 +292,29 @@ namespace PRReviewAgent
                 }
                 return 7;
             }
+        }
+
+        /// <summary>
+        /// Gets the semantic grouping configuration from [review.grouping] in config.toml.
+        /// </summary>
+        public GroupingConfig GetGroupingConfig()
+        {
+            var cfg = new GroupingConfig();
+            if (config_ != null
+                && config_.TryGetValue("review", out object? reviewObj)
+                && reviewObj is Tomlyn.Model.TomlTable reviewTable
+                && reviewTable.TryGetValue("grouping", out object? groupingObj)
+                && groupingObj is Tomlyn.Model.TomlTable groupingTable)
+            {
+                if (groupingTable.TryGetValue("max_files_per_group", out object? maxFiles)
+                    && maxFiles is long max)
+                    cfg.MaxFilesPerGroup = (int)max;
+                if (groupingTable.TryGetValue("mode", out object? modeObj)
+                    && modeObj is string modeStr
+                    && System.Enum.TryParse<GroupingMode>(modeStr, ignoreCase: true, out GroupingMode mode))
+                    cfg.Mode = mode;
+            }
+            return cfg;
         }
 
         /// <summary>
