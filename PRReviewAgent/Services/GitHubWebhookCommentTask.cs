@@ -288,7 +288,7 @@ namespace PRReviewAgent.Services
                     mergeRequestId: mergeRequestId,
                     model: context.Agents.Model);
                 if (benchmarkRecorder != null)
-                    await benchmarkRecorder.RecordGroupsAsync(reviewRequest.FileGroups);
+                    await benchmarkRecorder.RecordGroupsAsync(reviewRequest.FileGroups, groupingConfig.MaxGroupTokens);
             }
             catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to start recorder"); }
 

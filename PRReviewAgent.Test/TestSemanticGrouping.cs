@@ -12,8 +12,8 @@ namespace PRReviewAgent.Test;
 [TestClass]
 public class TestSemanticGrouping
 {
-    private static GroupingConfig Cfg(int maxFiles = 8) =>
-        new GroupingConfig { Mode = GroupingMode.Semantic, MaxFilesPerGroup = maxFiles };
+    private static GroupingConfig Cfg(int maxFiles = 8, int maxGroupTokens = 0) =>
+        new GroupingConfig { Mode = GroupingMode.Semantic, MaxFilesPerGroup = maxFiles, MaxGroupTokens = maxGroupTokens };
 
     private static ReviewContext Ctx(string path, string? pairPath = null, string? astJson = null) =>
         new ReviewContext
@@ -695,5 +695,263 @@ public class TestSemanticGrouping
 
         Assert.AreEqual(1, result.Count);
         Assert.IsTrue(result[0].GroupingReasons.Count > 0, "GroupingReasons must be populated");
+    }
+
+    // =========================================================================
+    // Phase 2: Token budget — GroupTokenEstimator
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenEstimator_EmptyContext_ReturnsMinimumOne()
+    {
+        var ctx = Ctx("foo.cpp");
+        Assert.AreEqual(1, GroupTokenEstimator.EstimateContextTokens(ctx));
+    }
+
+    [TestMethod]
+    public void TokenEstimator_AstJsonDominates()
+    {
+        // 400 chars of AstJson → ~100 tokens
+        var ctx = Ctx("foo.cpp", astJson: new string('x', 400));
+        Assert.AreEqual(100, GroupTokenEstimator.EstimateContextTokens(ctx));
+    }
+
+    [TestMethod]
+    public void TokenEstimator_AstJsonPlusExpandedDiff()
+    {
+        var ctx = new ReviewContext
+        {
+            Path = "foo.cpp",
+            Filename = "foo.cpp",
+            Diff = string.Empty,
+            ChangedFile = string.Empty,
+            AstJson = new string('a', 800),
+            ExpandedDiff = new string('b', 400),
+        };
+        Assert.AreEqual(300, GroupTokenEstimator.EstimateContextTokens(ctx)); // (800+400)/4
+    }
+
+    [TestMethod]
+    public void TokenEstimator_FallsBackToDiff_WhenNoAst()
+    {
+        var ctx = new ReviewContext
+        {
+            Path = "foo.cpp",
+            Filename = "foo.cpp",
+            Diff = new string('d', 400),
+            ChangedFile = string.Empty,
+        };
+        Assert.AreEqual(100, GroupTokenEstimator.EstimateContextTokens(ctx));
+    }
+
+    // =========================================================================
+    // Phase 2: Spec Case 1 — Small group stays intact
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenBudget_SmallGroup_NotSplit()
+    {
+        // foo.h + foo.cpp, both with tiny AstJson → well within budget
+        var h   = Ctx("foo.h",   pairPath: "foo.cpp", astJson: new string('a', 100));
+        var cpp = Ctx("foo.cpp", pairPath: "foo.h",   astJson: new string('a', 100));
+        var cfg = Cfg(maxFiles: 8, maxGroupTokens: 12_000);
+
+        var result = SemanticReviewGroupBuilder.Build(new[] { h, cpp }, cfg, NullLogger.Instance);
+
+        Assert.AreEqual(1, result.Count, "Small group below budget must not be split");
+        Assert.AreEqual(2, result[0].ReviewContexts.Count);
+    }
+
+    // =========================================================================
+    // Phase 2: Spec Case 2 — Oversized group is split
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenBudget_OversizedGroup_IsSplit()
+    {
+        // 4 C++ files each with 16 KB of AstJson → 4000 tokens each; total ~16000 > budget 12000
+        string bigAst = new string('x', 16_000); // 4000 tokens each
+
+        var h    = Ctx("foo.h",         pairPath: "foo.cpp",    astJson: bigAst);
+        var cpp  = Ctx("foo.cpp",        pairPath: "foo.h",      astJson: bigAst);
+        var load = Ctx("foo_loader.cpp", astJson: bigAst);
+        var cach = Ctx("foo_cache.cpp",  astJson: bigAst);
+
+        var cfg = Cfg(maxFiles: 8, maxGroupTokens: 10_000);
+
+        var result = SemanticReviewGroupBuilder.Build(new[] { h, cpp, load, cach }, cfg, NullLogger.Instance);
+
+        Assert.IsTrue(result.Count > 1, "Oversized group must be split into multiple groups");
+        Assert.IsTrue(result.All(g => g.ReviewContexts.Count <= 8), "File limit must not be exceeded");
+        Assert.AreEqual(4, result.Sum(g => g.ReviewContexts.Count), "All files must be present");
+    }
+
+    // =========================================================================
+    // Phase 2: Spec Case 3 — Header/source pair preserved during split
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenBudget_HeaderSourcePairPreserved_DuringSplit()
+    {
+        // foo.h and foo.cpp are a header/source pair (weight 90).
+        // helper.cpp is only weakly related (same module, weight 10).
+        // Budget allows 2 files only → helper.cpp splits off first.
+        string bigAst = new string('x', 16_000); // 4000 tokens each
+
+        var h      = Ctx("foo.h",      pairPath: "foo.cpp", astJson: bigAst);
+        var cpp    = Ctx("foo.cpp",    pairPath: "foo.h",   astJson: bigAst);
+        var helper = Ctx("src/helper.cpp",                  astJson: bigAst);
+
+        var cfg = Cfg(maxFiles: 8, maxGroupTokens: 9_000); // fits 2 files (8000 tokens) but not 3 (12000)
+
+        var result = SemanticReviewGroupBuilder.Build(new[] { h, cpp, helper }, cfg, NullLogger.Instance);
+
+        // foo.h and foo.cpp must be in the same group
+        var pairGroup = result.FirstOrDefault(g =>
+            g.ReviewContexts.Any(rc => rc.Path == "foo.h") &&
+            g.ReviewContexts.Any(rc => rc.Path == "foo.cpp"));
+        Assert.IsNotNull(pairGroup, "foo.h and foo.cpp must remain together (header/source pair)");
+        Assert.IsFalse(pairGroup!.ReviewContexts.Any(rc => rc.Path == "src/helper.cpp"),
+            "helper.cpp must not be in the same group as the pair");
+    }
+
+    // =========================================================================
+    // Phase 2: Spec Case 4 — Same-class methods preserved during split
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenBudget_SameClassMethodsPreserved_DuringSplit()
+    {
+        // Foo::Open, Foo::Close in separate files — same containing type (weight 100).
+        // Bar::Update only weakly related via module affinity (weight 10).
+        // Budget forces a split: Foo methods must stay together, Bar splits off.
+        // Use ExpandedDiff for bulk size; valid AstJson for type signals.
+        // Paths under src/render/ so ComputeModuleKey returns "render" (non-empty).
+        string bigDiff = new string('x', 12_000); // ~3000 tokens each via ExpandedDiff
+
+        var fooOpen  = new ReviewContext { Path = "src/render/foo_open.cpp",   Filename = "foo_open.cpp",   Diff = string.Empty, ChangedFile = string.Empty, AstJson = MakeAst(("Foo", "Open",   "modified")), ExpandedDiff = bigDiff };
+        var fooClose = new ReviewContext { Path = "src/render/foo_close.cpp",  Filename = "foo_close.cpp",  Diff = string.Empty, ChangedFile = string.Empty, AstJson = MakeAst(("Foo", "Close",  "modified")), ExpandedDiff = bigDiff };
+        var barUpdate= new ReviewContext { Path = "src/render/bar_update.cpp", Filename = "bar_update.cpp", Diff = string.Empty, ChangedFile = string.Empty, AstJson = MakeAst(("Bar", "Update", "modified")), ExpandedDiff = bigDiff };
+
+        // Budget allows 2 files (~3000 tokens each → ~6000 total) but not 3 (~9000 total)
+        var cfg = Cfg(maxFiles: 8, maxGroupTokens: 7_000);
+
+        var result = SemanticReviewGroupBuilder.Build(new[] { fooOpen, fooClose, barUpdate }, cfg, NullLogger.Instance);
+
+        // Foo::Open and Foo::Close must be in the same group (same containing type)
+        var fooGroup = result.FirstOrDefault(g =>
+            g.ReviewContexts.Any(rc => rc.Path == "src/render/foo_open.cpp") &&
+            g.ReviewContexts.Any(rc => rc.Path == "src/render/foo_close.cpp"));
+        Assert.IsNotNull(fooGroup, "Foo methods must stay together during split");
+    }
+
+    // =========================================================================
+    // Phase 2: Spec Case 5 — Determinism
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenBudget_DeterministicSplit()
+    {
+        string bigAst = new string('x', 16_000);
+
+        var files = new[]
+        {
+            Ctx("src/a.cpp", astJson: bigAst),
+            Ctx("src/b.cpp", astJson: bigAst),
+            Ctx("src/c.cpp", astJson: bigAst),
+        };
+        var cfg = Cfg(maxFiles: 8, maxGroupTokens: 9_000); // budget forces splits
+
+        var r1 = SemanticReviewGroupBuilder.Build(files, cfg, NullLogger.Instance);
+        var r2 = SemanticReviewGroupBuilder.Build(files, cfg, NullLogger.Instance);
+
+        Assert.AreEqual(r1.Count, r2.Count);
+        for (int i = 0; i < r1.Count; i++)
+        {
+            CollectionAssert.AreEqual(
+                r1[i].ReviewContexts.Select(rc => rc.Path).ToList(),
+                r2[i].ReviewContexts.Select(rc => rc.Path).ToList());
+        }
+    }
+
+    // =========================================================================
+    // Phase 2: Spec Case 6 — Non-C/C++ unaffected by budget splitting
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenBudget_NonCpp_NotAffected()
+    {
+        // Even with a very tight budget, non-C/C++ files stay as singleton groups.
+        string bigContent = new string('x', 200_000);
+        var a = new ReviewContext { Path = "a.py", Filename = "a.py", Diff = string.Empty, ChangedFile = string.Empty, AstJson = bigContent };
+        var b = new ReviewContext { Path = "b.py", Filename = "b.py", Diff = string.Empty, ChangedFile = string.Empty, AstJson = bigContent };
+
+        var cfg = Cfg(maxFiles: 8, maxGroupTokens: 100); // tiny budget
+
+        var result = SemanticReviewGroupBuilder.Build(new[] { a, b }, cfg, NullLogger.Instance);
+
+        Assert.AreEqual(2, result.Count, "Non-C/C++ files must remain as separate groups regardless of budget");
+        Assert.IsTrue(result.All(g => g.ReviewContexts.Count == 1));
+        Assert.IsTrue(result.All(g => g.GroupingReasons.Contains("strategy: per-file")));
+    }
+
+    // =========================================================================
+    // Phase 2: Spec Case 7 — Mixed language with budget splitting
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenBudget_MixedLanguage_CppSplitNonCppUnchanged()
+    {
+        string bigAst = new string('x', 20_000); // 5000 tokens each
+
+        var fooH   = Ctx("foo.h",         pairPath: "foo.cpp",   astJson: bigAst);
+        var fooCpp = Ctx("foo.cpp",        pairPath: "foo.h",     astJson: bigAst);
+        var extra  = Ctx("foo_extra.cpp",                         astJson: bigAst);
+        var buildPy = Ctx("build.py",                             astJson: bigAst);
+        var toolCs  = Ctx("Tool.cs",                              astJson: bigAst);
+
+        // Budget forces C++ split: 15000 tokens total > 12000
+        var cfg = Cfg(maxFiles: 8, maxGroupTokens: 12_000);
+
+        var result = SemanticReviewGroupBuilder.Build(
+            new[] { fooH, fooCpp, extra, buildPy, toolCs }, cfg, NullLogger.Instance);
+
+        // Non-C/C++ files must be singletons
+        var pyGroup = result.Single(g => g.ReviewContexts.Any(rc => rc.Path == "build.py"));
+        Assert.AreEqual(1, pyGroup.ReviewContexts.Count);
+        Assert.IsTrue(pyGroup.GroupingReasons.Contains("strategy: per-file"));
+
+        var csGroup = result.Single(g => g.ReviewContexts.Any(rc => rc.Path == "Tool.cs"));
+        Assert.AreEqual(1, csGroup.ReviewContexts.Count);
+        Assert.IsTrue(csGroup.GroupingReasons.Contains("strategy: per-file"));
+
+        // All files accounted for
+        Assert.AreEqual(5, result.Sum(g => g.ReviewContexts.Count));
+    }
+
+    // =========================================================================
+    // Phase 2: Budget disabled (MaxGroupTokens = 0)
+    // =========================================================================
+
+    [TestMethod]
+    public void TokenBudget_Zero_DisablesSplitting()
+    {
+        // 3 large files that would normally be split, but MaxGroupTokens = 0 disables splitting.
+        // Paths under src/render/ so ComputeModuleKey returns "render" and module-affinity edge fires.
+        string bigAst = new string('x', 40_000); // 10000 tokens each → 30000 total
+
+        var files = new[]
+        {
+            Ctx("src/render/a.cpp", astJson: bigAst),
+            Ctx("src/render/b.cpp", astJson: bigAst),
+            Ctx("src/render/c.cpp", astJson: bigAst),
+        };
+        var cfg = new GroupingConfig { Mode = GroupingMode.Semantic, MaxFilesPerGroup = 8, MaxGroupTokens = 0 };
+
+        // All in same module → grouped by module affinity; token budget disabled → single group
+        var result = SemanticReviewGroupBuilder.Build(files, cfg, NullLogger.Instance);
+
+        Assert.AreEqual(1, result.Count, "Token splitting disabled → single group expected");
+        Assert.AreEqual(3, result[0].ReviewContexts.Count);
     }
 }

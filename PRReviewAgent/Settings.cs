@@ -309,6 +309,9 @@ namespace PRReviewAgent
                 if (groupingTable.TryGetValue("max_files_per_group", out object? maxFiles)
                     && maxFiles is long max)
                     cfg.MaxFilesPerGroup = (int)max;
+                if (groupingTable.TryGetValue("max_group_tokens", out object? maxTok)
+                    && maxTok is long tok)
+                    cfg.MaxGroupTokens = (int)tok;
                 if (groupingTable.TryGetValue("mode", out object? modeObj)
                     && modeObj is string modeStr
                     && System.Enum.TryParse<GroupingMode>(modeStr, ignoreCase: true, out GroupingMode mode))

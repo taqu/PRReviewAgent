@@ -142,6 +142,11 @@ namespace PRReviewAgent.Services.Grouping
         {
             int n = contexts.Count;
 
+            // Pre-compute per-file token estimates (used for budget splitting).
+            int[] tokenEstimates = new int[n];
+            for (int i = 0; i < n; i++)
+                tokenEstimates[i] = GroupTokenEstimator.EstimateContextTokens(contexts[i]);
+
             // Parse AST for each context.
             OutputResult?[] asts = new OutputResult?[n];
             for (int i = 0; i < n; i++)
@@ -215,33 +220,61 @@ namespace PRReviewAgent.Services.Grouping
                 list.Add(i);
             }
 
-            // Build FileGroups in deterministic path order.
-            var ordered = components.Values
+            // Build initial components in deterministic path order.
+            var initialComponents = components.Values
                 .Select(indices =>
                 {
                     var sorted = indices.OrderBy(i => contexts[i].Path, StringComparer.Ordinal).ToList();
                     int root = Find(parent, sorted[0]);
                     rootReasons.TryGetValue(root, out var reasons);
-                    return (sorted, reasons ?? new List<string>(), firstPath: contexts[sorted[0]].Path);
+                    return (sorted, reasons ?? new List<string>());
                 })
-                .OrderBy(x => x.firstPath, StringComparer.Ordinal)
+                .OrderBy(x => contexts[x.sorted[0]].Path, StringComparer.Ordinal)
                 .ToList();
 
-            var fileGroups = new List<FileGroup>();
-            foreach (var (indices, reasons, _) in ordered)
+            // Phase 2: Token-budget splitting — split any component that exceeds MaxGroupTokens.
+            var finalComponents = new List<(List<int> sorted, List<string> reasons)>();
+            if (config.MaxGroupTokens > 0)
             {
-                string topic = Path.GetFileNameWithoutExtension(contexts[indices[0]].Path);
+                foreach (var (sorted, reasons) in initialComponents)
+                {
+                    int totalTokens = sorted.Sum(i => tokenEstimates[i]);
+                    if (totalTokens <= config.MaxGroupTokens)
+                    {
+                        finalComponents.Add((sorted, reasons));
+                    }
+                    else
+                    {
+                        logger.LogInformation(
+                            "Budget split: group starting at '{Path}' has ~{Tokens} estimated tokens (budget {Budget}). Splitting.",
+                            contexts[sorted[0]].Path, totalTokens, config.MaxGroupTokens);
+                        var subcomps = GreedySplit(sorted, contexts, edges, tokenEstimates, config.MaxGroupTokens, logger);
+                        finalComponents.AddRange(subcomps);
+                    }
+                }
+                // Re-sort after potential splits.
+                finalComponents.Sort((a, b) =>
+                    StringComparer.Ordinal.Compare(contexts[a.sorted[0]].Path, contexts[b.sorted[0]].Path));
+            }
+            else
+            {
+                finalComponents = initialComponents;
+            }
+
+            var fileGroups = new List<FileGroup>();
+            foreach (var (sorted, reasons) in finalComponents)
+            {
+                string topic = Path.GetFileNameWithoutExtension(contexts[sorted[0]].Path);
                 FileGroup fg = new FileGroup { Topic = topic };
-                // Strategy tag is inserted first; other reasons follow.
                 fg.GroupingReasons.Add(StrategyCppSemantic);
                 foreach (string r in reasons.Distinct())
                     fg.GroupingReasons.Add(r);
-                foreach (int idx in indices)
+                foreach (int idx in sorted)
                     fg.ReviewContexts.Add(contexts[idx]);
                 fileGroups.Add(fg);
             }
 
-            LogGroupDiagnostics(fileGroups, changedFunctions, contexts, logger);
+            LogGroupDiagnostics(fileGroups, changedFunctions, contexts, tokenEstimates, config.MaxGroupTokens, logger);
             return fileGroups;
         }
 
@@ -414,6 +447,138 @@ namespace PRReviewAgent.Services.Grouping
         }
 
         // -----------------------------------------------------------------------
+        // Token-budget splitting
+        // -----------------------------------------------------------------------
+
+        // Greedy deterministic split of an oversized component.
+        // Files connected by the strongest edges are placed in the same subgroup first.
+        // Weak-edge files are split off when the budget would be exceeded.
+        private static List<(List<int> sorted, List<string> reasons)> GreedySplit(
+            List<int> fileIndices,
+            IReadOnlyList<ReviewContext> contexts,
+            List<(int a, int b, int weight, string reason)> allEdges,
+            int[] tokenEstimates,
+            int maxGroupTokens,
+            ILogger logger)
+        {
+            var componentSet = new HashSet<int>(fileIndices);
+
+            // Build intra-component adjacency: adj[i][j] = strongest edge between i and j.
+            var adj = new Dictionary<int, Dictionary<int, (int weight, string reason)>>();
+            foreach (int i in fileIndices)
+                adj[i] = new Dictionary<int, (int, string)>();
+            foreach (var (a, b, weight, reason) in allEdges)
+            {
+                if (!componentSet.Contains(a) || !componentSet.Contains(b)) continue;
+                UpdateAdjIfStronger(adj, a, b, weight, reason);
+                UpdateAdjIfStronger(adj, b, a, weight, reason);
+            }
+
+            // Remaining files in deterministic path order.
+            var remaining = new List<int>(
+                fileIndices.OrderBy(i => contexts[i].Path, StringComparer.Ordinal));
+
+            var result = new List<(List<int>, List<string>)>();
+
+            while (remaining.Count > 0)
+            {
+                var subgroup = new List<int>();
+                int subgroupTokens = 0;
+                var subReasons = new List<string>();
+
+                // Seed: file with highest max-edge-weight within the component.
+                int seedIdx = FindSeedIndex(remaining, adj, tokenEstimates, maxGroupTokens);
+                int seed = remaining[seedIdx];
+                subgroup.Add(seed);
+                subgroupTokens += tokenEstimates[seed];
+                remaining.RemoveAt(seedIdx);
+
+                // Greedily add files that (a) fit in budget and (b) are connected to the subgroup.
+                bool changed = true;
+                while (changed && remaining.Count > 0)
+                {
+                    changed = false;
+                    int bestIdx = -1;
+                    int bestWeight = 0; // must be > 0 to add (at least a weak edge required)
+
+                    for (int k = 0; k < remaining.Count; k++)
+                    {
+                        int cand = remaining[k];
+                        if (subgroupTokens + tokenEstimates[cand] > maxGroupTokens) continue;
+
+                        // Strongest edge from this candidate to any file already in the subgroup.
+                        int w = 0;
+                        foreach (int s in subgroup)
+                            if (adj[cand].TryGetValue(s, out var edge) && edge.weight > w)
+                                w = edge.weight;
+
+                        if (w > bestWeight)
+                        {
+                            bestWeight = w;
+                            bestIdx = k;
+                            // Ties broken by path order: remaining is sorted, first occurrence wins.
+                        }
+                    }
+
+                    if (bestIdx >= 0)
+                    {
+                        int chosen = remaining[bestIdx];
+                        foreach (int s in subgroup)
+                            if (adj[chosen].TryGetValue(s, out var edge) && !subReasons.Contains(edge.reason))
+                                subReasons.Add(edge.reason);
+                        subgroup.Add(chosen);
+                        subgroupTokens += tokenEstimates[chosen];
+                        remaining.RemoveAt(bestIdx);
+                        changed = true;
+                    }
+                }
+
+                logger.LogInformation(
+                    "  Split subgroup: {Count} file(s), ~{Tokens} tokens.",
+                    subgroup.Count, subgroupTokens);
+
+                subgroup.Sort((x, y) => StringComparer.Ordinal.Compare(contexts[x].Path, contexts[y].Path));
+                result.Add((subgroup, subReasons));
+            }
+
+            return result;
+        }
+
+        private static void UpdateAdjIfStronger(
+            Dictionary<int, Dictionary<int, (int weight, string reason)>> adj,
+            int from, int to, int weight, string reason)
+        {
+            if (!adj[from].TryGetValue(to, out var existing) || weight > existing.weight)
+                adj[from][to] = (weight, reason);
+        }
+
+        // Returns the index in `remaining` of the best seed:
+        // the file with the highest max-edge-weight to any other file in the component.
+        // Ties broken by path order (remaining is already sorted).
+        private static int FindSeedIndex(
+            List<int> remaining,
+            Dictionary<int, Dictionary<int, (int weight, string reason)>> adj,
+            int[] tokenEstimates,
+            int maxGroupTokens)
+        {
+            int bestIdx = 0;
+            int bestWeight = -1;
+
+            for (int k = 0; k < remaining.Count; k++)
+            {
+                int f = remaining[k];
+                // A file that alone exceeds budget is deprioritized but still allowed as a singleton.
+                int maxW = adj[f].Count > 0 ? adj[f].Values.Max(e => e.weight) : 0;
+                if (maxW > bestWeight)
+                {
+                    bestWeight = maxW;
+                    bestIdx = k;
+                }
+            }
+            return bestIdx;
+        }
+
+        // -----------------------------------------------------------------------
         // Union-Find helpers
         // -----------------------------------------------------------------------
 
@@ -535,6 +700,8 @@ namespace PRReviewAgent.Services.Grouping
             List<FileGroup> groups,
             List<FunctionInfo>[] changedFunctions,
             IReadOnlyList<ReviewContext> contexts,
+            int[] tokenEstimates,
+            int maxGroupTokens,
             ILogger logger)
         {
             // Build reverse map: path → index within the contexts slice passed to BuildSemantic.
@@ -546,11 +713,15 @@ namespace PRReviewAgent.Services.Grouping
             {
                 FileGroup fg = groups[g];
 
-                // Extract strategy tag (first reason starting with "strategy:").
+                int estimatedTokens = fg.ReviewContexts
+                    .Where(rc => pathToIndex.TryGetValue(rc.Path, out _))
+                    .Sum(rc => tokenEstimates[pathToIndex[rc.Path]]);
+
                 string strategy = fg.GroupingReasons.FirstOrDefault(r => r.StartsWith("strategy:", StringComparison.OrdinalIgnoreCase))
                                   ?? "strategy: unknown";
                 logger.LogInformation("Review group {Index}", g);
                 logger.LogInformation("  {Strategy}", strategy);
+                logger.LogInformation("  estimated_tokens: {Tokens}  budget: {Budget}", estimatedTokens, maxGroupTokens);
                 logger.LogInformation("  files:");
                 foreach (ReviewContext rc in fg.ReviewContexts)
                     logger.LogInformation("    {Path}", rc.Path);
@@ -571,7 +742,9 @@ namespace PRReviewAgent.Services.Grouping
                 }
 
                 // Log semantic relations (skip the strategy tag itself).
-                var relations = fg.GroupingReasons.Where(r => !r.StartsWith("strategy:", StringComparison.OrdinalIgnoreCase)).ToList();
+                var relations = fg.GroupingReasons
+                    .Where(r => !r.StartsWith("strategy:", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
                 if (relations.Count > 0)
                 {
                     logger.LogInformation("  relations:");

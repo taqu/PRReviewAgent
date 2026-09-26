@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using PRReviewAgent.Prompt;
+using PRReviewAgent.Services.Grouping;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -21,6 +22,7 @@ internal sealed class BenchmarkRunRecorder
     private readonly string? model_;
     private readonly List<TurnGroupMetrics> turn1Metrics_ = new();
     private readonly List<TurnGroupMetrics> turn2Metrics_ = new();
+    private GroupingMetrics? groupingMetrics_;
 
     public string RunId { get; }
 
@@ -63,20 +65,38 @@ internal sealed class BenchmarkRunRecorder
         return recorder;
     }
 
-    public async Task RecordGroupsAsync(IReadOnlyList<FileGroup> groups)
+    public async Task RecordGroupsAsync(IReadOnlyList<FileGroup> groups, int tokenBudget = 0)
     {
         try
         {
+            int[] groupTokens = groups
+                .Select(g => GroupTokenEstimator.EstimateGroupTokens(g.ReviewContexts))
+                .ToArray();
+
             string path = Path.Combine(runDir_, "groups.json");
-            var data = groups.Select((g, i) => new
+            var data = groups.Select((g, i) =>
             {
-                group_id = $"g{i}",
-                topic = g.Topic,
-                files = g.ReviewContexts.Select(rc => rc.Path).ToArray(),
-                file_count = g.ReviewContexts.Count,
-                reasons = g.GroupingReasons.ToArray(),
+                string strategy = g.GroupingReasons.FirstOrDefault(r => r.StartsWith("strategy:", StringComparison.OrdinalIgnoreCase)) ?? "unknown";
+                return new
+                {
+                    group_id = $"g{i}",
+                    strategy,
+                    topic = g.Topic,
+                    files = g.ReviewContexts.Select(rc => rc.Path).ToArray(),
+                    file_count = g.ReviewContexts.Count,
+                    estimated_tokens = groupTokens[i],
+                    token_budget = tokenBudget > 0 ? (int?)tokenBudget : null,
+                    reasons = g.GroupingReasons.Where(r => !r.StartsWith("strategy:", StringComparison.OrdinalIgnoreCase)).ToArray(),
+                };
             }).ToArray();
+
             await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new { groups = data }, JsonOptions));
+
+            groupingMetrics_ = new GroupingMetrics(
+                FinalGroupCount: groups.Count,
+                LargestGroupTokens: groupTokens.Length > 0 ? groupTokens.Max() : 0,
+                AverageGroupTokens: groupTokens.Length > 0 ? (int)groupTokens.Average() : 0,
+                TokenBudget: tokenBudget);
         }
         catch (Exception ex)
         {
@@ -184,6 +204,13 @@ internal sealed class BenchmarkRunRecorder
                     input_tokens = totalInput,
                     output_tokens = totalOutput,
                 },
+                grouping = groupingMetrics_ == null ? null : new
+                {
+                    final_group_count    = groupingMetrics_.FinalGroupCount,
+                    largest_group_tokens = groupingMetrics_.LargestGroupTokens,
+                    average_group_tokens = groupingMetrics_.AverageGroupTokens,
+                    token_budget         = groupingMetrics_.TokenBudget > 0 ? (int?)groupingMetrics_.TokenBudget : null,
+                },
             }, JsonOptions));
         }
         catch (Exception ex)
@@ -225,4 +252,5 @@ internal sealed class BenchmarkRunRecorder
             : new string(topic.Select(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_').ToArray());
 
     private record TurnGroupMetrics(string Topic, long DurationMs, int CandidateCount, int? InputTokens, int? OutputTokens);
+    private record GroupingMetrics(int FinalGroupCount, int LargestGroupTokens, int AverageGroupTokens, int TokenBudget);
 }
