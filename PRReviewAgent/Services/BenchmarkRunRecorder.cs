@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using PRReviewAgent.Prompt;
+using PRReviewAgent.Services.Coverage;
 using PRReviewAgent.Services.Grouping;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -21,6 +22,7 @@ internal sealed class BenchmarkRunRecorder
     private readonly string? mergeRequestId_;
     private readonly string? model_;
     private readonly List<TurnGroupMetrics> turn1Metrics_ = new();
+    private readonly List<RecoveryTurnMetrics> recoveryMetrics_ = new();
     private readonly List<TurnGroupMetrics> turn2Metrics_ = new();
     private GroupingMetrics? groupingMetrics_;
 
@@ -126,6 +128,112 @@ internal sealed class BenchmarkRunRecorder
         }
     }
 
+    public async Task RecordTurn1CoverageAsync(string groupId, ReviewCoverage coverage)
+    {
+        try
+        {
+            string path = Path.Combine(runDir_, $"coverage_{Sanitize(groupId)}.json");
+            var regionsData = coverage.ChangedRegions.Select(r => new
+            {
+                region_id = r.RegionId,
+                file = r.FilePath,
+                start_line = r.StartLine,
+                end_line = r.EndLine,
+                symbol = r.ContainingSymbol,
+                reported = coverage.ReportedRegionIds.Contains(r.RegionId),
+            }).ToArray();
+            var mappingsData = coverage.CandidateMappings.Select(m => new
+            {
+                candidate_id = m.CandidateId,
+                location = m.Location,
+                region_ids = m.RegionIds.ToArray(),
+            }).ToArray();
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
+            {
+                coverage = new
+                {
+                    changed_region_count = coverage.ChangedRegions.Count,
+                    reported_region_count = coverage.ReportedRegionIds.Count,
+                    unreported_region_count = coverage.UnreportedRegionIds.Count,
+                    unmapped_candidate_count = coverage.CandidateMappings.Count(m => m.RegionIds.Count == 0),
+                    regions = regionsData,
+                },
+                candidate_mappings = mappingsData,
+            }, JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            logger_.LogWarning(ex, "Benchmark: failed to write coverage for group {GroupId}", groupId);
+        }
+    }
+
+    public async Task RecordRecoveryTurnAsync(
+        string groupId, string status,
+        IssuesResponse? recoveryResponse,
+        long durationMs, int? inputTokens, int? outputTokens,
+        int newlyReportedRegionCount, int duplicateCandidateCount)
+    {
+        int candidateCount = recoveryResponse?.issues.Length ?? 0;
+        recoveryMetrics_.Add(new RecoveryTurnMetrics(
+            groupId, status, durationMs, candidateCount,
+            newlyReportedRegionCount, duplicateCandidateCount,
+            inputTokens, outputTokens));
+        try
+        {
+            string path = Path.Combine(runDir_, $"recovery_{Sanitize(groupId)}.json");
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
+            {
+                group_id = groupId,
+                status,
+                duration_ms = durationMs,
+                input_tokens = inputTokens,
+                output_tokens = outputTokens,
+                candidate_count = candidateCount,
+                newly_reported_region_count = newlyReportedRegionCount,
+                duplicate_candidate_count = duplicateCandidateCount,
+                issues = recoveryResponse?.issues,
+            }, JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            logger_.LogWarning(ex, "Benchmark: failed to write recovery turn for group {GroupId}", groupId);
+        }
+    }
+
+    public async Task RecordRecoveryCoverageAsync(string groupId, ReviewCoverage combinedCoverage,
+        int primaryReportedCount)
+    {
+        try
+        {
+            string path = Path.Combine(runDir_, $"coverage_recovery_{Sanitize(groupId)}.json");
+            int newlyReported = combinedCoverage.ReportedRegionIds.Count - primaryReportedCount;
+            var regionsData = combinedCoverage.ChangedRegions.Select(r => new
+            {
+                region_id = r.RegionId,
+                file = r.FilePath,
+                start_line = r.StartLine,
+                end_line = r.EndLine,
+                symbol = r.ContainingSymbol,
+                reported = combinedCoverage.ReportedRegionIds.Contains(r.RegionId),
+            }).ToArray();
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
+            {
+                coverage = new
+                {
+                    changed_region_count = combinedCoverage.ChangedRegions.Count,
+                    reported_region_count = combinedCoverage.ReportedRegionIds.Count,
+                    unreported_region_count = combinedCoverage.UnreportedRegionIds.Count,
+                    newly_reported_by_recovery = newlyReported,
+                    regions = regionsData,
+                },
+            }, JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            logger_.LogWarning(ex, "Benchmark: failed to write recovery coverage for group {GroupId}", groupId);
+        }
+    }
+
     public async Task RecordTurn2Async(string topic, string reviewText,
         long durationMs, int? inputTokens, int? outputTokens)
     {
@@ -156,9 +264,11 @@ internal sealed class BenchmarkRunRecorder
     {
         try
         {
-            long t1DurationMs = 0, t2DurationMs = 0;
+            long t1DurationMs = 0, t2DurationMs = 0, recDurationMs = 0;
             int? t1Input = null, t1Output = null, t2Input = null, t2Output = null;
+            int? recInput = null, recOutput = null;
             int candidateCount = 0;
+            int recCandidateCount = 0, recNewlyReported = 0, recDuplicates = 0;
 
             foreach (TurnGroupMetrics m in turn1Metrics_)
             {
@@ -167,6 +277,15 @@ internal sealed class BenchmarkRunRecorder
                 if (m.InputTokens.HasValue) t1Input = (t1Input ?? 0) + m.InputTokens.Value;
                 if (m.OutputTokens.HasValue) t1Output = (t1Output ?? 0) + m.OutputTokens.Value;
             }
+            foreach (RecoveryTurnMetrics m in recoveryMetrics_)
+            {
+                recDurationMs += m.DurationMs;
+                recCandidateCount += m.CandidateCount;
+                recNewlyReported += m.NewlyReportedRegionCount;
+                recDuplicates += m.DuplicateCandidateCount;
+                if (m.InputTokens.HasValue) recInput = (recInput ?? 0) + m.InputTokens.Value;
+                if (m.OutputTokens.HasValue) recOutput = (recOutput ?? 0) + m.OutputTokens.Value;
+            }
             foreach (TurnGroupMetrics m in turn2Metrics_)
             {
                 t2DurationMs += m.DurationMs;
@@ -174,10 +293,15 @@ internal sealed class BenchmarkRunRecorder
                 if (m.OutputTokens.HasValue) t2Output = (t2Output ?? 0) + m.OutputTokens.Value;
             }
 
-            int? totalInput = (t1Input.HasValue || t2Input.HasValue)
-                ? (t1Input ?? 0) + (t2Input ?? 0) : (int?)null;
-            int? totalOutput = (t1Output.HasValue || t2Output.HasValue)
-                ? (t1Output ?? 0) + (t2Output ?? 0) : (int?)null;
+            int? totalInput = (t1Input.HasValue || recInput.HasValue || t2Input.HasValue)
+                ? (t1Input ?? 0) + (recInput ?? 0) + (t2Input ?? 0) : (int?)null;
+            int? totalOutput = (t1Output.HasValue || recOutput.HasValue || t2Output.HasValue)
+                ? (t1Output ?? 0) + (recOutput ?? 0) + (t2Output ?? 0) : (int?)null;
+
+            bool hasRecovery = recoveryMetrics_.Count > 0;
+            string recoveryOverallStatus = hasRecovery
+                ? (recoveryMetrics_.All(m => m.Status.StartsWith("skipped")) ? "skipped" : "executed")
+                : "not_configured";
 
             string path = Path.Combine(runDir_, "summary.json");
             await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
@@ -185,12 +309,28 @@ internal sealed class BenchmarkRunRecorder
                 review_run_id = RunId,
                 started_at_utc = startedAt_.UtcDateTime.ToString("o"),
                 completed_at_utc = completedAt.UtcDateTime.ToString("o"),
-                turn1 = new
+                primary_detection = new
                 {
                     duration_ms = t1DurationMs,
                     candidate_count = candidateCount,
                     input_tokens = t1Input,
                     output_tokens = t1Output,
+                },
+                recovery_detection = new
+                {
+                    status = recoveryOverallStatus,
+                    duration_ms = recDurationMs > 0 ? (long?)recDurationMs : null,
+                    candidate_count = recCandidateCount > 0 ? (int?)recCandidateCount : null,
+                    newly_reported_region_count = recNewlyReported,
+                    duplicate_candidate_count = recDuplicates,
+                    input_tokens = recInput,
+                    output_tokens = recOutput,
+                },
+                combined = new
+                {
+                    primary_candidate_count = candidateCount,
+                    recovery_candidate_count = recCandidateCount,
+                    combined_candidate_count = candidateCount + recCandidateCount - recDuplicates,
                 },
                 turn2 = new
                 {
@@ -252,5 +392,6 @@ internal sealed class BenchmarkRunRecorder
             : new string(topic.Select(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_').ToArray());
 
     private record TurnGroupMetrics(string Topic, long DurationMs, int CandidateCount, int? InputTokens, int? OutputTokens);
+    private record RecoveryTurnMetrics(string Topic, string Status, long DurationMs, int CandidateCount, int NewlyReportedRegionCount, int DuplicateCandidateCount, int? InputTokens, int? OutputTokens);
     private record GroupingMetrics(int FinalGroupCount, int LargestGroupTokens, int AverageGroupTokens, int TokenBudget);
 }

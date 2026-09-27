@@ -85,6 +85,7 @@ namespace PRReviewAgent
             if (System.IO.Directory.Exists("Templates"))
             {
                 review1Templates_ = LoadTemplate("review1");
+                review1RecoveryTemplates_ = LoadTemplate("review1recovery");
                 review2Templates_ = LoadTemplate("review2");
                 learnedTemplates_ = LoadTemplate("learned");
                 noproblemTemplates_ = LoadTemplate("noproblem");
@@ -154,6 +155,16 @@ namespace PRReviewAgent
         {
             string? template = null;
             review1Templates_.TryGetValue(lang, out template);
+            return template;
+        }
+
+        /// <summary>
+        /// Gets the Recovery Detection template for the specified language.
+        /// Returns null if the template has not been loaded (graceful fallback — recovery skips).
+        /// </summary>
+        public string? GetReview1RecoveryTemplate(string lang)
+        {
+            review1RecoveryTemplates_.TryGetValue(lang, out string? template);
             return template;
         }
 
@@ -333,6 +344,7 @@ namespace PRReviewAgent
         private Tomlyn.Model.TomlTable? secrets_;
         private Tomlyn.Model.TomlTable? config_;
         private Dictionary<string, string> review1Templates_ = new();
+        private Dictionary<string, string> review1RecoveryTemplates_ = new();
         private Dictionary<string, string> review2Templates_ = new();
         private Dictionary<string, string> learnedTemplates_ = new();
         private Dictionary<string, string> noproblemTemplates_ = new();

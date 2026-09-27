@@ -1,885 +1,1230 @@
-# Phase 2 — Add Budgeted Splitting to C/C++ Semantic Review Groups
+# Phase 4 — Add Recovery Detection for Unreported Changed Regions
 
 ## Objective
 
-Add deterministic size limits and splitting rules to the C/C++ semantic grouping introduced in Phase 1.
+Add a second non-thinking detection pass that reviews changed regions not associated with findings from the primary Turn 1 pass.
 
-Phase 1 improves review context by grouping semantically related C/C++ changes together.
+The purpose is to recover correctness issues missed by the first detection pass while keeping the existing final selection/finalization behavior.
 
-Phase 2 must prevent those semantic groups from becoming too large, noisy, or expensive.
-
-The core rule is:
+The target pipeline is:
 
 ```text
-Preserve strong semantic relationships,
-but split oversized C/C++ groups before they become poor LLM review contexts.
-```
-
-This phase changes **group sizing and splitting only**.
-
-Do not change the LLM review pipeline, prompts, or number of model calls.
-
----
-
-# Existing Language Policy
-
-Preserve the Phase 1 language policy.
-
-## C / C++
-
-Use semantic multi-file grouping.
-
-## All Other Languages
-
-Continue using:
-
-```text
-one changed file = one review group
-```
-
-Do not add budgeting or semantic splitting logic to non-C/C++ files unless required mechanically by the existing common grouping abstraction.
-
-A standalone non-C/C++ file should remain a standalone group.
-
----
-
-# Current Architecture
-
-Conceptually:
-
-```text
-Changed files
+Review Group
     ↓
-Language partitioning
+Turn 1A: Primary Detection
+thinking off
     ↓
-C/C++ semantic grouping
+Coverage Resolver
     ↓
-Review groups
+Unreported Changed Regions
     ↓
-Existing Turn 1
+Turn 1B: Recovery Detection
+thinking off
+    ↓
+Candidate Union
     ↓
 Existing Turn 2
+Selection / Dedupe / Severity / Formatting
+    ↓
+Final Review
 ```
 
-Phase 2 should extend only this part:
+This is **not** a verification pipeline.
+
+Do not use the Recovery pass to validate or reject candidates from Turn 1A.
+
+Its only purpose is:
 
 ```text
+Find additional review candidates
+from changed regions not already associated
+with Primary Detection findings.
+```
+
+---
+
+# Background
+
+The current `thinking off` review is much faster than `thinking on`, but detection is not perfectly stable.
+
+A second inexpensive non-thinking detection pass may improve recall while remaining substantially faster than enabling thinking.
+
+Previous work already provides:
+
+```text
+Phase 1:
 C/C++ semantic grouping
-    ↓
-group budget enforcement
-    ↓
-final C/C++ review groups
+
+Phase 2:
+budgeted deterministic C/C++ group splitting
+
+Phase 3:
+changed-region tracking
+candidate-to-region mapping
+reported/unreported changed-region sets
 ```
 
-Target:
+Phase 4 should use these existing components.
+
+Do not redesign them unless a small mechanical change is required.
+
+---
+
+# 1. Preserve the Primary Detection Pass
+
+The current Turn 1 remains the primary detection pass.
+
+Conceptually rename it internally if useful:
 
 ```text
-Changed C/C++ files / symbols
-        ↓
-Semantic relation graph
-        ↓
-Initial semantic groups
-        ↓
-Budget evaluation
-        ↓
-Split oversized groups
-        ↓
-Final deterministic review groups
+Primary Detection
+```
+
+but do not change its prompt or output schema in this phase.
+
+The current Turn 1 constraints remain unchanged:
+
+```text
+Maximum 10 candidates
+confidence must be high or medium
+do not output low-confidence candidates
+do not assign severity
+JSON only
+```
+
+Do not modify `review1.en.md` for the Primary Detection pass unless needed only to separate template loading from the new Recovery template.
+
+Primary benchmark behavior must remain comparable to the previous phase.
+
+---
+
+# 2. Add a Separate Recovery Detection Pass
+
+After Primary Detection and coverage resolution, run a second LLM detection pass.
+
+This pass must use:
+
+```text
+thinking off
+```
+
+through the same external/model configuration used by the existing non-thinking review.
+
+Do not enable thinking specifically for Recovery Detection.
+
+The system may not know whether thinking is externally enabled or disabled.
+
+Do not add logic that attempts to infer reasoning mode.
+
+---
+
+# 3. Recovery Detection Reviews Only Unreported Changed Regions
+
+Use the Phase 3 coverage result.
+
+Recovery input should be constructed from:
+
+```text
+unreported changed regions
++
+the source context needed to understand those regions
+```
+
+Do not treat the entire original review group as equally important again.
+
+Primary objective:
+
+```text
+redirect model attention toward changes
+that did not produce findings in Turn 1A
 ```
 
 ---
 
-# 1. Add an Explicit Group Budget
+# 4. "Unreported" Does Not Mean "Bug"
 
-Introduce a clear budget for C/C++ review groups.
+Preserve the Phase 3 terminology.
 
-The budget should preferably use the same token estimation mechanism already used elsewhere in the application.
-
-If an existing token estimator is available, reuse it.
-
-Preferred primary budget:
+An unreported changed region means only:
 
 ```text
-estimated prompt/context tokens
+Primary Detection did not emit a candidate
+mapped to this changed region.
 ```
 
-Optional secondary safety limits may include:
+It does not mean:
 
 ```text
-maximum files per group
-maximum changed symbols per group
-maximum changed lines per group
+Primary Detection failed.
 ```
 
-Do not introduce all possible limits unless they are useful in the current architecture.
+The Recovery prompt must not tell the model that the remaining regions contain bugs.
 
-Keep the implementation simple.
-
----
-
-# 2. Prefer Token Budget Over File Count
-
-A fixed file count is not sufficient by itself.
-
-For example:
+Do not write instructions such as:
 
 ```text
-2 very large files
+Find the bugs missed by the first pass.
 ```
-
-may be more expensive than:
-
-```text
-8 small files
-```
-
-Therefore, if token estimation is already available, use estimated context size as the primary limit.
-
-Conceptually:
-
-```text
-if estimated_group_tokens <= group_budget:
-    keep group unchanged
-else:
-    split group
-```
-
-Do not use exact model-token serialization if that would require expensive additional processing.
-
-A stable approximation is sufficient for grouping.
-
----
-
-# 3. Do Not Split Groups That Already Fit
-
-If an initial semantic group fits within the configured budget, keep it intact.
-
-Do not split groups simply because they contain several files.
-
-Example:
-
-```text
-foo.h
-foo.cpp
-foo_loader.cpp
-```
-
-may remain one group if:
-
-```text
-semantic relationships are strong
-AND
-estimated context fits within the budget
-```
-
-Phase 2 should only intervene when necessary.
-
----
-
-# 4. Preserve Strongest Semantic Relationships First
-
-When splitting an oversized group, preserve the strongest relationships.
-
-Use the following default priority unless the existing Phase 1 implementation already has a clearer equivalent:
-
-```text
-1. Same containing class / struct
-2. Header / source pair
-3. Direct relationship between changed symbols
-4. Shared meaningful direct callee / constructor
-5. Existing base-filename affinity
-6. Same module / directory
-```
-
-When a split is required:
-
-```text
-weak relationships should break before strong relationships
-```
-
-For example:
-
-```text
-Foo declaration
-Foo implementation
-Foo::Open
-Foo::Close
-```
-
-should remain together if possible.
-
-A weakly related neighboring file should be moved to another group first.
-
----
-
-# 5. Header / Source Pairs Should Be Difficult to Split
-
-C/C++ header/source pairs are a primary reason semantic grouping exists.
-
-Avoid splitting:
-
-```text
-foo.h
-foo.cpp
-```
-
-unless keeping them together would violate a hard context limit that cannot reasonably be satisfied otherwise.
-
-Similarly:
-
-```text
-include/render/foo.hpp
-src/render/foo.cpp
-```
-
-should remain together when recognized as a pair.
-
-Treat header/source affinity as a high-priority edge during splitting.
-
----
-
-# 6. Same-Type Changes Should Prefer the Same Group
-
-If several changed methods belong to the same class or struct, keep them together where practical.
-
-Example:
-
-```text
-Environment::sample
-Environment::pdf
-Environment::eval
-```
-
-should normally remain in one group.
-
-If the group is too large, split unrelated neighboring symbols before splitting methods belonging to the same type.
-
-Only split one type across multiple groups when the budget makes it unavoidable.
-
----
-
-# 7. Avoid Giant Connected Components
-
-A semantic relation graph may create large transitive groups.
-
-For example:
-
-```text
-A calls CommonHelper
-B calls CommonHelper
-C calls CommonHelper
-D calls CommonHelper
-...
-```
-
-must not automatically merge an entire subsystem.
-
-Phase 2 should ensure that weak or generic relationships cannot create effectively repository-sized groups.
-
-Shared common utilities should not act as strong grouping edges.
-
-If Phase 1 already filters generic callees, preserve that behavior.
-
-If necessary, strengthen the filter rather than allowing a giant group.
-
----
-
-# 8. Splitting Must Be Deterministic
-
-For identical changed files and semantic relations, the final split groups must be identical across runs.
-
-Do not use:
-
-```text
-random partitioning
-LLM-based splitting
-embedding clustering
-unstable hash iteration
-```
-
-Use deterministic ordering and deterministic tie-breaking.
-
-Good tie-breakers include:
-
-```text
-repository path
-source location
-symbol qualified name
-existing changed-file order
-```
-
-Benchmark comparisons depend on stable grouping.
-
----
-
-# 9. Prefer Cohesive Subgroups Over Equal-Sized Subgroups
-
-Do not try to make every group have the same size.
-
-Semantic cohesion is more important than perfectly balanced token counts.
 
 Prefer:
 
 ```text
-Group A: 70% of budget, strongly related
-Group B: 40% of budget, strongly related
+Review the remaining changed regions for any additional
+high- or medium-confidence correctness issues.
 ```
 
-over:
-
-```text
-Group A: 55%, mixed relationships
-Group B: 55%, mixed relationships
-```
-
-The goal is not load balancing.
-
-The goal is good review context.
+This avoids artificially increasing false positives.
 
 ---
 
-# 10. Suggested Splitting Strategy
+# 5. Use a Dedicated Recovery Prompt
 
-A simple deterministic strategy is preferred.
-
-One acceptable approach:
+Create a separate template, for example:
 
 ```text
-1. Build the initial semantic group.
-
-2. Sort semantic relations by strength.
-
-3. Build subgroups around the strongest connected relationships.
-
-4. Add related files/symbols while the group remains within budget.
-
-5. When adding another unit would exceed the budget,
-   start or assign it to another subgroup.
-
-6. Preserve deterministic ordering and tie-breaking.
+review1-recovery.en.md
 ```
 
-Another acceptable implementation is a weighted graph partition if Phase 1 already uses such a model.
+or a name consistent with the current project conventions.
 
-Do not introduce a sophisticated clustering dependency solely for Phase 2.
+Do not reuse the full Primary Detection prompt blindly if a smaller Recovery prompt is clearer.
 
----
+However, preserve the same candidate output schema so Primary and Recovery candidates can be combined directly.
 
-# 11. Choose an Appropriate Grouping Unit
-
-Use the grouping unit already established in Phase 1.
-
-If semantic grouping is internally symbol-based but review contexts are file-based, preserve that architecture.
-
-For example:
-
-```text
-Symbol relationships
-    ↓
-derive file affinity
-    ↓
-final file-oriented review group
-```
-
-Do not rewrite the whole review pipeline into symbol-fragment prompts as part of Phase 2.
-
----
-
-# 12. Account for Prompt Overhead
-
-If the token budget is based on estimated review input size, leave room for fixed prompt overhead.
-
-Do not fill a group to the model's full context capacity.
-
-Conceptually:
-
-```text
-usable_group_budget =
-    configured_context_budget
-    - fixed_prompt_reserve
-    - output_reserve
-```
-
-If the project already has context budgeting utilities, reuse their conventions.
-
-Do not introduce a conflicting context-limit system.
-
----
-
-# 13. Use a Conservative Default Budget
-
-Choose a default that leaves enough room for:
-
-```text
-review instructions
-MR metadata
-diff formatting
-Turn 1 output
-other fixed context
-```
-
-Do not assume that the entire model context can be consumed by source files.
-
-If no existing application-level value makes the correct budget obvious, define the budget as a named configuration constant rather than scattering numeric literals.
-
-Example concept:
-
-```text
-CppReviewGroupTokenBudget
-```
-
-The exact naming should follow existing project conventions.
-
----
-
-# 14. Keep the Budget Configurable
-
-Prefer a single clearly defined configuration value or constant.
-
-Avoid hard-coding the same threshold in several locations.
-
-If the application already has review configuration, integrate with it.
-
-Otherwise, keep the change minimal.
-
-This is still benchmark-driven work, so avoid building an elaborate configuration framework.
-
----
-
-# 15. Non-C/C++ Behavior Must Not Change
-
-For:
-
-```text
-.py
-.cs
-.java
-.rs
-.ts
-.go
-...
-```
-
-continue using:
-
-```text
-one changed file = one review group
-```
-
-Do not merge or split those files based on C/C++ semantic budgets.
-
-A large Python file is still one per-file group in Phase 2.
-
-Handling very large individual non-C/C++ files is outside this task.
-
----
-
-# 16. Mixed-Language Merge Requests
-
-Mixed-language behavior should remain straightforward.
-
-Example input:
-
-```text
-include/foo.h
-src/foo.cpp
-src/foo_loader.cpp
-scripts/build.py
-tools/check.cs
-```
-
-Possible result:
-
-```text
-C/C++ Group 1:
-  include/foo.h
-  src/foo.cpp
-
-C/C++ Group 2:
-  src/foo_loader.cpp
-
-Per-file Group 3:
-  scripts/build.py
-
-Per-file Group 4:
-  tools/check.cs
-```
-
-The C/C++ groups may split because of budget or semantic cohesion.
-
-The non-C/C++ files remain independent.
-
----
-
-# 17. Add Budget Diagnostics
-
-Extend grouping diagnostics so benchmark logs explain why a group was kept or split.
-
-For each final C/C++ group, log at least:
-
-```text
-group ID
-files
-changed symbols if available
-estimated tokens
-configured budget
-```
-
-For a split, also log a concise reason.
-
-Example:
-
-```text
-C++ semantic group g0 exceeded budget:
-  estimated_tokens: 18420
-  budget: 12000
-
-Split result:
-  g0a: 10380 tokens
-  g0b: 7440 tokens
-```
-
-If relationship information is available, optionally record:
-
-```text
-preserved:
-  header/source: foo.h <-> foo.cpp
-
-split weak relation:
-  module affinity: foo_loader.cpp
-```
-
-Keep logs concise.
-
-Do not add these diagnostics to the LLM prompt.
-
----
-
-# 18. Extend Benchmark Metadata
-
-If benchmark logging already records groups, add budget-related fields.
-
-Example:
+Expected output shape remains conceptually:
 
 ```json
 {
-  "group_id": "g0",
-  "strategy": "cpp-semantic",
-  "estimated_tokens": 10380,
-  "token_budget": 12000,
-  "files": [
-    "include/foo.h",
-    "src/foo.cpp"
+  "issues": [
+    {
+      "location": "...",
+      "problem": "...",
+      "evidence": "...",
+      "impact": "...",
+      "suggested_fix": "...",
+      "confidence": "high"
+    }
   ]
 }
 ```
 
-Useful run-level metrics include:
+Do not introduce:
 
 ```text
-initial semantic group count
-final group count
-number of split groups
-largest group tokens
-average group tokens
+CandidateIssue
+VerifiedIssue
+valid
+verification_status
+severity
 ```
 
-Do not add automatic bug scoring.
+into Recovery Detection.
+
+Recovery produces normal detection candidates.
 
 ---
 
-# 19. Do Not Modify Review Prompts
+# 6. Suggested Recovery Prompt Responsibilities
 
-Do not change:
-
-```text
-review1.en.md
-review2.en.md
-```
-
-Do not add text explaining semantic relationships.
-
-Do not add new review heuristics.
-
-The experiment must isolate:
+The Recovery prompt should clearly state:
 
 ```text
-semantic grouping + group budgeting
+- Review only the provided remaining changed regions.
+- Look for additional correctness issues.
+- Do not repeat already reported findings.
+- Report only issues supported by the provided code.
+- Emit only high- or medium-confidence candidates.
+- Do not invent bugs because a region was not previously reported.
+- Do not assign severity.
+- Output JSON only.
 ```
 
-from prompt changes.
+Keep the prompt focused.
+
+Do not add a large new review heuristic checklist in this phase.
+
+The experiment should primarily test:
+
+```text
+second-pass attention reallocation
+```
+
+rather than prompt engineering.
 
 ---
 
-# 20. Do Not Add Additional Detection Passes
+# 7. Provide Already-Reported Findings as Exclusion Context
 
-Do not implement the planned recovery pass in Phase 2.
+Recovery Detection needs enough information to avoid rediscovering the same issues.
 
-The pipeline remains:
+Provide a compact list of already-reported findings.
+
+For example:
 
 ```text
-Final semantic groups
-    ↓
-Existing Turn 1
-    ↓
-Existing Turn 2
+Already reported findings:
+
+- src/renderer.cpp:323 sampleFloat
+  Scalar texture sampling mirrors the U coordinate.
+
+- src/renderer.cpp:597 hitTriangle
+  Interpolated U uses vertex V components.
 ```
 
-No additional LLM call should be introduced.
+Do not include full evidence, impact, and suggested fix unless required.
 
-Recovery detection will be evaluated separately later.
+The purpose of this list is exclusion, not re-evaluation.
+
+Keep it token-efficient.
 
 ---
 
-# 21. Preserve Candidate Constraints
+# 8. Prefer Excluding Reported Regions From Recovery Source Context
 
-Do not change the current Turn 1 constraints:
+Where practical, do not include already-reported changed regions as primary Recovery review targets.
+
+For example, if the original group contains:
+
+```text
+r0 reported
+r1 unreported
+r2 reported
+r3 unreported
+```
+
+the Recovery prompt should focus on:
+
+```text
+r1
+r3
+```
+
+rather than repeating all four changed regions.
+
+However, surrounding unchanged source context may still be included when required to understand `r1` or `r3`.
+
+Do not remove necessary local context merely because it contains nearby reported code.
+
+---
+
+# 9. Preserve Source Context Around Remaining Regions
+
+Recovery Detection should not receive isolated changed lines with no surrounding code.
+
+For each unreported region, provide enough source context to understand:
+
+```text
+containing function / method
+relevant nearby expressions
+local variables
+control flow
+```
+
+Reuse existing review context extraction logic where possible.
+
+Do not implement repository-wide dependency expansion in this phase.
+
+The intended context is:
+
+```text
+remaining changed region
++
+local source context already available
+```
+
+not:
+
+```text
+remaining region
++
+all callers
++
+all callees
++
+all dependency files
+```
+
+---
+
+# 10. Preserve C/C++ Semantic Group Context Where Useful
+
+For C/C++, Phase 1 and Phase 2 may place related files or symbols in the same review group.
+
+Recovery Detection should retain useful semantic-group context when it helps interpret the remaining region.
+
+Example:
+
+```text
+renderSphere changed region is unreported
+
+Related renderMesh implementation is already present
+in the semantic review group
+```
+
+It may remain available as supporting context.
+
+Do not reduce Recovery context so aggressively that useful comparisons introduced by semantic grouping disappear.
+
+---
+
+# 11. Non-C/C++ Files Remain Per-File
+
+Preserve the existing language policy.
+
+```text
+C/C++:
+semantic grouped / budgeted context
+
+other languages:
+one changed file per review group
+```
+
+Recovery Detection should operate on whatever final review groups Phase 2 produces.
+
+Do not introduce new cross-file grouping for non-C/C++ languages.
+
+---
+
+# 12. Skip Recovery When Nothing Remains
+
+If all changed regions are already reported by Primary Detection:
+
+```text
+unreported_region_count == 0
+```
+
+do not call the Recovery model.
+
+Proceed directly to the existing Turn 2.
+
+Record that Recovery Detection was skipped.
+
+Example:
+
+```text
+recovery_status = "skipped_no_remaining_regions"
+```
+
+Use naming consistent with the existing metrics/logging system.
+
+---
+
+# 13. Recovery Candidate Limit
+
+Recovery Detection should also have a candidate limit.
+
+Prefer keeping:
 
 ```text
 Maximum 10 candidates
-confidence = high or medium
-no low-confidence candidates
-JSON only
 ```
 
-Phase 2 must not affect candidate schema or review policy.
+unless the existing candidate limit is naturally configurable per turn.
+
+Do not increase the maximum merely because this is a second pass.
+
+The intent is to recover a small number of additional high-confidence findings.
 
 ---
 
-# 22. Tests
+# 14. Combine Primary and Recovery Candidates
 
-Add focused tests for budget behavior.
-
-## Case 1 — Small C++ Group
-
-Input:
+After Recovery Detection:
 
 ```text
-foo.h
-foo.cpp
+Primary Candidates
+       +
+Recovery Candidates
+       ↓
+Candidate Union
 ```
 
-Estimated size:
+Pass the combined candidate set into the existing Turn 2.
+
+Do not run Primary candidates through a separate verification stage.
+
+Do not create a new finalization turn.
+
+---
+
+# 15. Preserve Candidate Provenance Internally
+
+Internally record whether each candidate came from:
 
 ```text
-below budget
+primary
+recovery
 ```
 
-Expected:
+For example:
+
+```csharp
+DetectionSource.Primary
+DetectionSource.Recovery
+```
+
+or equivalent.
+
+This metadata is for:
 
 ```text
-one group
+benchmarking
+diagnostics
+deduplication analysis
+```
+
+Do not expose it in the final GitLab review.
+
+Do not require the LLM to emit it.
+
+---
+
+# 16. Deduplicate Obvious Primary/Recovery Duplicates
+
+Recovery should be instructed not to repeat findings, but duplicates may still occur.
+
+Before existing Turn 2, optionally remove only obvious duplicates.
+
+Use conservative deterministic matching such as:
+
+```text
+same canonical file
++
+same changed region
++
+same or overlapping location
+```
+
+Do not implement complex semantic deduplication.
+
+If duplicate status is ambiguous:
+
+```text
+keep both
+```
+
+and allow the existing Turn 2 deduplication/selection logic to resolve them.
+
+Avoid losing real findings through aggressive pre-filtering.
+
+---
+
+# 17. Do Not Deduplicate Merely by Function Name
+
+Example:
+
+```text
+traceMesh:
+roughness UV swap
+
+traceMesh:
+incorrect environment lighting direction
+```
+
+These are separate issues in the same function.
+
+Do not treat them as duplicates simply because:
+
+```text
+same file
+same symbol
+```
+
+Use changed-region identity or concrete source overlap where possible.
+
+---
+
+# 18. Existing Turn 2 Remains the Final Stage
+
+Turn 2 should receive the union:
+
+```text
+Primary candidates
++
+Recovery candidates
+```
+
+Then continue performing its existing responsibilities:
+
+```text
+candidate selection
+false-positive rejection
+deduplication
+project policy
+severity
+language
+final formatting
+```
+
+Do not rewrite Turn 2 in Phase 4.
+
+Do not remove validation behavior from Turn 2.
+
+---
+
+# 19. Handle Combined Candidate Count Carefully
+
+Primary may return up to 10 candidates and Recovery may return additional candidates.
+
+Therefore the combined set may exceed 10.
+
+Do not silently truncate the combined set before Turn 2 unless an existing hard system limit requires it.
+
+For example:
+
+```text
+Primary: 8
+Recovery: 4
+Combined: 12
+```
+
+Turn 2 should receive all 12 if the current architecture supports it.
+
+The `Maximum 10 candidates` constraint applies to each Detection output, not necessarily to the candidate union.
+
+If there is an existing Turn 2 input limit, use the existing behavior and document it.
+
+Do not introduce an arbitrary new top-10 ranking mechanism in this phase.
+
+---
+
+# 20. Do Not Ask Recovery to Verify Primary Findings
+
+The Recovery prompt must not contain instructions such as:
+
+```text
+Check whether the previous findings are valid.
+Reject incorrect findings.
+Confirm the first pass.
+```
+
+That recreates the previously unsuccessful Verification architecture.
+
+Recovery is additive:
+
+```text
+Primary Detection
++
+Additional Detection
+```
+
+not:
+
+```text
+Detection
+→ Verification
 ```
 
 ---
 
-## Case 2 — Oversized C++ Group
+# 21. Preserve Changed-Region Coverage After Recovery
 
-Input:
+Run coverage mapping for Recovery candidates as well.
 
-```text
-foo.h
-foo.cpp
-foo_loader.cpp
-foo_cache.cpp
-```
-
-Estimated size:
+After Recovery, the system should be able to record:
 
 ```text
-above budget
+regions reported by Primary
+regions newly reported by Recovery
+regions still unreported after Recovery
 ```
 
-Expected:
+For example:
 
 ```text
-multiple groups
+10 changed regions
+
+Primary:
+6 reported
+
+Recovery:
+2 additional reported
+
+Remaining:
+2 unreported
 ```
 
-while preserving the strongest relationships.
+Do not use this final remaining set for another pass in Phase 4.
+
+Exactly one Recovery pass should be added.
 
 ---
 
-## Case 3 — Preserve Header / Source Pair
+# 22. No Recursive Recovery
 
-Input relationships:
-
-```text
-foo.h <-> foo.cpp       strong
-foo.cpp <-> helper.cpp  weak
-```
-
-Budget requires splitting.
-
-Expected:
+Do not implement:
 
 ```text
-foo.h
-foo.cpp
+Primary
+→ Recovery 1
+→ Recovery 2
+→ Recovery 3
 ```
 
-remain together.
+even if unreported regions remain.
 
-`helper.cpp` should split first.
+Phase 4 adds exactly:
+
+```text
+one primary detection pass
++
+one recovery detection pass
+```
+
+Recursive or adaptive passes belong to a separate experiment.
 
 ---
 
-## Case 4 — Preserve Same Class
+# 23. Add Recovery Metrics
 
-Changed symbols:
+Extend existing recorder/benchmark metrics.
+
+Record at minimum:
+
+## Primary Detection
 
 ```text
-Foo::Open
-Foo::Close
-Foo::Reset
-Bar::Update
+duration_ms
+input_tokens
+output_tokens
+candidate_count
+reported_region_count
 ```
 
-If splitting is required and `Bar::Update` is weakly related:
-
-Expected:
+## Recovery Detection
 
 ```text
-Foo methods remain together
-Bar::Update is split first
+executed / skipped
+duration_ms
+input_tokens
+output_tokens
+candidate_count
+newly_reported_region_count
+duplicate_candidate_count
+```
+
+## Combined
+
+```text
+primary_candidate_count
+recovery_candidate_count
+combined_candidate_count
+final_turn2_finding_count
+```
+
+## Overall
+
+```text
+total_duration_ms
+total_input_tokens
+total_output_tokens
+```
+
+Reuse existing timing/token measurement infrastructure.
+
+---
+
+# 24. Important Recovery Benchmark Metrics
+
+The key Phase 4 metrics are:
+
+```text
+Recovery Additional TP
+Recovery FP
+Recovery Duplicate Count
+Recovery Additional Latency
+```
+
+The application does not need to automatically know TP/FP if benchmark scoring is external.
+
+At minimum, persist enough information to calculate them afterward.
+
+Especially useful:
+
+```text
+candidate source = primary/recovery
+candidate location
+mapped changed region
 ```
 
 ---
 
-## Case 5 — Determinism
+# 25. Extend Benchmark Logs
 
-Run grouping multiple times with identical input.
+A benchmark run should make the stages easy to inspect.
 
-Expected:
+Suggested output:
 
 ```text
-same groups
-same membership
-same ordering
+benchmark-logs/<review_run_id>/
+    metadata.json
+    summary.json
+
+    primary-turn1.json
+    recovery-turn1.json
+    turn2.txt
+
+    coverage-primary.json
+    coverage-recovery.json
 ```
+
+Use the current benchmark layout if one already exists; do not rename everything unnecessarily.
+
+The essential requirement is that Primary and Recovery outputs can be distinguished.
 
 ---
 
-## Case 6 — Non-C/C++
+# 26. Recovery Timing Must Exclude File Logging
 
-Input:
-
-```text
-a.py
-b.py
-```
-
-Expected:
-
-```text
-2 standalone groups
-```
-
-Budgeted semantic splitting must not merge or otherwise alter them.
-
----
-
-## Case 7 — Mixed Language
-
-Input:
-
-```text
-foo.h
-foo.cpp
-foo_extra.cpp
-build.py
-Tool.cs
-```
-
-Expected:
-
-```text
-C/C++ groups follow semantic + budget rules
-build.py is standalone
-Tool.cs is standalone
-```
-
----
-
-# 23. Benchmark Plan
-
-After implementation, compare:
-
-```text
-A. Phase 1
-   semantic grouping
-   no budget-driven split beyond existing behavior
-   thinking off
-
-B. Phase 2
-   semantic grouping
-   budgeted deterministic splitting
-   thinking off
-```
-
-Keep everything else identical.
+Preserve timing semantics.
 
 Measure:
 
 ```text
-per-bug detection frequency
-false-positive frequency
+model inference
+```
 
-Turn 1 latency
+the same way as existing Turn timings.
+
+Do not include benchmark file serialization inside the inference timer.
+
+Example:
+
+```text
+start recovery timer
+invoke model
+stop recovery timer
+
+then write log files
+```
+
+---
+
+# 27. Recovery Failure Must Not Destroy Primary Results
+
+If Primary Detection succeeds but Recovery fails:
+
+```text
+keep Primary candidates
+```
+
+and continue to Turn 2 if practical.
+
+Recovery is an enhancement, not a requirement for completing the review.
+
+Example behavior:
+
+```text
+Primary success
+Recovery failure
+    ↓
+log warning
+    ↓
+Turn 2 with Primary candidates only
+```
+
+Record the failure in benchmark metadata.
+
+Do not fail the entire review solely because the optional Recovery pass failed unless existing error-handling architecture makes continuation impossible.
+
+---
+
+# 28. Turn 2 Should Still Run If Recovery Returns Zero Candidates
+
+Example:
+
+```text
+Primary candidates: 6
+Recovery candidates: 0
+```
+
+Expected:
+
+```text
+Turn 2 receives the 6 Primary candidates.
+```
+
+This is a normal result.
+
+Do not interpret zero Recovery candidates as a failure.
+
+---
+
+# 29. Do Not Change Semantic Grouping
+
+Phase 4 must preserve:
+
+```text
+Phase 1 semantic grouping
+Phase 2 group budgets
+Phase 2 deterministic splitting
+Phase 3 region tracking
+```
+
+Do not tune grouping thresholds while evaluating Recovery Detection.
+
+Otherwise it will be impossible to isolate the effect of the second pass.
+
+---
+
+# 30. Do Not Change Review Heuristics
+
+Do not add large new rules such as:
+
+```text
+check atan2 argument ordering
+check cross-product handedness
+check U/V swaps
+check width/height
+```
+
+in this phase.
+
+Those may be valuable later, but Phase 4 should test whether:
+
+```text
+a second attention pass alone
+```
+
+recovers additional findings.
+
+Keep the Recovery prompt generic and correctness-focused.
+
+---
+
+# 31. Suggested Recovery Prompt
+
+Create a concise template based on the following intent:
+
+```text
+You are performing a second-pass code review.
+
+The first detection pass already reported some issues.
+Do not repeat those findings.
+
+Review only the remaining changed regions and their provided
+source context for additional correctness issues.
+
+A remaining changed region is not necessarily incorrect.
+Report an issue only when the provided code gives sufficient
+evidence that the change can cause incorrect behavior.
+
+Only report high- or medium-confidence issues.
+
+For every reported issue, provide:
+- location
+- problem
+- evidence
+- impact
+- suggested_fix
+- confidence
+
+Do not assign severity.
+Do not write the final review.
+Output JSON only.
+```
+
+Adapt terminology and exact formatting to match the current prompt conventions.
+
+Do not include benchmark-specific bug information.
+
+---
+
+# 32. Tests
+
+Add focused tests.
+
+## Case 1 — No Unreported Regions
+
+Primary coverage:
+
+```text
+all changed regions reported
+```
+
+Expected:
+
+```text
+Recovery LLM call is skipped.
+Existing Turn 2 runs normally.
+```
+
+---
+
+## Case 2 — Remaining Regions Exist
+
+Primary:
+
+```text
+r0 reported
+r1 unreported
+r2 reported
+r3 unreported
+```
+
+Expected Recovery target:
+
+```text
+r1
+r3
+```
+
+---
+
+## Case 3 — Recovery Adds a New Candidate
+
+Primary candidate maps to:
+
+```text
+r0
+```
+
+Recovery candidate maps to:
+
+```text
+r2
+```
+
+Expected:
+
+```text
+combined candidates contain both
+```
+
+and Turn 2 receives both.
+
+---
+
+## Case 4 — Recovery Repeats Primary Candidate
+
+Primary:
+
+```text
+r0 issue A
+```
+
+Recovery:
+
+```text
+r0 issue A
+```
+
+Expected:
+
+```text
+obvious duplicate may be removed
+or safely passed to existing Turn 2 deduplication
+```
+
+Do not create two final findings.
+
+---
+
+## Case 5 — Same Function, Different Regions
+
+Changed regions:
+
+```text
+r0 traceMesh:679
+r1 traceMesh:691
+r2 traceMesh:721
+```
+
+Primary reports:
+
+```text
+r2
+```
+
+Recovery reports:
+
+```text
+r0
+```
+
+Expected:
+
+```text
+both candidates preserved
+```
+
+They are not duplicates merely because both belong to `traceMesh`.
+
+---
+
+## Case 6 — Recovery Returns Zero Issues
+
+Expected:
+
+```text
+Primary candidates continue unchanged to Turn 2.
+```
+
+---
+
+## Case 7 — Recovery Fails
+
+Expected where practical:
+
+```text
+warning logged
+Primary candidates preserved
+Turn 2 still runs
+benchmark records recovery failure
+```
+
+---
+
+## Case 8 — Coverage After Recovery
+
+Primary reports:
+
+```text
+r0
+r2
+```
+
+Recovery reports:
+
+```text
+r1
+```
+
+Expected final coverage:
+
+```text
+reported:
+r0
+r1
+r2
+
+remaining:
+other regions only
+```
+
+---
+
+## Case 9 — Combined Candidate Count Above 10
+
+Primary:
+
+```text
+8 candidates
+```
+
+Recovery:
+
+```text
+5 candidates
+```
+
+Expected:
+
+```text
+13 combined candidates
+```
+
+unless a pre-existing hard Turn 2 limit requires another behavior.
+
+Do not silently discard candidates solely because Turn 1 has a 10-candidate output limit.
+
+---
+
+# 33. Benchmark Plan
+
+Compare at least:
+
+```text
+A. Phase 3 baseline
+   Semantic grouping
+   One Detection pass
+   thinking off
+
+B. Phase 4
+   Same semantic grouping
+   Primary + Recovery Detection
+   thinking off
+```
+
+Do not change model, prompts for Primary, grouping, or benchmark corpus between A and B.
+
+Run multiple trials.
+
+Measure:
+
+```text
+Primary detections
+Recovery additional detections
+Recovery duplicates
+false positives
+final findings
+
+Primary latency
+Recovery latency
 Turn 2 latency
 total latency
 
 input tokens
 output tokens
-
-group count
-group token sizes
-largest group size
-number of budget splits
-```
-
-The key question is:
-
-```text
-Does limiting oversized semantic groups reduce context noise
-without losing the benefit of semantic grouping?
 ```
 
 ---
 
-# 24. Success Criteria
+# 34. Primary Experiment Question
 
-Phase 2 is successful if:
+Phase 4 should answer:
 
-1. C/C++ semantic groups have an explicit size budget.
+```text
+Can one additional thinking-off detection pass recover
+meaningful issues missed by Primary Detection while remaining
+far faster than thinking-on review?
+```
 
-2. Groups below the budget remain unchanged.
+Do not optimize Recovery based on benchmark results during the same implementation.
 
-3. Oversized groups are split deterministically.
+First establish the clean baseline.
 
-4. Strong semantic relationships are preserved preferentially.
+---
 
-5. Header/source pairs are preserved where practical.
+# 35. Success Criteria
 
-6. Same-class changes stay together where practical.
+Phase 4 is successful if:
 
-7. Weak directory/module relationships break before strong relationships.
+1. The existing Primary Detection behavior remains unchanged.
 
-8. Giant connected components are avoided.
+2. Exactly one Recovery Detection pass is added.
 
-9. Non-C/C++ files remain one-file-per-group.
+3. Recovery targets unreported changed regions from Phase 3.
 
-10. No review prompt changes are made.
+4. Already-reported findings are provided only as exclusion context.
 
-11. No additional LLM calls are introduced.
+5. Recovery does not verify or reject Primary findings.
 
-12. Existing Turn 1 and Turn 2 behavior is unchanged.
+6. Recovery uses the same candidate schema as Primary.
 
-13. Grouping diagnostics expose budget and split decisions.
+7. Primary and Recovery candidates are combined before existing Turn 2.
 
-14. Tests cover normal, oversized, mixed-language, and deterministic cases.
+8. Same-function but different-region findings are preserved.
 
-15. Review quality does not materially regress against Phase 1.
+9. Obvious duplicate candidates can be identified conservatively.
+
+10. Turn 2 remains otherwise unchanged.
+
+11. Recovery is skipped when no unreported regions remain.
+
+12. Recovery failure does not discard Primary candidates where continuation is possible.
+
+13. Recovery candidates are mapped back to changed regions.
+
+14. Primary vs Recovery provenance is logged.
+
+15. Benchmark logs expose per-pass timing, token use, candidates, and coverage.
+
+16. Semantic grouping and group budgets are unchanged.
+
+17. No recursive Recovery passes are added.
+
+18. No thinking-specific detection logic is added.
 
 ---
 
@@ -888,22 +1233,23 @@ Phase 2 is successful if:
 Do not implement:
 
 ```text
-second detection pass
-recovery review
-verification turn
-candidate union
-candidate-driven context retrieval
-unchanged caller/callee expansion
-full-file context redesign
-prompt changes
-review heuristics
-LLM-based grouping
-embedding-based grouping
-generic semantic grouping for non-C/C++ languages
-automatic benchmark scoring
+Verification Turn
+candidate validity scoring
+recursive Recovery passes
+adaptive multi-pass loops
+thinking fallback
+thinking-on escalation
+new semantic grouping rules
+group-budget tuning
+AST caller/callee source expansion
+repository-wide context retrieval
+large prompt heuristic changes
+automatic TP/FP scoring
+severity changes
+new finalization stage
 ```
 
-These are separate phases.
+These are separate experiments.
 
 ---
 
@@ -912,48 +1258,72 @@ These are separate phases.
 Implement in this order:
 
 ```text
-1. Locate the Phase 1 C/C++ semantic grouping boundary.
+1. Keep the current Primary Turn 1 unchanged.
 
-2. Reuse the existing token estimator if available.
+2. Reuse Phase 3 ReviewCoverage after Primary Detection.
 
-3. Add one explicit C/C++ group budget.
+3. Add a Recovery prompt template.
 
-4. Calculate estimated size for initial semantic groups.
+4. Build Recovery input from unreported changed regions.
 
-5. Leave groups below budget unchanged.
+5. Add compact already-reported exclusion context.
 
-6. Implement deterministic splitting for oversized groups.
+6. Invoke exactly one Recovery Detection pass.
 
-7. Preserve header/source and same-type relationships first.
+7. Deserialize Recovery output into the existing candidate model.
 
-8. Add stable ordering and tie-breaking.
+8. Map Recovery candidates to changed regions.
 
-9. Add grouping/budget diagnostics.
+9. Add Primary/Recovery provenance metadata.
 
-10. Extend benchmark metadata if useful.
+10. Conservatively handle obvious duplicates.
 
-11. Add focused unit tests.
+11. Union Primary and Recovery candidates.
 
-12. Run existing tests.
+12. Pass the union into the existing Turn 2.
 
-13. Benchmark Phase 1 vs Phase 2 using thinking off.
+13. Add per-pass metrics and benchmark logs.
+
+14. Add failure/skip handling.
+
+15. Add focused tests.
+
+16. Run existing tests.
+
+17. Benchmark Phase 3 vs Phase 4 using thinking off.
 ```
 
-Do not proceed into recovery detection during this task.
+Do not begin adaptive Recovery or thinking fallback as part of this task.
 
 ---
 
 # Design Principle
 
-The central principle of Phase 2 is:
+The central principle of Phase 4 is:
 
 ```text
-Semantic grouping should improve comparison,
-not create oversized contexts that hide the changes being reviewed.
+Do not spend more reasoning on the same findings.
+
+Spend another cheap non-thinking pass
+on the changed code that did not produce findings the first time.
 ```
 
-Preserve the smallest set of strongly related C/C++ code needed for effective review.
+The intended architecture is:
 
-Break weak relationships before strong ones.
+```text
+Primary Detection
+        ↓
+What produced findings?
+        ↓
+Remaining changed regions
+        ↓
+Recovery Detection
+        ↓
+Candidate union
+        ↓
+Existing final selection
+```
 
-Keep the implementation deterministic, narrow, benchmarkable, and easy to roll back.
+Recovery is additive, conservative, and attention-focused.
+
+It must improve the opportunity to discover missed issues without recreating the expensive `thinking on` path.

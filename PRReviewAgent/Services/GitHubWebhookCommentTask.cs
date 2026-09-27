@@ -11,7 +11,9 @@ using PRReviewAgent.Services.ReviewStatus;
 using PRReviewAgent.Services.Statistics;
 using PRReviewAget.Prompt;
 using PRReviewAgent.Services.AutoReview;
+using PRReviewAgent.Services.Coverage;
 using PRReviewAgent.Services.Grouping;
+using PRReviewAgent.Services.Recovery;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -259,6 +261,7 @@ namespace PRReviewAgent.Services
             reviewRequest.MergeRequestTitle = payloadIssueComment_.issue.title ?? string.Empty;
             reviewRequest.MergeRequestDescription = payloadIssueComment_.issue.body?? string.Empty;
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template(language_);
+            reviewRequest.ReviewRulesTurn1Recovery = Context.Instance.Settings.GetReview1RecoveryTemplate(language_);
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
             GroupingConfig groupingConfig = Context.Instance.Settings.GetGroupingConfig();
@@ -436,9 +439,119 @@ namespace PRReviewAgent.Services
                             }
                         }
 
-                        int fileGroupCandidates = issuesResponse.issues.Length;
+                        // Coverage tracking — deterministic bookkeeping, no LLM call.
+                        ReviewCoverage coverage = ReviewCoverage.Empty;
+                        try
+                        {
+                            IReadOnlyList<ChangedRegion> regions = ChangedRegionBuilder.Build(fileGroup.ReviewContexts);
+                            coverage = Turn1CoverageResolver.Resolve(regions, issuesResponse, logger);
+                            logger.LogInformation(
+                                "Turn 1 coverage for '{Topic}': {Changed} region(s), {Reported} reported, {Unreported} unreported, {Unmapped} unmapped.",
+                                fileGroup.Topic,
+                                coverage.ChangedRegions.Count,
+                                coverage.ReportedRegionIds.Count,
+                                coverage.UnreportedRegionIds.Count,
+                                coverage.CandidateMappings.Count(m => m.RegionIds.Count == 0));
+                            if (coverage.UnreportedRegionIds.Count > 0)
+                            {
+                                IEnumerable<string> lines = coverage.ChangedRegions
+                                    .Where(r => coverage.UnreportedRegionIds.Contains(r.RegionId))
+                                    .Select(r => $"  {r.RegionId} {r.FilePath}:{r.StartLine}" +
+                                                 (r.ContainingSymbol != null ? $" {r.ContainingSymbol}" : string.Empty));
+                                logger.LogDebug("Unreported regions:\n{Regions}", string.Join("\n", lines));
+                            }
+                        }
+                        catch (Exception ex) { logger.LogWarning(ex, "Coverage tracking failed for '{Topic}'", fileGroup.Topic); }
+                        if (benchmarkRecorder != null)
+                        {
+                            try { await benchmarkRecorder.RecordTurn1CoverageAsync(fileGroup.Topic, coverage); }
+                            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record coverage for '{Topic}'", fileGroup.Topic); }
+                        }
+
+                        // Recovery Detection — one additional non-thinking pass on unreported regions.
+                        IssuesResponse combinedCandidates = issuesResponse;
+                        ReviewCoverage finalCoverage = coverage;
+                        int primaryReportedCount = coverage.ReportedRegionIds.Count;
+                        int recoveryNewlyReported = 0, recoveryDuplicates = 0;
+                        bool recoverySkipped = coverage.UnreportedRegionIds.Count == 0
+                            || string.IsNullOrEmpty(reviewRequest.ReviewRulesTurn1Recovery);
+                        string recoveryStatus = recoverySkipped ? "skipped_no_remaining_regions" : "pending";
+                        IssuesResponse? recoveryResponse = null;
+                        int? recInputTokens = null, recOutputTokens = null;
+
+                        if (!recoverySkipped)
+                        {
+                            Stopwatch recoverySw = Stopwatch.StartNew();
+                            Exception? recException = null;
+                            try
+                            {
+                                string promptRecovery = PromptBuilder.BuildTurn1Recovery(
+                                    reviewRequest, fileGroup, coverage, issuesResponse, stringBuilder_);
+                                (recoveryResponse, recInputTokens, recOutputTokens) =
+                                    await context.Agents.RunJsonWithUsageAsync<IssuesResponse>(promptRecovery, context.CancellationToken);
+                            }
+                            catch (Exception ex) { recException = ex; logger.LogWarning(ex, "Recovery Detection failed for '{Topic}'", fileGroup.Topic); }
+                            finally { recoverySw.Stop(); }
+
+                            if (recException == null && recoveryResponse != null && recoveryResponse.issues.Length > 0)
+                            {
+                                // Assign IDs continuing after primary.
+                                int baseId = issuesResponse.issues.Length;
+                                for (int ci = 0; ci < recoveryResponse.issues.Length; ci++)
+                                {
+                                    recoveryResponse.issues[ci].candidate_id = $"c{baseId + ci}";
+                                    string? rid = recoveryResponse.issues[ci].rule_id;
+                                    if (rid != null && !selectedRuleIds.Contains(rid))
+                                        recoveryResponse.issues[ci].rule_id = null;
+                                    if (recoveryResponse.issues[ci].rule_id != null)
+                                        candidateToRuleId[recoveryResponse.issues[ci].candidate_id!] = recoveryResponse.issues[ci].rule_id!;
+                                }
+
+                                // Coverage for recovery candidates.
+                                ReviewCoverage recoveryCoverage = Turn1CoverageResolver.Resolve(
+                                    coverage.ChangedRegions, recoveryResponse, logger);
+                                recoveryNewlyReported = recoveryCoverage.ReportedRegionIds
+                                    .Count(rid => !coverage.ReportedRegionIds.Contains(rid));
+
+                                // Conservative deduplication + union.
+                                (IssuesResponse combined, int dups) = CandidateUnionBuilder.Union(
+                                    issuesResponse, recoveryResponse, coverage, recoveryCoverage);
+                                combinedCandidates = combined;
+                                recoveryDuplicates = dups;
+                                finalCoverage = ReviewCoverage.Merge(coverage, recoveryCoverage);
+                                recoveryStatus = "executed";
+                            }
+                            else if (recException == null)
+                            {
+                                recoveryStatus = "executed_no_candidates";
+                            }
+                            else
+                            {
+                                recoveryStatus = "failed";
+                            }
+
+                            if (benchmarkRecorder != null)
+                            {
+                                try
+                                {
+                                    await benchmarkRecorder.RecordRecoveryTurnAsync(
+                                        fileGroup.Topic, recoveryStatus, recoveryResponse,
+                                        recoverySw.ElapsedMilliseconds, recInputTokens, recOutputTokens,
+                                        recoveryNewlyReported, recoveryDuplicates);
+                                    await benchmarkRecorder.RecordRecoveryCoverageAsync(
+                                        fileGroup.Topic, finalCoverage, primaryReportedCount);
+                                }
+                                catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record recovery for '{Topic}'", fileGroup.Topic); }
+                            }
+                        }
+
+                        logger.LogInformation(
+                            "Recovery for '{Topic}': {Status}, +{Newly} newly-reported region(s), {Dups} duplicate(s).",
+                            fileGroup.Topic, recoveryStatus, recoveryNewlyReported, recoveryDuplicates);
+
+                        int fileGroupCandidates = combinedCandidates.issues.Length;
                         int fileGroupSelected = 0, fileGroupCritical = 0, fileGroupMajor = 0, fileGroupMinor = 0;
-                        foreach (Prompt.Issue issue in issuesResponse.issues)
+                        foreach (Prompt.Issue issue in combinedCandidates.issues)
                         {
                             string conf = issue.confidence?.Trim() ?? string.Empty;
                             if (string.Equals(conf, "Critical", StringComparison.OrdinalIgnoreCase)) { fileGroupCritical++; fileGroupSelected++; }
@@ -451,8 +564,8 @@ namespace PRReviewAgent.Services
                         totalMinor += fileGroupMinor;
                         totalSelected += fileGroupSelected;
 
-                        // Selection turn
-                        string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
+                        // Selection turn with combined candidates.
+                        string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, combinedCandidates, stringBuilder_);
                         DateTimeOffset selectionStart = DateTimeOffset.UtcNow;
                         Stopwatch selectionSw = Stopwatch.StartNew();
                         long? selectionTurnId = null;
