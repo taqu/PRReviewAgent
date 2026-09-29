@@ -66,11 +66,31 @@ When a changed expression replaces one variable with another type-compatible var
 
 Example risk: `width` replaced by `height`, `u` replaced by `v`, `src` replaced by `dst`.
 
+## Sign and Direction Reversals
+
+If a changed expression negates a value, reverses a comparison, or flips a direction, verify whether the original sign or direction was required by the surrounding logic.
+
+## Changed Conditions and Comparison Direction
+
+If a changed condition altered a comparison operator, boundary value, or logical direction, verify that the new condition still correctly guards or selects the intended set of cases.
+
 ## Related Implementation Consistency
 
 If Recovery context contains a sibling or related implementation, compare it with the changed code.
 
 Inconsistency is **evidence**, not proof. Report the issue only when the inconsistency combined with the visible code establishes incorrect behavior.
+
+# Review Procedure
+
+For each remaining changed region:
+
+1. Identify exactly what expression or behavior changed.
+2. Determine the semantic role of the changed values.
+3. Compare with nearby or related code when available.
+4. Check whether operand order, variable selection, dimensions, direction, sign, indexing, or conditions changed meaningfully.
+5. Determine whether the new behavior can be shown to be incorrect from the provided code.
+6. If yes, emit one candidate.
+7. If the conclusion depends on missing specification or uncertain conventions, do not emit it.
 
 # Specification-Dependent Caution
 
