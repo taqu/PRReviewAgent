@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using PRReviewAgent.Prompt;
 using PRReviewAgent.Services.Coverage;
 using PRReviewAgent.Services.Grouping;
+using PRReviewAgent.Services.Recovery;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -171,7 +172,9 @@ internal sealed class BenchmarkRunRecorder
         string groupId, string status,
         IssuesResponse? recoveryResponse,
         long durationMs, int? inputTokens, int? outputTokens,
-        int newlyReportedRegionCount, int duplicateCandidateCount)
+        int newlyReportedRegionCount, int duplicateCandidateCount,
+        RecoveryContextResult? contextResult = null,
+        string? promptVersion = null)
     {
         int candidateCount = recoveryResponse?.issues.Length ?? 0;
         recoveryMetrics_.Add(new RecoveryTurnMetrics(
@@ -185,12 +188,31 @@ internal sealed class BenchmarkRunRecorder
             {
                 group_id = groupId,
                 status,
+                prompt_version = promptVersion,
                 duration_ms = durationMs,
                 input_tokens = inputTokens,
                 output_tokens = outputTokens,
                 candidate_count = candidateCount,
                 newly_reported_region_count = newlyReportedRegionCount,
                 duplicate_candidate_count = duplicateCandidateCount,
+                recovery_context = contextResult == null ? null : new
+                {
+                    target_region_count = contextResult.TargetRegionCount,
+                    fragment_count = contextResult.Fragments.Count,
+                    estimated_tokens = contextResult.EstimatedTokens,
+                    excluded_reported_region_count = contextResult.ExcludedReportedRegionCount,
+                    target_region_ids = contextResult.Fragments
+                        .SelectMany(f => f.TargetRegionIds)
+                        .ToArray(),
+                    fragments = contextResult.Fragments.Select(f => new
+                    {
+                        file = f.FilePath,
+                        symbol = f.ContainingSymbol,
+                        start_line = f.StartLine,
+                        end_line = f.EndLine,
+                        target_region_ids = f.TargetRegionIds.ToArray(),
+                    }).ToArray(),
+                },
                 issues = recoveryResponse?.issues,
             }, JsonOptions));
         }

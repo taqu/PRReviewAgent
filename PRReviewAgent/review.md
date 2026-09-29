@@ -1,1230 +1,1041 @@
-# Phase 4 — Add Recovery Detection for Unreported Changed Regions
+# Phase 6 — Optimize the Recovery Detection Prompt
 
 ## Objective
 
-Add a second non-thinking detection pass that reviews changed regions not associated with findings from the primary Turn 1 pass.
+Optimize the dedicated Recovery Detection prompt introduced in Phase 4 so the second `thinking off` pass is better at finding **additional high-confidence correctness issues** in the focused Recovery context created by Phase 5.
 
-The purpose is to recover correctness issues missed by the first detection pass while keeping the existing final selection/finalization behavior.
+This phase must change **Recovery prompt behavior only**.
 
-The target pipeline is:
+Do not change:
 
 ```text
-Review Group
+Primary Detection
+semantic grouping
+group budgets
+changed-region tracking
+Recovery context selection
+number of LLM calls
+candidate union
+Turn 2
+thinking configuration
+```
+
+The experiment should answer:
+
+```text
+Can a small amount of explicit review guidance make
+Recovery Detection more effective without increasing
+false positives or duplicate findings?
+```
+
+---
+
+# Existing Pipeline
+
+Preserve the current architecture:
+
+```text
+Review Groups
     ↓
-Turn 1A: Primary Detection
+Primary Detection
 thinking off
     ↓
 Coverage Resolver
     ↓
-Unreported Changed Regions
+Focused Recovery Context
     ↓
-Turn 1B: Recovery Detection
+Recovery Detection
 thinking off
     ↓
 Candidate Union
     ↓
 Existing Turn 2
-Selection / Dedupe / Severity / Formatting
     ↓
 Final Review
 ```
 
-This is **not** a verification pipeline.
-
-Do not use the Recovery pass to validate or reject candidates from Turn 1A.
-
-Its only purpose is:
+Phase 6 changes only:
 
 ```text
-Find additional review candidates
-from changed regions not already associated
-with Primary Detection findings.
+Recovery Detection prompt
 ```
 
 ---
 
 # Background
 
-The current `thinking off` review is much faster than `thinking on`, but detection is not perfectly stable.
-
-A second inexpensive non-thinking detection pass may improve recall while remaining substantially faster than enabling thinking.
-
-Previous work already provides:
-
-```text
-Phase 1:
-C/C++ semantic grouping
-
-Phase 2:
-budgeted deterministic C/C++ group splitting
-
-Phase 3:
-changed-region tracking
-candidate-to-region mapping
-reported/unreported changed-region sets
-```
-
-Phase 4 should use these existing components.
-
-Do not redesign them unless a small mechanical change is required.
-
----
-
-# 1. Preserve the Primary Detection Pass
-
-The current Turn 1 remains the primary detection pass.
-
-Conceptually rename it internally if useful:
-
-```text
-Primary Detection
-```
-
-but do not change its prompt or output schema in this phase.
-
-The current Turn 1 constraints remain unchanged:
-
-```text
-Maximum 10 candidates
-confidence must be high or medium
-do not output low-confidence candidates
-do not assign severity
-JSON only
-```
-
-Do not modify `review1.en.md` for the Primary Detection pass unless needed only to separate template loading from the new Recovery template.
-
-Primary benchmark behavior must remain comparable to the previous phase.
-
----
-
-# 2. Add a Separate Recovery Detection Pass
-
-After Primary Detection and coverage resolution, run a second LLM detection pass.
-
-This pass must use:
-
-```text
-thinking off
-```
-
-through the same external/model configuration used by the existing non-thinking review.
-
-Do not enable thinking specifically for Recovery Detection.
-
-The system may not know whether thinking is externally enabled or disabled.
-
-Do not add logic that attempts to infer reasoning mode.
-
----
-
-# 3. Recovery Detection Reviews Only Unreported Changed Regions
-
-Use the Phase 3 coverage result.
-
-Recovery input should be constructed from:
+The Recovery pass now receives:
 
 ```text
 unreported changed regions
 +
-the source context needed to understand those regions
+focused local source context
++
+limited strong semantic supporting context
++
+compact already-reported finding summary
 ```
 
-Do not treat the entire original review group as equally important again.
+The remaining problem is that a non-thinking model may still fail to apply some useful review strategies consistently.
 
-Primary objective:
+The Recovery prompt should make those strategies explicit without turning into a large generic checklist.
+
+The goal is not to make the model speculate harder.
+
+The goal is:
 
 ```text
-redirect model attention toward changes
-that did not produce findings in Turn 1A
+use the available code more systematically
 ```
 
 ---
 
-# 4. "Unreported" Does Not Mean "Bug"
+# 1. Keep Primary Detection Prompt Unchanged
 
-Preserve the Phase 3 terminology.
-
-An unreported changed region means only:
+Do not modify:
 
 ```text
-Primary Detection did not emit a candidate
-mapped to this changed region.
+review1.en.md
 ```
 
-It does not mean:
+or the equivalent Primary Detection template.
+
+Primary Detection must remain the benchmark control.
+
+Only the Recovery prompt should change.
+
+This is required so the Phase 5 vs Phase 6 benchmark isolates the effect of prompt optimization.
+
+---
+
+# 2. Preserve the Existing Recovery Output Schema
+
+Recovery Detection must continue returning the same candidate structure as Primary Detection.
+
+Required fields remain:
 
 ```text
-Primary Detection failed.
+location
+problem
+evidence
+impact
+suggested_fix
+confidence
 ```
 
-The Recovery prompt must not tell the model that the remaining regions contain bugs.
-
-Do not write instructions such as:
+Allowed confidence values remain:
 
 ```text
-Find the bugs missed by the first pass.
+high
+medium
 ```
+
+Do not output low-confidence candidates.
+
+Do not add:
+
+```text
+severity
+valid
+verification_status
+region_id
+review_score
+```
+
+to the LLM output schema.
+
+Internal provenance and region mapping remain application responsibilities.
+
+---
+
+# 3. Preserve Existing Output Constraints
+
+Keep the Recovery output constraints equivalent to:
+
+```text
+Maximum 10 candidates
+
+confidence must be high or medium
+
+Do not output low-confidence candidates
+
+Do not assign Critical, Major, or Minor severity
+
+Do not use Markdown
+
+Do not write the final review
+
+Output JSON only
+```
+
+Do not relax these constraints.
+
+---
+
+# 4. Recovery Is Additive, Not Corrective
+
+The prompt must make the role clear:
+
+```text
+Primary Detection already produced some findings.
+
+Recovery Detection should search the remaining changed regions
+for additional issues.
+```
+
+Do not ask Recovery to:
+
+```text
+validate Primary findings
+reject Primary findings
+rank Primary findings
+rewrite Primary findings
+```
+
+Recovery is another Detection pass.
+
+It is not Verification.
+
+---
+
+# 5. Do Not Tell the Model That Remaining Regions Contain Bugs
+
+Avoid language such as:
+
+```text
+Find bugs missed by the first pass.
+```
+
+This creates a strong false-positive incentive.
 
 Prefer:
 
 ```text
-Review the remaining changed regions for any additional
+Review the remaining changed regions for additional
 high- or medium-confidence correctness issues.
+
+A remaining changed region is not necessarily incorrect.
 ```
 
-This avoids artificially increasing false positives.
+This sentence should be explicit.
 
 ---
 
-# 5. Use a Dedicated Recovery Prompt
+# 6. Make Changed-Code Evidence the Primary Standard
 
-Create a separate template, for example:
+Recovery should report an issue only when it can build a concrete chain from code to incorrect behavior.
 
-```text
-review1-recovery.en.md
-```
-
-or a name consistent with the current project conventions.
-
-Do not reuse the full Primary Detection prompt blindly if a smaller Recovery prompt is clearer.
-
-However, preserve the same candidate output schema so Primary and Recovery candidates can be combined directly.
-
-Expected output shape remains conceptually:
-
-```json
-{
-  "issues": [
-    {
-      "location": "...",
-      "problem": "...",
-      "evidence": "...",
-      "impact": "...",
-      "suggested_fix": "...",
-      "confidence": "high"
-    }
-  ]
-}
-```
-
-Do not introduce:
+For every candidate, require the model to establish:
 
 ```text
-CandidateIssue
-VerifiedIssue
-valid
-verification_status
-severity
+1. What changed?
+2. Why can the new behavior be incorrect?
+3. Under what condition does it matter?
+4. What observable behavior can be affected?
+5. What minimal change would correct it?
 ```
 
-into Recovery Detection.
+If the provided code cannot establish this chain with at least medium confidence:
 
-Recovery produces normal detection candidates.
+```text
+do not report the candidate
+```
 
 ---
 
-# 6. Suggested Recovery Prompt Responsibilities
+# 7. Explicitly Check Internal Consistency
 
-The Recovery prompt should clearly state:
+Add a compact instruction to compare the changed expression against directly related code already present in the Recovery context.
 
-```text
-- Review only the provided remaining changed regions.
-- Look for additional correctness issues.
-- Do not repeat already reported findings.
-- Report only issues supported by the provided code.
-- Emit only high- or medium-confidence candidates.
-- Do not invent bugs because a region was not previously reported.
-- Do not assign severity.
-- Output JSON only.
-```
-
-Keep the prompt focused.
-
-Do not add a large new review heuristic checklist in this phase.
-
-The experiment should primarily test:
+Examples:
 
 ```text
-second-pass attention reallocation
+paired calculations
+sibling implementations
+related fields
+nearby coordinate calculations
+matching encode/decode logic
+initialization/cleanup symmetry
+producer/consumer assumptions
 ```
 
-rather than prompt engineering.
+The prompt should encourage consistency comparison when supporting code is actually present.
+
+Do not tell the model to assume that differing implementations are necessarily bugs.
 
 ---
 
-# 7. Provide Already-Reported Findings as Exclusion Context
+# 8. Add a Small Set of High-Value Review Heuristics
 
-Recovery Detection needs enough information to avoid rediscovering the same issues.
+Use a compact list derived from observed benchmark failure modes.
 
-Provide a compact list of already-reported findings.
+The Recovery model should pay particular attention to changed expressions involving:
+
+```text
+- dimension or index mismatches
+- swapped values with the same or compatible types
+- order-sensitive operations
+- incorrect variable selection
+- inconsistent use of related implementations
+- sign or direction reversals
+- changed conditions or comparison direction
+```
+
+Keep this list short.
+
+Do not build a language textbook into the prompt.
+
+---
+
+# 9. Explicitly Highlight Same-Type Argument Swaps
+
+One important class of subtle bugs is:
+
+```text
+arguments remain type-compatible
+but their semantic roles are different
+```
+
+The prompt should explicitly instruct the model to inspect changed calls where argument order changed.
+
+Examples include:
+
+```text
+atan2(y, x)
+cross(normal, tangent)
+texture(u, v)
+copy(source, destination)
+min/max bounds
+width/height
+row/column
+```
+
+Do not instruct the model that these examples are always bugs.
+
+Use wording equivalent to:
+
+```text
+If argument order or semantically distinct same-type values changed,
+verify whether the operation is order-sensitive.
+```
+
+---
+
+# 10. Explicitly Check Dimension and Coordinate Consistency
+
+For changed arithmetic involving:
+
+```text
+width
+height
+row
+column
+u
+v
+x
+y
+stride
+index
+```
+
+ask the model to compare related operations.
+
+Examples:
+
+```text
+row * width + column
+
+index / width
+index % width
+
+u normalized by width
+v normalized by height
+```
+
+The prompt should look for inconsistency rather than impose one universal convention.
+
+---
+
+# 11. Explicitly Check Variable-Role Substitution
+
+A common correctness bug changes a valid variable into another type-compatible but semantically different variable.
+
+Examples:
+
+```text
+sampled direction → surface normal
+width → height
+u → v
+vertex.u → vertex.v
+source → destination
+```
+
+Recovery should actively inspect changed variable substitutions.
+
+Suggested guidance:
+
+```text
+When a changed expression replaces one variable with another,
+verify that the new variable still represents the semantic quantity
+required at that point.
+```
+
+---
+
+# 12. Explicitly Check Order-Sensitive Math
+
+Changes involving non-commutative operations deserve attention.
+
+Examples:
+
+```text
+cross(a, b)
+subtract(a, b)
+divide(a, b)
+matrix multiplication
+quaternion multiplication
+atan2(y, x)
+ordered comparisons
+```
+
+The prompt should not assume:
+
+```text
+f(a, b) == f(b, a)
+```
+
+merely because both forms compile.
+
+Again, report only when the available code establishes that the new ordering is incorrect.
+
+---
+
+# 13. Compare With Sibling Implementations When Available
+
+If Recovery context contains a related implementation, use it as evidence.
+
+Example:
+
+```text
+renderSphere:
+row * settings.height + column
+
+renderMesh:
+row * settings.width + column
+```
+
+This inconsistency is useful evidence.
+
+However:
+
+```text
+different code != bug
+```
+
+The candidate must still explain why one behavior violates the local semantics.
+
+---
+
+# 14. Keep Specification-Dependent Cases Conservative
+
+This requirement is important.
+
+Some changed expressions may be valid or invalid depending on project-specific conventions that are not visible in the provided code.
+
+Examples may include:
+
+```text
+coordinate-system handedness
+texture orientation
+UV convention
+azimuth convention
+API-specific coordinate convention
+```
+
+If the correctness of a change depends on such missing specification:
+
+```text
+do not report it as a bug unless the provided code establishes
+the convention strongly enough.
+```
+
+The prompt should prefer omission over speculation.
+
+This is especially important for controlling false positives.
+
+---
+
+# 15. Do Not Treat Generic Best Practices as Bugs
+
+Recovery should focus on correctness regressions.
+
+Do not report:
+
+```text
+style preferences
+optional refactoring
+naming issues
+performance micro-optimizations
+missing comments
+subjective API design
+generic defensive programming suggestions
+```
+
+unless they directly cause concrete incorrect behavior.
+
+---
+
+# 16. Prefer Changed-Code Regressions
+
+Recovery should prioritize findings caused by the current change.
+
+Do not report unrelated pre-existing issues unless the existing review policy already requires that behavior.
+
+If both old and new code are visible, reason about:
+
+```text
+what behavior changed because of the patch
+```
+
+rather than reviewing the entire surrounding implementation as fresh code.
+
+---
+
+# 17. Do Not Repeat Already-Reported Findings
+
+The Recovery prompt receives a compact list of Primary findings.
+
+Make the exclusion instruction explicit:
+
+```text
+Do not emit a candidate that describes the same underlying problem
+as an already-reported finding.
+```
+
+Same function does not necessarily mean same problem.
 
 For example:
 
 ```text
-Already reported findings:
+traceMesh roughness UV swap
 
-- src/renderer.cpp:323 sampleFloat
-  Scalar texture sampling mirrors the U coordinate.
-
-- src/renderer.cpp:597 hitTriangle
-  Interpolated U uses vertex V components.
+traceMesh wrong lighting direction
 ```
 
-Do not include full evidence, impact, and suggested fix unless required.
+are separate issues.
 
-The purpose of this list is exclusion, not re-evaluation.
-
-Keep it token-efficient.
+Deduplicate by underlying problem, not symbol name.
 
 ---
 
-# 8. Prefer Excluding Reported Regions From Recovery Source Context
+# 18. Avoid Near-Duplicate Variants
 
-Where practical, do not include already-reported changed regions as primary Recovery review targets.
-
-For example, if the original group contains:
+Do not report multiple candidates for:
 
 ```text
-r0 reported
-r1 unreported
-r2 reported
-r3 unreported
+the same changed expression
+the same root cause
+the same incorrect behavior
 ```
 
-the Recovery prompt should focus on:
+with slightly different wording.
 
-```text
-r1
-r3
-```
+Prefer one concrete candidate.
 
-rather than repeating all four changed regions.
-
-However, surrounding unchanged source context may still be included when required to understand `r1` or `r3`.
-
-Do not remove necessary local context merely because it contains nearby reported code.
+The existing Turn 2 still performs final deduplication, but Recovery should avoid obvious duplication proactively.
 
 ---
 
-# 9. Preserve Source Context Around Remaining Regions
+# 19. Use Confidence Conservatively
 
-Recovery Detection should not receive isolated changed lines with no surrounding code.
+Define Recovery confidence explicitly.
 
-For each unreported region, provide enough source context to understand:
+## High
 
-```text
-containing function / method
-relevant nearby expressions
-local variables
-control flow
-```
-
-Reuse existing review context extraction logic where possible.
-
-Do not implement repository-wide dependency expansion in this phase.
-
-The intended context is:
+Use when:
 
 ```text
-remaining changed region
-+
-local source context already available
+the changed code itself,
+or direct comparison with visible related code,
+strongly establishes incorrect behavior
 ```
 
-not:
+## Medium
+
+Use when:
 
 ```text
-remaining region
-+
-all callers
-+
-all callees
-+
-all dependency files
+the issue is well-supported by the visible code
+but requires one reasonable semantic assumption
 ```
+
+Do not emit a candidate when confidence would be low.
+
+Do not use `medium` merely to include speculative concerns.
 
 ---
 
-# 10. Preserve C/C++ Semantic Group Context Where Useful
+# 20. Suggested Recovery Reasoning Procedure
 
-For C/C++, Phase 1 and Phase 2 may place related files or symbols in the same review group.
+The prompt may include a compact internal review sequence such as:
 
-Recovery Detection should retain useful semantic-group context when it helps interpret the remaining region.
+```text
+For each remaining changed region:
+
+1. Identify exactly what expression or behavior changed.
+
+2. Determine the semantic role of the changed values.
+
+3. Compare it with nearby or related code when available.
+
+4. Check whether operand order, variable selection, dimensions,
+   direction, indexing, or conditions changed meaningfully.
+
+5. Determine whether the new behavior can be shown to be incorrect
+   from the provided code.
+
+6. If yes, emit one candidate.
+
+7. If the conclusion depends on missing specification or uncertain
+   conventions, do not emit it.
+```
+
+Keep this concise.
+
+The prompt should guide analysis without becoming verbose.
+
+---
+
+# 21. Do Not Add Chain-of-Thought Output Requirements
+
+Do not ask the model to output:
+
+```text
+reasoning steps
+analysis
+scratchpad
+step-by-step thought process
+```
+
+The final candidate fields already contain the necessary review evidence.
+
+The model should output JSON only.
+
+---
+
+# 22. Keep Evidence Concrete
+
+Good evidence:
+
+```text
+The changed expression derives `col` with `% SampleHeight`,
+while the row calculation uses `/ SampleWidth` and `phi`
+normalizes the resulting column by `SampleWidth`.
+```
+
+Weak evidence:
+
+```text
+This looks suspicious and may cause unexpected behavior.
+```
+
+The Recovery prompt should require the first style.
+
+---
+
+# 23. Keep Impact Proportional
+
+Do not encourage exaggerated impact statements.
+
+Impact should describe the concrete affected behavior.
+
+Good:
+
+```text
+The sampled environment direction can map to the wrong column
+when width and height differ.
+```
+
+Avoid:
+
+```text
+This could catastrophically break rendering.
+```
+
+unless the visible code justifies that conclusion.
+
+---
+
+# 24. Suggested Fix Must Validate the Diagnosis
+
+Keep `suggested_fix` required.
+
+A plausible minimal fix serves as a useful consistency check.
 
 Example:
 
 ```text
-renderSphere changed region is unreported
-
-Related renderMesh implementation is already present
-in the semantic review group
+Change `index % SampleHeight` to `index % SampleWidth`.
 ```
 
-It may remain available as supporting context.
+If the model cannot state a concrete minimal correction with confidence, that is evidence the candidate may be too speculative.
 
-Do not reduce Recovery context so aggressively that useful comparisons introduced by semantic grouping disappear.
+Do not propose large refactors unless necessary.
 
 ---
 
-# 11. Non-C/C++ Files Remain Per-File
+# 25. Keep Recovery Prompt Compact
 
-Preserve the existing language policy.
+The optimized prompt must remain significantly smaller than a large exhaustive review manual.
+
+Prefer:
 
 ```text
-C/C++:
-semantic grouped / budgeted context
-
-other languages:
-one changed file per review group
+core role
+evidence standard
+short heuristic list
+spec-dependent caution
+output constraints
 ```
 
-Recovery Detection should operate on whatever final review groups Phase 2 produces.
+Avoid dozens of specialized rules.
 
-Do not introduce new cross-file grouping for non-C/C++ languages.
+Recovery latency and input tokens are still important.
 
 ---
 
-# 12. Skip Recovery When Nothing Remains
+# 26. Do Not Modify Recovery Context Construction
 
-If all changed regions are already reported by Primary Detection:
+Phase 5 already defines Recovery context construction.
 
-```text
-unreported_region_count == 0
-```
-
-do not call the Recovery model.
-
-Proceed directly to the existing Turn 2.
-
-Record that Recovery Detection was skipped.
-
-Example:
+Do not change:
 
 ```text
-recovery_status = "skipped_no_remaining_regions"
+target-region selection
+fragment merging
+supporting-context selection
+context budget
+reported-region exclusion
+source-range construction
 ```
 
-Use naming consistent with the existing metrics/logging system.
+during Phase 6.
+
+If the prompt exposes a context-builder bug, record it separately rather than fixing both in the same benchmark experiment.
 
 ---
 
-# 13. Recovery Candidate Limit
+# 27. Do Not Modify Semantic Grouping
 
-Recovery Detection should also have a candidate limit.
-
-Prefer keeping:
+Preserve:
 
 ```text
-Maximum 10 candidates
+C/C++ semantic grouping
+C/C++ group budgeting
+non-C/C++ one-file grouping
 ```
 
-unless the existing candidate limit is naturally configurable per turn.
-
-Do not increase the maximum merely because this is a second pass.
-
-The intent is to recover a small number of additional high-confidence findings.
+exactly as in the Phase 5 baseline.
 
 ---
 
-# 14. Combine Primary and Recovery Candidates
+# 28. Do Not Modify Primary Detection
 
-After Recovery Detection:
+Primary Detection remains unchanged.
+
+This includes:
 
 ```text
-Primary Candidates
-       +
-Recovery Candidates
-       ↓
-Candidate Union
+prompt
+context
+candidate limit
+candidate schema
+timing
 ```
 
-Pass the combined candidate set into the existing Turn 2.
-
-Do not run Primary candidates through a separate verification stage.
-
-Do not create a new finalization turn.
+The experiment concerns Recovery only.
 
 ---
 
-# 15. Preserve Candidate Provenance Internally
+# 29. Do Not Modify Candidate Union
 
-Internally record whether each candidate came from:
-
-```text
-primary
-recovery
-```
-
-For example:
-
-```csharp
-DetectionSource.Primary
-DetectionSource.Recovery
-```
-
-or equivalent.
-
-This metadata is for:
-
-```text
-benchmarking
-diagnostics
-deduplication analysis
-```
-
-Do not expose it in the final GitLab review.
-
-Do not require the LLM to emit it.
-
----
-
-# 16. Deduplicate Obvious Primary/Recovery Duplicates
-
-Recovery should be instructed not to repeat findings, but duplicates may still occur.
-
-Before existing Turn 2, optionally remove only obvious duplicates.
-
-Use conservative deterministic matching such as:
-
-```text
-same canonical file
-+
-same changed region
-+
-same or overlapping location
-```
-
-Do not implement complex semantic deduplication.
-
-If duplicate status is ambiguous:
-
-```text
-keep both
-```
-
-and allow the existing Turn 2 deduplication/selection logic to resolve them.
-
-Avoid losing real findings through aggressive pre-filtering.
-
----
-
-# 17. Do Not Deduplicate Merely by Function Name
-
-Example:
-
-```text
-traceMesh:
-roughness UV swap
-
-traceMesh:
-incorrect environment lighting direction
-```
-
-These are separate issues in the same function.
-
-Do not treat them as duplicates simply because:
-
-```text
-same file
-same symbol
-```
-
-Use changed-region identity or concrete source overlap where possible.
-
----
-
-# 18. Existing Turn 2 Remains the Final Stage
-
-Turn 2 should receive the union:
+Preserve existing:
 
 ```text
 Primary candidates
 +
 Recovery candidates
+↓
+conservative duplicate handling
+↓
+existing Turn 2
 ```
 
-Then continue performing its existing responsibilities:
+Do not introduce candidate ranking or scoring.
+
+---
+
+# 30. Do Not Modify Turn 2
+
+Turn 2 remains responsible for:
 
 ```text
-candidate selection
+candidate validation
 false-positive rejection
 deduplication
 project policy
 severity
-language
-final formatting
+final language
+formatting
 ```
 
-Do not rewrite Turn 2 in Phase 4.
-
-Do not remove validation behavior from Turn 2.
+Do not move these responsibilities into Recovery.
 
 ---
 
-# 19. Handle Combined Candidate Count Carefully
+# 31. Add Prompt-Version Metadata
 
-Primary may return up to 10 candidates and Recovery may return additional candidates.
-
-Therefore the combined set may exceed 10.
-
-Do not silently truncate the combined set before Turn 2 unless an existing hard system limit requires it.
+Because this phase is benchmark-driven, record which Recovery prompt version produced each run.
 
 For example:
 
 ```text
-Primary: 8
-Recovery: 4
-Combined: 12
+recovery_prompt_version = "phase6-v1"
 ```
 
-Turn 2 should receive all 12 if the current architecture supports it.
+Use a simple constant or existing template/version mechanism.
 
-The `Maximum 10 candidates` constraint applies to each Detection output, not necessarily to the candidate union.
+Do not add a complex prompt registry.
 
-If there is an existing Turn 2 input limit, use the existing behavior and document it.
-
-Do not introduce an arbitrary new top-10 ranking mechanism in this phase.
+This makes later comparison easier.
 
 ---
 
-# 20. Do Not Ask Recovery to Verify Primary Findings
+# 32. Preserve Benchmark Metrics
 
-The Recovery prompt must not contain instructions such as:
-
-```text
-Check whether the previous findings are valid.
-Reject incorrect findings.
-Confirm the first pass.
-```
-
-That recreates the previously unsuccessful Verification architecture.
-
-Recovery is additive:
+Continue recording:
 
 ```text
-Primary Detection
-+
-Additional Detection
+Primary candidate count
+
+Recovery candidate count
+Recovery latency
+Recovery input/output tokens
+Recovery newly-reported region count
+Recovery duplicate count
+
+combined candidate count
+Turn 2 final finding count
+total latency
 ```
 
-not:
-
-```text
-Detection
-→ Verification
-```
+No metric semantics should change in this phase.
 
 ---
 
-# 21. Preserve Changed-Region Coverage After Recovery
+# 33. Add Recovery Yield Metrics if Convenient
 
-Run coverage mapping for Recovery candidates as well.
-
-After Recovery, the system should be able to record:
+If the existing benchmark recorder supports it without automatic bug scoring, calculate structural metrics such as:
 
 ```text
-regions reported by Primary
-regions newly reported by Recovery
-regions still unreported after Recovery
+recovery_candidates_per_target_region
+
+recovery_candidates_per_1000_input_tokens
+
+recovery_duplicate_ratio
 ```
 
-For example:
+Do not classify candidates as TP/FP automatically unless such scoring already exists.
 
-```text
-10 changed regions
-
-Primary:
-6 reported
-
-Recovery:
-2 additional reported
-
-Remaining:
-2 unreported
-```
-
-Do not use this final remaining set for another pass in Phase 4.
-
-Exactly one Recovery pass should be added.
+External benchmark analysis remains the source of correctness labels.
 
 ---
 
-# 22. No Recursive Recovery
+# 34. Tests
 
-Do not implement:
+Prompt changes should be supported with lightweight tests where the project supports template validation.
 
-```text
-Primary
-→ Recovery 1
-→ Recovery 2
-→ Recovery 3
-```
+At minimum verify:
 
-even if unreported regions remain.
+## Case 1 — Output Constraints Present
 
-Phase 4 adds exactly:
+The Recovery template clearly requires:
 
 ```text
-one primary detection pass
-+
-one recovery detection pass
-```
-
-Recursive or adaptive passes belong to a separate experiment.
-
----
-
-# 23. Add Recovery Metrics
-
-Extend existing recorder/benchmark metrics.
-
-Record at minimum:
-
-## Primary Detection
-
-```text
-duration_ms
-input_tokens
-output_tokens
-candidate_count
-reported_region_count
-```
-
-## Recovery Detection
-
-```text
-executed / skipped
-duration_ms
-input_tokens
-output_tokens
-candidate_count
-newly_reported_region_count
-duplicate_candidate_count
-```
-
-## Combined
-
-```text
-primary_candidate_count
-recovery_candidate_count
-combined_candidate_count
-final_turn2_finding_count
-```
-
-## Overall
-
-```text
-total_duration_ms
-total_input_tokens
-total_output_tokens
-```
-
-Reuse existing timing/token measurement infrastructure.
-
----
-
-# 24. Important Recovery Benchmark Metrics
-
-The key Phase 4 metrics are:
-
-```text
-Recovery Additional TP
-Recovery FP
-Recovery Duplicate Count
-Recovery Additional Latency
-```
-
-The application does not need to automatically know TP/FP if benchmark scoring is external.
-
-At minimum, persist enough information to calculate them afterward.
-
-Especially useful:
-
-```text
-candidate source = primary/recovery
-candidate location
-mapped changed region
+JSON only
+Maximum 10 candidates
+high/medium confidence only
+no severity
 ```
 
 ---
 
-# 25. Extend Benchmark Logs
+## Case 2 — Remaining Regions Are Not Assumed Buggy
 
-A benchmark run should make the stages easy to inspect.
-
-Suggested output:
-
-```text
-benchmark-logs/<review_run_id>/
-    metadata.json
-    summary.json
-
-    primary-turn1.json
-    recovery-turn1.json
-    turn2.txt
-
-    coverage-primary.json
-    coverage-recovery.json
-```
-
-Use the current benchmark layout if one already exists; do not rename everything unnecessarily.
-
-The essential requirement is that Primary and Recovery outputs can be distinguished.
+The template explicitly states that remaining changed regions are not necessarily incorrect.
 
 ---
 
-# 26. Recovery Timing Must Exclude File Logging
+## Case 3 — Duplicate Avoidance
 
-Preserve timing semantics.
+The template clearly tells Recovery not to repeat already-reported findings.
 
-Measure:
+---
+
+## Case 4 — Specification-Dependent Caution
+
+The template tells the model not to report issues whose correctness depends on missing project-specific conventions.
+
+---
+
+## Case 5 — Changed-Code Focus
+
+The template tells the model to focus on correctness issues caused by the changed code.
+
+---
+
+## Case 6 — Same-Type / Order-Sensitive Changes
+
+The template includes concise guidance for:
 
 ```text
-model inference
-```
-
-the same way as existing Turn timings.
-
-Do not include benchmark file serialization inside the inference timer.
-
-Example:
-
-```text
-start recovery timer
-invoke model
-stop recovery timer
-
-then write log files
+swapped same-type values
+order-sensitive operations
+dimension / coordinate consistency
+variable-role substitution
 ```
 
 ---
 
-# 27. Recovery Failure Must Not Destroy Primary Results
+# 35. Benchmark Plan
 
-If Primary Detection succeeds but Recovery fails:
-
-```text
-keep Primary candidates
-```
-
-and continue to Turn 2 if practical.
-
-Recovery is an enhancement, not a requirement for completing the review.
-
-Example behavior:
+Compare:
 
 ```text
-Primary success
-Recovery failure
-    ↓
-log warning
-    ↓
-Turn 2 with Primary candidates only
-```
-
-Record the failure in benchmark metadata.
-
-Do not fail the entire review solely because the optional Recovery pass failed unless existing error-handling architecture makes continuation impossible.
-
----
-
-# 28. Turn 2 Should Still Run If Recovery Returns Zero Candidates
-
-Example:
-
-```text
-Primary candidates: 6
-Recovery candidates: 0
-```
-
-Expected:
-
-```text
-Turn 2 receives the 6 Primary candidates.
-```
-
-This is a normal result.
-
-Do not interpret zero Recovery candidates as a failure.
-
----
-
-# 29. Do Not Change Semantic Grouping
-
-Phase 4 must preserve:
-
-```text
-Phase 1 semantic grouping
-Phase 2 group budgets
-Phase 2 deterministic splitting
-Phase 3 region tracking
-```
-
-Do not tune grouping thresholds while evaluating Recovery Detection.
-
-Otherwise it will be impossible to isolate the effect of the second pass.
-
----
-
-# 30. Do Not Change Review Heuristics
-
-Do not add large new rules such as:
-
-```text
-check atan2 argument ordering
-check cross-product handedness
-check U/V swaps
-check width/height
-```
-
-in this phase.
-
-Those may be valuable later, but Phase 4 should test whether:
-
-```text
-a second attention pass alone
-```
-
-recovers additional findings.
-
-Keep the Recovery prompt generic and correctness-focused.
-
----
-
-# 31. Suggested Recovery Prompt
-
-Create a concise template based on the following intent:
-
-```text
-You are performing a second-pass code review.
-
-The first detection pass already reported some issues.
-Do not repeat those findings.
-
-Review only the remaining changed regions and their provided
-source context for additional correctness issues.
-
-A remaining changed region is not necessarily incorrect.
-Report an issue only when the provided code gives sufficient
-evidence that the change can cause incorrect behavior.
-
-Only report high- or medium-confidence issues.
-
-For every reported issue, provide:
-- location
-- problem
-- evidence
-- impact
-- suggested_fix
-- confidence
-
-Do not assign severity.
-Do not write the final review.
-Output JSON only.
-```
-
-Adapt terminology and exact formatting to match the current prompt conventions.
-
-Do not include benchmark-specific bug information.
-
----
-
-# 32. Tests
-
-Add focused tests.
-
-## Case 1 — No Unreported Regions
-
-Primary coverage:
-
-```text
-all changed regions reported
-```
-
-Expected:
-
-```text
-Recovery LLM call is skipped.
-Existing Turn 2 runs normally.
-```
-
----
-
-## Case 2 — Remaining Regions Exist
-
-Primary:
-
-```text
-r0 reported
-r1 unreported
-r2 reported
-r3 unreported
-```
-
-Expected Recovery target:
-
-```text
-r1
-r3
-```
-
----
-
-## Case 3 — Recovery Adds a New Candidate
-
-Primary candidate maps to:
-
-```text
-r0
-```
-
-Recovery candidate maps to:
-
-```text
-r2
-```
-
-Expected:
-
-```text
-combined candidates contain both
-```
-
-and Turn 2 receives both.
-
----
-
-## Case 4 — Recovery Repeats Primary Candidate
-
-Primary:
-
-```text
-r0 issue A
-```
-
-Recovery:
-
-```text
-r0 issue A
-```
-
-Expected:
-
-```text
-obvious duplicate may be removed
-or safely passed to existing Turn 2 deduplication
-```
-
-Do not create two final findings.
-
----
-
-## Case 5 — Same Function, Different Regions
-
-Changed regions:
-
-```text
-r0 traceMesh:679
-r1 traceMesh:691
-r2 traceMesh:721
-```
-
-Primary reports:
-
-```text
-r2
-```
-
-Recovery reports:
-
-```text
-r0
-```
-
-Expected:
-
-```text
-both candidates preserved
-```
-
-They are not duplicates merely because both belong to `traceMesh`.
-
----
-
-## Case 6 — Recovery Returns Zero Issues
-
-Expected:
-
-```text
-Primary candidates continue unchanged to Turn 2.
-```
-
----
-
-## Case 7 — Recovery Fails
-
-Expected where practical:
-
-```text
-warning logged
-Primary candidates preserved
-Turn 2 still runs
-benchmark records recovery failure
-```
-
----
-
-## Case 8 — Coverage After Recovery
-
-Primary reports:
-
-```text
-r0
-r2
-```
-
-Recovery reports:
-
-```text
-r1
-```
-
-Expected final coverage:
-
-```text
-reported:
-r0
-r1
-r2
-
-remaining:
-other regions only
-```
-
----
-
-## Case 9 — Combined Candidate Count Above 10
-
-Primary:
-
-```text
-8 candidates
-```
-
-Recovery:
-
-```text
-5 candidates
-```
-
-Expected:
-
-```text
-13 combined candidates
-```
-
-unless a pre-existing hard Turn 2 limit requires another behavior.
-
-Do not silently discard candidates solely because Turn 1 has a 10-candidate output limit.
-
----
-
-# 33. Benchmark Plan
-
-Compare at least:
-
-```text
-A. Phase 3 baseline
-   Semantic grouping
-   One Detection pass
+A. Phase 5
+   focused Recovery context
+   existing Recovery prompt
    thinking off
 
-B. Phase 4
-   Same semantic grouping
-   Primary + Recovery Detection
+B. Phase 6
+   same focused Recovery context
+   optimized Recovery prompt
    thinking off
 ```
 
-Do not change model, prompts for Primary, grouping, or benchmark corpus between A and B.
+Keep identical:
+
+```text
+benchmark corpus
+model
+Primary prompt
+Primary context
+semantic groups
+group budgets
+Recovery context
+number of turns
+candidate schema
+Turn 2
+```
 
 Run multiple trials.
+
+---
+
+# 36. Primary Benchmark Metrics
 
 Measure:
 
 ```text
 Primary detections
+
 Recovery additional detections
-Recovery duplicates
-false positives
-final findings
+Recovery duplicate findings
+Recovery false positives
 
-Primary latency
+Final findings
+
+Recovery input tokens
+Recovery output tokens
 Recovery latency
-Turn 2 latency
-total latency
-
-input tokens
-output tokens
+Total latency
 ```
 
----
-
-# 34. Primary Experiment Question
-
-Phase 4 should answer:
+Especially compare:
 
 ```text
-Can one additional thinking-off detection pass recover
-meaningful issues missed by Primary Detection while remaining
-far faster than thinking-on review?
+Recovery useful yield
+vs
+Recovery false-positive rate
 ```
-
-Do not optimize Recovery based on benchmark results during the same implementation.
-
-First establish the clean baseline.
 
 ---
 
-# 35. Success Criteria
+# 37. Important Benchmark Interpretation
 
-Phase 4 is successful if:
+Do not treat every intentionally modified line as a mandatory finding.
 
-1. The existing Primary Detection behavior remains unchanged.
+Some seeded changes may be specification-dependent and not provably incorrect from the available code.
 
-2. Exactly one Recovery Detection pass is added.
+The important benchmark categories are:
 
-3. Recovery targets unreported changed regions from Phase 3.
+```text
+code-provable correctness issues
 
-4. Already-reported findings are provided only as exclusion context.
+specification-dependent changes
 
-5. Recovery does not verify or reject Primary findings.
+false positives
+```
 
-6. Recovery uses the same candidate schema as Primary.
+Phase 6 should primarily improve detection of **code-provable issues**.
 
-7. Primary and Recovery candidates are combined before existing Turn 2.
+Do not optimize the prompt to force detection of ambiguous cases.
 
-8. Same-function but different-region findings are preserved.
+---
 
-9. Obvious duplicate candidates can be identified conservatively.
+# 38. Success Criteria
 
-10. Turn 2 remains otherwise unchanged.
+Phase 6 is successful if:
 
-11. Recovery is skipped when no unreported regions remain.
+1. Only the Recovery prompt changes.
 
-12. Recovery failure does not discard Primary candidates where continuation is possible.
+2. Primary Detection remains unchanged.
 
-13. Recovery candidates are mapped back to changed regions.
+3. Recovery context remains unchanged from Phase 5.
 
-14. Primary vs Recovery provenance is logged.
+4. Recovery continues to review only remaining changed regions.
 
-15. Benchmark logs expose per-pass timing, token use, candidates, and coverage.
+5. The prompt explicitly avoids assuming remaining regions are buggy.
 
-16. Semantic grouping and group budgets are unchanged.
+6. The prompt requires concrete changed-code evidence.
 
-17. No recursive Recovery passes are added.
+7. The prompt includes a small set of high-value correctness heuristics.
 
-18. No thinking-specific detection logic is added.
+8. Same-type argument/value swaps receive explicit attention.
+
+9. Order-sensitive operations receive explicit attention.
+
+10. Dimension and coordinate consistency receive explicit attention.
+
+11. Variable-role substitutions receive explicit attention.
+
+12. Specification-dependent cases are handled conservatively.
+
+13. Low-confidence issues remain prohibited.
+
+14. Already-reported findings are not intentionally repeated.
+
+15. Candidate schema is unchanged.
+
+16. Turn 2 is unchanged.
+
+17. No additional LLM calls are introduced.
+
+18. Prompt version is recorded for benchmark comparison.
+
+19. Recovery false-positive rate does not materially regress.
+
+20. Recovery additional detection of code-provable issues improves or remains stable.
 
 ---
 
@@ -1233,20 +1044,21 @@ Phase 4 is successful if:
 Do not implement:
 
 ```text
-Verification Turn
-candidate validity scoring
-recursive Recovery passes
-adaptive multi-pass loops
+new Recovery context retrieval
+caller/callee expansion
+repository-wide context search
+new semantic grouping
+group-budget tuning
+third detection pass
+recursive Recovery
 thinking fallback
 thinking-on escalation
-new semantic grouping rules
-group-budget tuning
-AST caller/callee source expansion
-repository-wide context retrieval
-large prompt heuristic changes
+candidate scoring
+candidate ranking
+new Turn 2 logic
+automatic bug labeling
 automatic TP/FP scoring
-severity changes
-new finalization stage
+language-specific Recovery prompts
 ```
 
 These are separate experiments.
@@ -1258,72 +1070,115 @@ These are separate experiments.
 Implement in this order:
 
 ```text
-1. Keep the current Primary Turn 1 unchanged.
+1. Locate the existing Recovery prompt template.
 
-2. Reuse Phase 3 ReviewCoverage after Primary Detection.
+2. Preserve its current output schema and hard constraints.
 
-3. Add a Recovery prompt template.
+3. Clarify the Recovery role:
+   additional detection only.
 
-4. Build Recovery input from unreported changed regions.
+4. Add the explicit statement that remaining regions
+   are not necessarily buggy.
 
-5. Add compact already-reported exclusion context.
+5. Strengthen the concrete-evidence requirement.
 
-6. Invoke exactly one Recovery Detection pass.
+6. Add the compact high-value heuristic section.
 
-7. Deserialize Recovery output into the existing candidate model.
+7. Add conservative handling for specification-dependent cases.
 
-8. Map Recovery candidates to changed regions.
+8. Strengthen duplicate avoidance.
 
-9. Add Primary/Recovery provenance metadata.
+9. Keep the prompt concise.
 
-10. Conservatively handle obvious duplicates.
+10. Add a simple Recovery prompt version identifier.
 
-11. Union Primary and Recovery candidates.
+11. Update or add prompt-template tests.
 
-12. Pass the union into the existing Turn 2.
+12. Run existing tests.
 
-13. Add per-pass metrics and benchmark logs.
-
-14. Add failure/skip handling.
-
-15. Add focused tests.
-
-16. Run existing tests.
-
-17. Benchmark Phase 3 vs Phase 4 using thinking off.
+13. Benchmark Phase 5 vs Phase 6 using thinking off.
 ```
 
-Do not begin adaptive Recovery or thinking fallback as part of this task.
+Do not modify Recovery context construction during this task.
+
+---
+
+# Suggested Prompt Shape
+
+The final Recovery prompt should approximately follow this structure:
+
+```text
+Role
+    ↓
+Review only remaining changed regions
+
+Important caution
+    ↓
+Remaining does not mean buggy
+
+Already-reported exclusion
+    ↓
+Do not repeat existing findings
+
+Evidence standard
+    ↓
+Changed code must establish incorrect behavior
+
+Focused review heuristics
+    ↓
+same-type swaps
+order-sensitive operations
+dimension / coordinate consistency
+variable-role substitutions
+related implementation consistency
+
+Specification caution
+    ↓
+Do not guess project conventions
+
+Candidate requirements
+    ↓
+location
+problem
+evidence
+impact
+suggested_fix
+confidence
+
+Output constraints
+    ↓
+max 10
+high/medium only
+no severity
+JSON only
+```
+
+Keep each section concise.
 
 ---
 
 # Design Principle
 
-The central principle of Phase 4 is:
+The central principle of Phase 6 is:
 
 ```text
-Do not spend more reasoning on the same findings.
-
-Spend another cheap non-thinking pass
-on the changed code that did not produce findings the first time.
+Recovery has less code to inspect,
+so give it a better checklist for how to inspect that code.
 ```
 
-The intended architecture is:
+Do not make Recovery more speculative.
+
+Make it more systematic.
+
+The desired result is:
 
 ```text
-Primary Detection
-        ↓
-What produced findings?
-        ↓
-Remaining changed regions
-        ↓
-Recovery Detection
-        ↓
-Candidate union
-        ↓
-Existing final selection
+focused context
++
+explicit high-value review strategy
++
+strict evidence threshold
+=
+more useful additional findings
+without a false-positive explosion
 ```
-
-Recovery is additive, conservative, and attention-focused.
-
-It must improve the opportunity to discover missed issues without recreating the expensive `thinking on` path.

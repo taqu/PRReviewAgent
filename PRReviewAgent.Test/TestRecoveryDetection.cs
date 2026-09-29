@@ -1,6 +1,7 @@
 using PRReviewAgent.Prompt;
 using PRReviewAgent.Services;
 using PRReviewAgent.Services.Coverage;
+using PRReviewAgent.Services.Grouping;
 using PRReviewAgent.Services.Recovery;
 using System.Text;
 
@@ -116,8 +117,9 @@ public class TestRecoveryDetection
 
         var primaryCandidates = Issues(("alpha.cpp:10 DoSomething", "null deref"));
 
+        RecoveryContextResult recoveryContext = RecoveryContextBuilder.Build(coverage, group);
         string prompt = PromptBuilder.BuildTurn1Recovery(
-            request, group, coverage, primaryCandidates, new StringBuilder());
+            request, group, coverage, primaryCandidates, recoveryContext, new StringBuilder());
 
         Assert.IsTrue(prompt.Contains("## Recovery"), "template should be included");
         Assert.IsTrue(prompt.Contains("# Already Reported Findings"), "should list reported findings");
@@ -340,8 +342,9 @@ public class TestRecoveryDetection
         var coverage = new ReviewCoverage(regions, new List<CandidateMapping>());
         var emptyPrimary = new IssuesResponse { issues = Array.Empty<Issue>() };
 
+        RecoveryContextResult recoveryContext2 = RecoveryContextBuilder.Build(coverage, group);
         string prompt = PromptBuilder.BuildTurn1Recovery(
-            request, group, coverage, emptyPrimary, new StringBuilder());
+            request, group, coverage, emptyPrimary, recoveryContext2, new StringBuilder());
 
         Assert.IsFalse(prompt.Contains("# Already Reported Findings"), "section should be omitted when no findings");
     }

@@ -479,14 +479,28 @@ namespace PRReviewAgent.Services
                         IssuesResponse? recoveryResponse = null;
                         int? recInputTokens = null, recOutputTokens = null;
 
+                        RecoveryContextResult recoveryContext = RecoveryContextResult.Empty;
+
                         if (!recoverySkipped)
                         {
+                            // Phase 5: build focused recovery context before prompt construction.
+                            recoveryContext = RecoveryContextBuilder.Build(coverage, fileGroup);
+                            logger.LogDebug(
+                                "Recovery context for '{Topic}': {Total} region(s) total, {Primary} primary reported, " +
+                                "{Targets} target(s), {Fragments} fragment(s), ~{Tokens} estimated token(s).",
+                                fileGroup.Topic,
+                                coverage.ChangedRegions.Count,
+                                coverage.ReportedRegionIds.Count,
+                                recoveryContext.TargetRegionCount,
+                                recoveryContext.Fragments.Count,
+                                recoveryContext.EstimatedTokens);
+
                             Stopwatch recoverySw = Stopwatch.StartNew();
                             Exception? recException = null;
                             try
                             {
                                 string promptRecovery = PromptBuilder.BuildTurn1Recovery(
-                                    reviewRequest, fileGroup, coverage, issuesResponse, stringBuilder_);
+                                    reviewRequest, fileGroup, coverage, issuesResponse, recoveryContext, stringBuilder_);
                                 (recoveryResponse, recInputTokens, recOutputTokens) =
                                     await context.Agents.RunJsonWithUsageAsync<IssuesResponse>(promptRecovery, context.CancellationToken);
                             }
@@ -537,7 +551,8 @@ namespace PRReviewAgent.Services
                                     await benchmarkRecorder.RecordRecoveryTurnAsync(
                                         fileGroup.Topic, recoveryStatus, recoveryResponse,
                                         recoverySw.ElapsedMilliseconds, recInputTokens, recOutputTokens,
-                                        recoveryNewlyReported, recoveryDuplicates);
+                                        recoveryNewlyReported, recoveryDuplicates, recoveryContext,
+                                        PromptBuilder.RecoveryPromptVersion);
                                     await benchmarkRecorder.RecordRecoveryCoverageAsync(
                                         fileGroup.Topic, finalCoverage, primaryReportedCount);
                                 }
