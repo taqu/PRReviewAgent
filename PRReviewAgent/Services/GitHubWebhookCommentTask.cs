@@ -473,18 +473,39 @@ namespace PRReviewAgent.Services
                         ReviewCoverage finalCoverage = coverage;
                         int primaryReportedCount = coverage.ReportedRegionIds.Count;
                         int recoveryNewlyReported = 0, recoveryDuplicates = 0;
-                        bool recoverySkipped = coverage.UnreportedRegionIds.Count == 0
-                            || string.IsNullOrEmpty(reviewRequest.ReviewRulesTurn1Recovery);
-                        string recoveryStatus = recoverySkipped ? "skipped_no_remaining_regions" : "pending";
                         IssuesResponse? recoveryResponse = null;
                         int? recInputTokens = null, recOutputTokens = null;
-
                         RecoveryContextResult recoveryContext = RecoveryContextResult.Empty;
 
-                        if (!recoverySkipped)
+                        // Phase 7: Recovery Execution Policy.
+                        RecoveryConfig recoveryConfig = Context.Instance.Settings.GetRecoveryConfig();
+                        string recoveryModeStr = recoveryConfig.Mode.ToString().ToLowerInvariant();
+                        RecoveryDecision recoveryDecision;
+                        string recoveryStatus;
+
+                        if (string.IsNullOrEmpty(reviewRequest.ReviewRulesTurn1Recovery))
                         {
-                            // Phase 5: build focused recovery context before prompt construction.
-                            recoveryContext = RecoveryContextBuilder.Build(coverage, fileGroup);
+                            recoveryDecision = RecoveryDecision.Skip(RecoverySkipReason.Disabled);
+                            recoveryStatus = "skipped_not_configured";
+                        }
+                        else
+                        {
+                            // Pre-context check: handles Never and no_remaining_regions without building context.
+                            recoveryDecision = RecoveryExecutionPolicy.Evaluate(recoveryConfig, coverage, null);
+                            if (recoveryDecision.ShouldRun)
+                            {
+                                recoveryContext = RecoveryContextBuilder.Build(coverage, fileGroup);
+                                recoveryDecision = RecoveryExecutionPolicy.Evaluate(recoveryConfig, coverage, recoveryContext);
+                            }
+                            recoveryStatus = recoveryDecision.ShouldRun ? "pending" : $"skipped_{recoveryDecision.Reason}";
+                        }
+
+                        logger.LogDebug(
+                            "Recovery policy for '{Topic}': mode={Mode}, decision={Decision}",
+                            fileGroup.Topic, recoveryModeStr, recoveryDecision.Reason);
+
+                        if (recoveryDecision.ShouldRun)
+                        {
                             logger.LogDebug(
                                 "Recovery context for '{Topic}': {Total} region(s) total, {Primary} primary reported, " +
                                 "{Targets} target(s), {Fragments} fragment(s), ~{Tokens} estimated token(s).",
@@ -552,12 +573,23 @@ namespace PRReviewAgent.Services
                                         fileGroup.Topic, recoveryStatus, recoveryResponse,
                                         recoverySw.ElapsedMilliseconds, recInputTokens, recOutputTokens,
                                         recoveryNewlyReported, recoveryDuplicates, recoveryContext,
-                                        PromptBuilder.RecoveryPromptVersion);
+                                        PromptBuilder.RecoveryPromptVersion, recoveryModeStr, recoveryDecision.Reason);
                                     await benchmarkRecorder.RecordRecoveryCoverageAsync(
                                         fileGroup.Topic, finalCoverage, primaryReportedCount);
                                 }
                                 catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record recovery for '{Topic}'", fileGroup.Topic); }
                             }
+                        }
+                        else if (benchmarkRecorder != null)
+                        {
+                            try
+                            {
+                                await benchmarkRecorder.RecordRecoveryTurnAsync(
+                                    fileGroup.Topic, recoveryStatus, null,
+                                    0, null, null, 0, 0, null, null,
+                                    recoveryModeStr, recoveryDecision.Reason);
+                            }
+                            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record recovery skip for '{Topic}'", fileGroup.Topic); }
                         }
 
                         logger.LogInformation(

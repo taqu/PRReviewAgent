@@ -1,4 +1,5 @@
 using PRReviewAgent.Services.Grouping;
+using PRReviewAgent.Services.Recovery;
 
 namespace PRReviewAgent
 {
@@ -327,6 +328,29 @@ namespace PRReviewAgent
                     && modeObj is string modeStr
                     && System.Enum.TryParse<GroupingMode>(modeStr, ignoreCase: true, out GroupingMode mode))
                     cfg.Mode = mode;
+            }
+            return cfg;
+        }
+
+        /// <summary>
+        /// Gets the Recovery execution policy configuration from [review.recovery] in config.toml.
+        /// </summary>
+        public RecoveryConfig GetRecoveryConfig()
+        {
+            var cfg = new RecoveryConfig();
+            if (config_ != null
+                && config_.TryGetValue("review", out object? reviewObj)
+                && reviewObj is Tomlyn.Model.TomlTable reviewTable
+                && reviewTable.TryGetValue("recovery", out object? recoveryObj)
+                && recoveryObj is Tomlyn.Model.TomlTable recoveryTable)
+            {
+                if (recoveryTable.TryGetValue("mode", out object? modeObj)
+                    && modeObj is string modeStr
+                    && System.Enum.TryParse<RecoveryMode>(modeStr, ignoreCase: true, out RecoveryMode mode))
+                    cfg.Mode = mode;
+                if (recoveryTable.TryGetValue("min_changed_region_count", out object? minObj)
+                    && minObj is long min)
+                    cfg.MinimumChangedRegionCount = (int)min;
             }
             return cfg;
         }

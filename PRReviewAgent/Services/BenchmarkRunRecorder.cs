@@ -25,6 +25,7 @@ internal sealed class BenchmarkRunRecorder
     private readonly List<TurnGroupMetrics> turn1Metrics_ = new();
     private readonly List<RecoveryTurnMetrics> recoveryMetrics_ = new();
     private readonly List<TurnGroupMetrics> turn2Metrics_ = new();
+    private readonly List<RecoveryPolicyRecord> recoveryPolicyRecords_ = new();
     private GroupingMetrics? groupingMetrics_;
 
     public string RunId { get; }
@@ -174,13 +175,19 @@ internal sealed class BenchmarkRunRecorder
         long durationMs, int? inputTokens, int? outputTokens,
         int newlyReportedRegionCount, int duplicateCandidateCount,
         RecoveryContextResult? contextResult = null,
-        string? promptVersion = null)
+        string? promptVersion = null,
+        string? mode = null,
+        string? decisionReason = null)
     {
         int candidateCount = recoveryResponse?.issues.Length ?? 0;
+        bool executed = !status.StartsWith("skipped", StringComparison.OrdinalIgnoreCase)
+                     && status != "failed";
         recoveryMetrics_.Add(new RecoveryTurnMetrics(
             groupId, status, durationMs, candidateCount,
             newlyReportedRegionCount, duplicateCandidateCount,
             inputTokens, outputTokens));
+        if (mode != null || decisionReason != null)
+            recoveryPolicyRecords_.Add(new RecoveryPolicyRecord(groupId, mode ?? "unknown", executed, decisionReason ?? status));
         try
         {
             string path = Path.Combine(runDir_, $"recovery_{Sanitize(groupId)}.json");
@@ -188,13 +195,19 @@ internal sealed class BenchmarkRunRecorder
             {
                 group_id = groupId,
                 status,
+                recovery_policy = (mode != null || decisionReason != null) ? new
+                {
+                    mode,
+                    executed,
+                    decision_reason = decisionReason,
+                } : null,
                 prompt_version = promptVersion,
-                duration_ms = durationMs,
+                duration_ms = durationMs > 0 ? (long?)durationMs : null,
                 input_tokens = inputTokens,
                 output_tokens = outputTokens,
-                candidate_count = candidateCount,
-                newly_reported_region_count = newlyReportedRegionCount,
-                duplicate_candidate_count = duplicateCandidateCount,
+                candidate_count = candidateCount > 0 ? (int?)candidateCount : null,
+                newly_reported_region_count = newlyReportedRegionCount > 0 ? (int?)newlyReportedRegionCount : null,
+                duplicate_candidate_count = duplicateCandidateCount > 0 ? (int?)duplicateCandidateCount : null,
                 recovery_context = contextResult == null ? null : new
                 {
                     target_region_count = contextResult.TargetRegionCount,
@@ -325,6 +338,25 @@ internal sealed class BenchmarkRunRecorder
                 ? (recoveryMetrics_.All(m => m.Status.StartsWith("skipped")) ? "skipped" : "executed")
                 : "not_configured";
 
+            // Policy aggregate metrics (Phase 7).
+            object? policyMetrics = null;
+            if (recoveryPolicyRecords_.Count > 0)
+            {
+                int policyExecuted = recoveryPolicyRecords_.Count(r => r.Executed);
+                int policySkipped = recoveryPolicyRecords_.Count(r => !r.Executed);
+                var skipReasonCounts = recoveryPolicyRecords_
+                    .Where(r => !r.Executed)
+                    .GroupBy(r => r.DecisionReason)
+                    .ToDictionary(g => g.Key, g => g.Count());
+                policyMetrics = new
+                {
+                    groups_total = recoveryPolicyRecords_.Count,
+                    executed = policyExecuted,
+                    skipped = policySkipped,
+                    skip_reasons = skipReasonCounts.Count > 0 ? (object)skipReasonCounts : null,
+                };
+            }
+
             string path = Path.Combine(runDir_, "summary.json");
             await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
             {
@@ -373,6 +405,7 @@ internal sealed class BenchmarkRunRecorder
                     average_group_tokens = groupingMetrics_.AverageGroupTokens,
                     token_budget         = groupingMetrics_.TokenBudget > 0 ? (int?)groupingMetrics_.TokenBudget : null,
                 },
+                recovery_policy = policyMetrics,
             }, JsonOptions));
         }
         catch (Exception ex)
@@ -416,4 +449,5 @@ internal sealed class BenchmarkRunRecorder
     private record TurnGroupMetrics(string Topic, long DurationMs, int CandidateCount, int? InputTokens, int? OutputTokens);
     private record RecoveryTurnMetrics(string Topic, string Status, long DurationMs, int CandidateCount, int NewlyReportedRegionCount, int DuplicateCandidateCount, int? InputTokens, int? OutputTokens);
     private record GroupingMetrics(int FinalGroupCount, int LargestGroupTokens, int AverageGroupTokens, int TokenBudget);
+    private record RecoveryPolicyRecord(string GroupId, string Mode, bool Executed, string DecisionReason);
 }
