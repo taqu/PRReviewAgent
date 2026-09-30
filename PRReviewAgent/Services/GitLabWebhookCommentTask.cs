@@ -9,6 +9,9 @@ using PRReviewAgent.Services.ReviewStatus;
 using PRReviewAgent.Services.Statistics;
 using PRReviewAget.Prompt;
 using PRReviewAgent.Services.AutoReview;
+using PRReviewAgent.Services.Coverage;
+using PRReviewAgent.Services.Grouping;
+using PRReviewAgent.Services.Recovery;
 using System;
 using System.Diagnostics;
 using System.Text;
@@ -255,26 +258,18 @@ namespace PRReviewAgent.Services
                 }
             }
 
-            // Step 6: Build file groups deterministically by base filename.
+            // Step 6: Build semantic file groups.
             logger.LogInformation($"Building file groups for {reviewContexts.Count} files.");
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = gitLabMrNoteWebhook_.MergeRequest.Title ?? string.Empty;
             reviewRequest.MergeRequestDescription = gitLabMrNoteWebhook_.MergeRequest.Description ?? string.Empty;
             reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
+            reviewRequest.ReviewRulesTurn1Recovery = Context.Instance.Settings.GetReview1RecoveryTemplate("en");
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
-            Dictionary<string, FileGroup> groups = new Dictionary<string, FileGroup>(StringComparer.OrdinalIgnoreCase);
-            foreach (ReviewContext reviewContext in reviewContexts)
-            {
-                string baseName = Path.GetFileNameWithoutExtension(reviewContext.Path);
-                if (!groups.TryGetValue(baseName, out FileGroup? group))
-                {
-                    group = new FileGroup { Topic = baseName };
-                    groups[baseName] = group;
-                    reviewRequest.FileGroups.Add(group);
-                }
-                group.ReviewContexts.Add(reviewContext);
-            }
+            GroupingConfig groupingConfig = Context.Instance.Settings.GetGroupingConfig();
+            foreach (FileGroup fg in SemanticReviewGroupBuilder.Build(reviewContexts, groupingConfig, logger))
+                reviewRequest.FileGroups.Add(fg);
 
             // Step 7: Execute 2 turn review for each file group.
             IReviewExecutionRecorder? recorder = serviceProvider.GetService<IReviewExecutionRecorder>();
@@ -289,6 +284,19 @@ namespace PRReviewAgent.Services
                 try { executionId = await recorder.StartAsync(project.Id, mergeRequestId, reviewStartedAt, cancellationToken); }
                 catch (Exception ex) { logger.LogError(ex, "Failed to start review execution record"); }
             }
+
+            BenchmarkRunRecorder? benchmarkRecorder = null;
+            try
+            {
+                benchmarkRecorder = BenchmarkRunRecorder.Start(
+                    Path.Combine(AppContext.BaseDirectory, "benchmark-logs"),
+                    reviewStartedAt, logger,
+                    mergeRequestId: mergeRequestId,
+                    model: context.Agents.Model);
+                if (benchmarkRecorder != null)
+                    await benchmarkRecorder.RecordGroupsAsync(reviewRequest.FileGroups, groupingConfig.MaxGroupTokens);
+            }
+            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to start recorder"); }
 
             // Retrieve learned rules via RAG and attach to request (after execution start so executionId is available).
             RuleRetrievalService? ruleRetrievalService = serviceProvider.GetService<RuleRetrievalService>();
@@ -394,6 +402,12 @@ namespace PRReviewAgent.Services
                             }
                         }
 
+                        if (benchmarkRecorder != null && issuesResponse != null)
+                        {
+                            try { await benchmarkRecorder.RecordTurn1Async(fileGroup.Topic, issuesResponse, detectionSw.ElapsedMilliseconds, detInputTokens, detOutputTokens); }
+                            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record turn1"); }
+                        }
+
                         if (null == issuesResponse || issuesResponse.issues.Length <= 0)
                         {
                             logger.LogInformation($"No review generated for {fileGroup.Topic}:{fileGroup.ReviewContexts.Count} files.");
@@ -428,9 +442,166 @@ namespace PRReviewAgent.Services
                             }
                         }
 
-                        int fileGroupCandidates = issuesResponse.issues.Length;
+                        // Coverage tracking — deterministic bookkeeping, no LLM call.
+                        ReviewCoverage coverage = ReviewCoverage.Empty;
+                        try
+                        {
+                            IReadOnlyList<ChangedRegion> regions = ChangedRegionBuilder.Build(fileGroup.ReviewContexts);
+                            coverage = Turn1CoverageResolver.Resolve(regions, issuesResponse, logger);
+                            logger.LogInformation(
+                                "Turn 1 coverage for '{Topic}': {Changed} region(s), {Reported} reported, {Unreported} unreported, {Unmapped} unmapped.",
+                                fileGroup.Topic,
+                                coverage.ChangedRegions.Count,
+                                coverage.ReportedRegionIds.Count,
+                                coverage.UnreportedRegionIds.Count,
+                                coverage.CandidateMappings.Count(m => m.RegionIds.Count == 0));
+                            if (coverage.UnreportedRegionIds.Count > 0)
+                            {
+                                IEnumerable<string> lines = coverage.ChangedRegions
+                                    .Where(r => coverage.UnreportedRegionIds.Contains(r.RegionId))
+                                    .Select(r => $"  {r.RegionId} {r.FilePath}:{r.StartLine}" +
+                                                 (r.ContainingSymbol != null ? $" {r.ContainingSymbol}" : string.Empty));
+                                logger.LogDebug("Unreported regions:\n{Regions}", string.Join("\n", lines));
+                            }
+                        }
+                        catch (Exception ex) { logger.LogWarning(ex, "Coverage tracking failed for '{Topic}'", fileGroup.Topic); }
+                        if (benchmarkRecorder != null)
+                        {
+                            try { await benchmarkRecorder.RecordTurn1CoverageAsync(fileGroup.Topic, coverage); }
+                            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record coverage for '{Topic}'", fileGroup.Topic); }
+                        }
+
+                        // Recovery Detection — one additional non-thinking pass on unreported regions.
+                        IssuesResponse combinedCandidates = issuesResponse;
+                        ReviewCoverage finalCoverage = coverage;
+                        int primaryReportedCount = coverage.ReportedRegionIds.Count;
+                        int recoveryNewlyReported = 0, recoveryDuplicates = 0;
+                        IssuesResponse? recoveryResponse = null;
+                        int? recInputTokens = null, recOutputTokens = null;
+                        RecoveryContextResult recoveryContext = RecoveryContextResult.Empty;
+
+                        // Phase 7: Recovery Execution Policy.
+                        RecoveryConfig recoveryConfig = Context.Instance.Settings.GetRecoveryConfig();
+                        string recoveryModeStr = recoveryConfig.Mode.ToString().ToLowerInvariant();
+                        RecoveryDecision recoveryDecision;
+                        string recoveryStatus;
+
+                        if (string.IsNullOrEmpty(reviewRequest.ReviewRulesTurn1Recovery))
+                        {
+                            recoveryDecision = RecoveryDecision.Skip(RecoverySkipReason.Disabled);
+                            recoveryStatus = "skipped_not_configured";
+                        }
+                        else
+                        {
+                            // Pre-context check: handles Never and no_remaining_regions without building context.
+                            recoveryDecision = RecoveryExecutionPolicy.Evaluate(recoveryConfig, coverage, null);
+                            if (recoveryDecision.ShouldRun)
+                            {
+                                recoveryContext = RecoveryContextBuilder.Build(coverage, fileGroup);
+                                recoveryDecision = RecoveryExecutionPolicy.Evaluate(recoveryConfig, coverage, recoveryContext);
+                            }
+                            recoveryStatus = recoveryDecision.ShouldRun ? "pending" : $"skipped_{recoveryDecision.Reason}";
+                        }
+
+                        logger.LogDebug(
+                            "Recovery policy for '{Topic}': mode={Mode}, decision={Decision}",
+                            fileGroup.Topic, recoveryModeStr, recoveryDecision.Reason);
+
+                        if (recoveryDecision.ShouldRun)
+                        {
+                            logger.LogDebug(
+                                "Recovery context for '{Topic}': {Total} region(s) total, {Primary} primary reported, " +
+                                "{Targets} target(s), {Fragments} fragment(s), ~{Tokens} estimated token(s).",
+                                fileGroup.Topic,
+                                coverage.ChangedRegions.Count,
+                                coverage.ReportedRegionIds.Count,
+                                recoveryContext.TargetRegionCount,
+                                recoveryContext.Fragments.Count,
+                                recoveryContext.EstimatedTokens);
+
+                            Stopwatch recoverySw = Stopwatch.StartNew();
+                            Exception? recException = null;
+                            try
+                            {
+                                string promptRecovery = PromptBuilder.BuildTurn1Recovery(
+                                    reviewRequest, fileGroup, coverage, issuesResponse, recoveryContext, stringBuilder_);
+                                (recoveryResponse, recInputTokens, recOutputTokens) =
+                                    await context.Agents.RunJsonWithUsageAsync<IssuesResponse>(promptRecovery, context.CancellationToken);
+                            }
+                            catch (Exception ex) { recException = ex; logger.LogWarning(ex, "Recovery Detection failed for '{Topic}'", fileGroup.Topic); }
+                            finally { recoverySw.Stop(); }
+
+                            if (recException == null && recoveryResponse != null && recoveryResponse.issues.Length > 0)
+                            {
+                                // Assign IDs continuing after primary.
+                                int baseId = issuesResponse.issues.Length;
+                                for (int ci = 0; ci < recoveryResponse.issues.Length; ci++)
+                                {
+                                    recoveryResponse.issues[ci].candidate_id = $"c{baseId + ci}";
+                                    string? rid = recoveryResponse.issues[ci].rule_id;
+                                    if (rid != null && !selectedRuleIds.Contains(rid))
+                                        recoveryResponse.issues[ci].rule_id = null;
+                                    if (recoveryResponse.issues[ci].rule_id != null)
+                                        candidateToRuleId[recoveryResponse.issues[ci].candidate_id!] = recoveryResponse.issues[ci].rule_id!;
+                                }
+
+                                // Coverage for recovery candidates.
+                                ReviewCoverage recoveryCoverage = Turn1CoverageResolver.Resolve(
+                                    coverage.ChangedRegions, recoveryResponse, logger);
+                                recoveryNewlyReported = recoveryCoverage.ReportedRegionIds
+                                    .Count(rid => !coverage.ReportedRegionIds.Contains(rid));
+
+                                // Conservative deduplication + union.
+                                (IssuesResponse combined, int dups) = CandidateUnionBuilder.Union(
+                                    issuesResponse, recoveryResponse, coverage, recoveryCoverage);
+                                combinedCandidates = combined;
+                                recoveryDuplicates = dups;
+                                finalCoverage = ReviewCoverage.Merge(coverage, recoveryCoverage);
+                                recoveryStatus = "executed";
+                            }
+                            else if (recException == null)
+                            {
+                                recoveryStatus = "executed_no_candidates";
+                            }
+                            else
+                            {
+                                recoveryStatus = "failed";
+                            }
+
+                            if (benchmarkRecorder != null)
+                            {
+                                try
+                                {
+                                    await benchmarkRecorder.RecordRecoveryTurnAsync(
+                                        fileGroup.Topic, recoveryStatus, recoveryResponse,
+                                        recoverySw.ElapsedMilliseconds, recInputTokens, recOutputTokens,
+                                        recoveryNewlyReported, recoveryDuplicates, recoveryContext,
+                                        PromptBuilder.RecoveryPromptVersion, recoveryModeStr, recoveryDecision.Reason);
+                                    await benchmarkRecorder.RecordRecoveryCoverageAsync(
+                                        fileGroup.Topic, finalCoverage, primaryReportedCount);
+                                }
+                                catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record recovery for '{Topic}'", fileGroup.Topic); }
+                            }
+                        }
+                        else if (benchmarkRecorder != null)
+                        {
+                            try
+                            {
+                                await benchmarkRecorder.RecordRecoveryTurnAsync(
+                                    fileGroup.Topic, recoveryStatus, null,
+                                    0, null, null, 0, 0, null, null,
+                                    recoveryModeStr, recoveryDecision.Reason);
+                            }
+                            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record recovery skip for '{Topic}'", fileGroup.Topic); }
+                        }
+
+                        logger.LogInformation(
+                            "Recovery for '{Topic}': {Status}, +{Newly} newly-reported region(s), {Dups} duplicate(s).",
+                            fileGroup.Topic, recoveryStatus, recoveryNewlyReported, recoveryDuplicates);
+
+                        int fileGroupCandidates = combinedCandidates.issues.Length;
                         int fileGroupSelected = 0, fileGroupCritical = 0, fileGroupMajor = 0, fileGroupMinor = 0;
-                        foreach (Prompt.Issue issue in issuesResponse.issues)
+                        foreach (Prompt.Issue issue in combinedCandidates.issues)
                         {
                             string conf = issue.confidence?.Trim() ?? string.Empty;
                             if (string.Equals(conf, "Critical", StringComparison.OrdinalIgnoreCase)) { fileGroupCritical++; fileGroupSelected++; }
@@ -443,8 +614,8 @@ namespace PRReviewAgent.Services
                         totalMinor += fileGroupMinor;
                         totalSelected += fileGroupSelected;
 
-                        // Selection turn
-                        string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, issuesResponse, stringBuilder_);
+                        // Selection turn with combined candidates.
+                        string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, combinedCandidates, stringBuilder_);
                         DateTimeOffset selectionStart = DateTimeOffset.UtcNow;
                         Stopwatch selectionSw = Stopwatch.StartNew();
                         long? selectionTurnId = null;
@@ -476,6 +647,12 @@ namespace PRReviewAgent.Services
                                 }
                                 catch (Exception rex) { logger.LogError(rex, "Failed to complete Selection turn record"); }
                             }
+                        }
+
+                        if (benchmarkRecorder != null && !string.IsNullOrEmpty(reviewResponse))
+                        {
+                            try { await benchmarkRecorder.RecordTurn2Async(fileGroup.Topic, reviewResponse, selectionSw.ElapsedMilliseconds, selInputTokens, selOutputTokens); }
+                            catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to record turn2"); }
                         }
 
                         if (string.IsNullOrEmpty(reviewResponse))
@@ -532,6 +709,12 @@ namespace PRReviewAgent.Services
                     }
                     catch (Exception ex) { logger.LogError(ex, "Failed to complete review execution record"); }
                 }
+
+                if (benchmarkRecorder != null)
+                {
+                    try { await benchmarkRecorder.CompleteAsync(DateTimeOffset.UtcNow, reviewStopwatch.ElapsedMilliseconds); }
+                    catch (Exception ex) { logger.LogWarning(ex, "Benchmark: failed to complete"); }
+                }
             }
             catch (Exception ex)
             {
@@ -544,6 +727,11 @@ namespace PRReviewAgent.Services
                         await recorder.CompleteFailureAsync(executionId.Value, ex.GetType().Name, DateTimeOffset.UtcNow, reviewStopwatch.ElapsedMilliseconds, cancellationToken);
                     }
                     catch (Exception rex) { logger.LogError(rex, "Failed to record review execution failure"); }
+                }
+                if (benchmarkRecorder != null)
+                {
+                    try { await benchmarkRecorder.MarkFailedAsync("failed", DateTimeOffset.UtcNow); }
+                    catch (Exception rex) { logger.LogWarning(rex, "Benchmark: failed to mark failed"); }
                 }
                 if (statusService != null && statusProvider != null)
                 {

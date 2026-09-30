@@ -1,4 +1,6 @@
 using PRReviewAgent.Prompt;
+using PRReviewAgent.Services.Coverage;
+using PRReviewAgent.Services.Recovery;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -8,6 +10,7 @@ namespace PRReviewAgent.Services
 {
     public static class PromptBuilder
     {
+        public const string RecoveryPromptVersion = "phase6-v1";
         public static string BuildTurn1(ReviewRequest reviewRequest, FileGroup fileGroup, StringBuilder stringBuilder)
         {
             stringBuilder.Clear();
@@ -67,6 +70,122 @@ namespace PRReviewAgent.Services
                 stringBuilder.Append("\n----\n");
                 stringBuilder.Append(reviewRequest.LearnedRules);
             }
+            return stringBuilder.ToString();
+        }
+
+        /// <summary>
+        /// Builds the Recovery Detection (Turn 1B) prompt.
+        /// Focuses model attention on unreported changed regions while providing
+        /// already-reported findings as exclusion context.
+        /// </summary>
+        public static string BuildTurn1Recovery(
+            ReviewRequest reviewRequest,
+            FileGroup fileGroup,
+            ReviewCoverage primaryCoverage,
+            IssuesResponse primaryCandidates,
+            RecoveryContextResult recoveryContext,
+            StringBuilder stringBuilder)
+        {
+            stringBuilder.Clear();
+            stringBuilder.Append(reviewRequest.ReviewRulesTurn1Recovery);
+            stringBuilder.Append("\n----\n");
+
+            if (!string.IsNullOrEmpty(reviewRequest.MergeRequestTitle))
+            {
+                stringBuilder.Append("# MR Title\n");
+                stringBuilder.Append(reviewRequest.MergeRequestTitle);
+                stringBuilder.Append("\n\n");
+            }
+
+            // Compact exclusion context: location + problem only (token-efficient).
+            if (primaryCandidates.issues.Length > 0)
+            {
+                stringBuilder.Append("# Already Reported Findings\n");
+                foreach (Issue issue in primaryCandidates.issues)
+                    stringBuilder.Append($"- {issue.location}: {issue.problem}\n");
+                stringBuilder.Append("\n");
+            }
+
+            // Remaining changed regions — the focus for Recovery Detection.
+            var unreported = primaryCoverage.ChangedRegions
+                .Where(r => primaryCoverage.UnreportedRegionIds.Contains(r.RegionId))
+                .ToList();
+            stringBuilder.Append("# Remaining Changed Regions\n");
+            foreach (ChangedRegion r in unreported)
+            {
+                string sym = r.ContainingSymbol != null ? $" ({r.ContainingSymbol})" : string.Empty;
+                stringBuilder.Append($"- {r.FilePath}:{r.StartLine}-{r.EndLine}{sym}\n");
+            }
+            stringBuilder.Append("\n");
+
+            // Files list.
+            stringBuilder.Append("# Files\n");
+            foreach (ReviewContext ctx in fileGroup.ReviewContexts)
+                stringBuilder.Append($"{ctx.Filename}\n");
+            stringBuilder.Append("\n");
+
+            // AST structures (all files — provides semantic context per §10).
+            int countAST = fileGroup.ReviewContexts.Count(x => !string.IsNullOrEmpty(x.AstJson));
+            if (countAST > 0)
+            {
+                stringBuilder.Append("# Structures(JSON)\n");
+                foreach (ReviewContext ctx in fileGroup.ReviewContexts)
+                {
+                    if (!string.IsNullOrEmpty(ctx.AstJson))
+                    {
+                        stringBuilder.Append($"```json:{ctx.Filename}\n");
+                        stringBuilder.Append(ctx.AstJson);
+                        stringBuilder.Append("\n```\n");
+                    }
+                }
+            }
+
+            // Phase 5: focused diff fragments — only the hunks for unreported regions.
+            // Falls back to full file diffs if no fragments were built (e.g. missing ExpandedDiff).
+            if (recoveryContext.Fragments.Count > 0)
+            {
+                var filenameLookup = fileGroup.ReviewContexts.ToDictionary(
+                    c => ChangedRegionBuilder.NormalizePath(c.Path), c => c.Filename,
+                    StringComparer.OrdinalIgnoreCase);
+
+                stringBuilder.Append("# Recovery Target Diffs\n");
+                string? lastFilePath = null;
+                foreach (RecoveryFragment fragment in recoveryContext.Fragments)
+                {
+                    if (fragment.FilePath != lastFilePath)
+                    {
+                        if (lastFilePath != null) stringBuilder.Append("```\n");
+                        string fn = filenameLookup.TryGetValue(fragment.FilePath, out string? name) ? name : fragment.FilePath;
+                        stringBuilder.Append($"```diff:{fn}\n");
+                        lastFilePath = fragment.FilePath;
+                    }
+                    stringBuilder.Append(fragment.DiffText);
+                }
+                if (lastFilePath != null) stringBuilder.Append("```\n");
+            }
+            else
+            {
+                // Fallback: include full diffs for files with unreported regions (Phase 4 behavior).
+                var unreportedFiles = unreported
+                    .Select(r => r.FilePath)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                bool anyDiff = fileGroup.ReviewContexts.Any(x =>
+                    !string.IsNullOrEmpty(x.ExpandedDiff) &&
+                    unreportedFiles.Contains(ChangedRegionBuilder.NormalizePath(x.Path)));
+                if (anyDiff)
+                {
+                    stringBuilder.Append("# Diffs\n");
+                    foreach (ReviewContext ctx in fileGroup.ReviewContexts)
+                    {
+                        if (string.IsNullOrEmpty(ctx.ExpandedDiff)) continue;
+                        if (!unreportedFiles.Contains(ChangedRegionBuilder.NormalizePath(ctx.Path))) continue;
+                        stringBuilder.Append($"```diff:{ctx.Filename}\n");
+                        stringBuilder.Append(ctx.ExpandedDiff);
+                        stringBuilder.Append("\n```\n");
+                    }
+                }
+            }
+
             return stringBuilder.ToString();
         }
 

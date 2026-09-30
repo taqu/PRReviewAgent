@@ -1,3 +1,6 @@
+using PRReviewAgent.Services.Grouping;
+using PRReviewAgent.Services.Recovery;
+
 namespace PRReviewAgent
 {
     /// <summary>
@@ -83,6 +86,7 @@ namespace PRReviewAgent
             if (System.IO.Directory.Exists("Templates"))
             {
                 review1Templates_ = LoadTemplate("review1");
+                review1RecoveryTemplates_ = LoadTemplate("review1recovery");
                 review2Templates_ = LoadTemplate("review2");
                 learnedTemplates_ = LoadTemplate("learned");
                 noproblemTemplates_ = LoadTemplate("noproblem");
@@ -152,6 +156,16 @@ namespace PRReviewAgent
         {
             string? template = null;
             review1Templates_.TryGetValue(lang, out template);
+            return template;
+        }
+
+        /// <summary>
+        /// Gets the Recovery Detection template for the specified language.
+        /// Returns null if the template has not been loaded (graceful fallback — recovery skips).
+        /// </summary>
+        public string? GetReview1RecoveryTemplate(string lang)
+        {
+            review1RecoveryTemplates_.TryGetValue(lang, out string? template);
             return template;
         }
 
@@ -293,6 +307,55 @@ namespace PRReviewAgent
         }
 
         /// <summary>
+        /// Gets the semantic grouping configuration from [review.grouping] in config.toml.
+        /// </summary>
+        public GroupingConfig GetGroupingConfig()
+        {
+            var cfg = new GroupingConfig();
+            if (config_ != null
+                && config_.TryGetValue("review", out object? reviewObj)
+                && reviewObj is Tomlyn.Model.TomlTable reviewTable
+                && reviewTable.TryGetValue("grouping", out object? groupingObj)
+                && groupingObj is Tomlyn.Model.TomlTable groupingTable)
+            {
+                if (groupingTable.TryGetValue("max_files_per_group", out object? maxFiles)
+                    && maxFiles is long max)
+                    cfg.MaxFilesPerGroup = (int)max;
+                if (groupingTable.TryGetValue("max_group_tokens", out object? maxTok)
+                    && maxTok is long tok)
+                    cfg.MaxGroupTokens = (int)tok;
+                if (groupingTable.TryGetValue("mode", out object? modeObj)
+                    && modeObj is string modeStr
+                    && System.Enum.TryParse<GroupingMode>(modeStr, ignoreCase: true, out GroupingMode mode))
+                    cfg.Mode = mode;
+            }
+            return cfg;
+        }
+
+        /// <summary>
+        /// Gets the Recovery execution policy configuration from [review.recovery] in config.toml.
+        /// </summary>
+        public RecoveryConfig GetRecoveryConfig()
+        {
+            var cfg = new RecoveryConfig();
+            if (config_ != null
+                && config_.TryGetValue("review", out object? reviewObj)
+                && reviewObj is Tomlyn.Model.TomlTable reviewTable
+                && reviewTable.TryGetValue("recovery", out object? recoveryObj)
+                && recoveryObj is Tomlyn.Model.TomlTable recoveryTable)
+            {
+                if (recoveryTable.TryGetValue("mode", out object? modeObj)
+                    && modeObj is string modeStr
+                    && System.Enum.TryParse<RecoveryMode>(modeStr, ignoreCase: true, out RecoveryMode mode))
+                    cfg.Mode = mode;
+                if (recoveryTable.TryGetValue("min_changed_region_count", out object? minObj)
+                    && minObj is long min)
+                    cfg.MinimumChangedRegionCount = (int)min;
+            }
+            return cfg;
+        }
+
+        /// <summary>
         /// Gets the secrets table.
         /// </summary>
         public Tomlyn.Model.TomlTable? Secrets => secrets_;
@@ -305,6 +368,7 @@ namespace PRReviewAgent
         private Tomlyn.Model.TomlTable? secrets_;
         private Tomlyn.Model.TomlTable? config_;
         private Dictionary<string, string> review1Templates_ = new();
+        private Dictionary<string, string> review1RecoveryTemplates_ = new();
         private Dictionary<string, string> review2Templates_ = new();
         private Dictionary<string, string> learnedTemplates_ = new();
         private Dictionary<string, string> noproblemTemplates_ = new();
