@@ -32,3 +32,25 @@
 |:---| :---|:---|
 | duration (ms) | 172620 | 1684855 |
 
+# Results2
+
+|                             | phase1 | phase7 | 
+|:----------------------------|:--------------|:-------------|
+| 1. MIS heuristic            | 4/10          | 7/10         |
+| 2. mirrored U               | 10/10         | 10/10        |
+| 3. atan2 reversal           | 0/10          | 0/10         |
+| 4. SampleHeight modulo      | 10/10         | 10/10        |
+| 5. UV interpolation         | 10/10         | 10/10        |
+| 6. roughness UV swap        | 0/10          | 0/10         |
+| 7. cross(T, normal)         | 0/10          | 0/10         |
+| 8. wrong lighting direction | 8/10          | 8/10         |
+| 9. row * height             | 2/10          | 1/10         |
+| 10. camera / width          | 10/10         | 10/10        |
+| false positive              | 0/10          | 0/10         |
+
+# Timing2
+
+| | phase1 | phase7|
+|:---| :---|:---|
+| duration (ms) | 204183 | 246251 |
+
