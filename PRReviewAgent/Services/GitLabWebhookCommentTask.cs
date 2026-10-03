@@ -263,8 +263,8 @@ namespace PRReviewAgent.Services
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = gitLabMrNoteWebhook_.MergeRequest.Title ?? string.Empty;
             reviewRequest.MergeRequestDescription = gitLabMrNoteWebhook_.MergeRequest.Description ?? string.Empty;
-            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
-            reviewRequest.ReviewRulesTurn1Recovery = Context.Instance.Settings.GetReview1RecoveryTemplate("en");
+            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template();
+            reviewRequest.ReviewRulesTurn1Recovery = Context.Instance.Settings.GetReview1RecoveryTemplate();
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
             GroupingConfig groupingConfig = Context.Instance.Settings.GetGroupingConfig();

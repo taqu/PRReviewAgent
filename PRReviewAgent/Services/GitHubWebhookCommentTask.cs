@@ -260,8 +260,8 @@ namespace PRReviewAgent.Services
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = payloadIssueComment_.issue.title ?? string.Empty;
             reviewRequest.MergeRequestDescription = payloadIssueComment_.issue.body?? string.Empty;
-            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template(language_);
-            reviewRequest.ReviewRulesTurn1Recovery = Context.Instance.Settings.GetReview1RecoveryTemplate(language_);
+            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template();
+            reviewRequest.ReviewRulesTurn1Recovery = Context.Instance.Settings.GetReview1RecoveryTemplate();
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
             GroupingConfig groupingConfig = Context.Instance.Settings.GetGroupingConfig();

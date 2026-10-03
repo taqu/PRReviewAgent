@@ -90,7 +90,6 @@ namespace PRReviewAgent
                 review2Templates_ = LoadTemplate("review2");
                 learnedTemplates_ = LoadTemplate("learned");
                 noproblemTemplates_ = LoadTemplate("noproblem");
-                localPolicy_ = LoadOneTemplate("localpolicy");
             }
             return true;
         }
@@ -144,7 +143,7 @@ namespace PRReviewAgent
         /// <returns>True if both review and organize templates exist; otherwise, false.</returns>
         public bool HasTemplate(string lang)
         {
-            return review1Templates_.ContainsKey(lang) && review2Templates_.ContainsKey(lang) &&learnedTemplates_.ContainsKey(lang);
+            return review2Templates_.ContainsKey(lang) && learnedTemplates_.ContainsKey(lang) && noproblemTemplates_.ContainsKey(lang);
         }
 
         /// <summary>
@@ -152,10 +151,10 @@ namespace PRReviewAgent
         /// </summary>
         /// <param name="lang">The language code.</param>
         /// <returns>The review template text, or null if not found.</returns>
-        public string? GetReview1Template(string lang)
+        public string? GetReview1Template()
         {
             string? template = null;
-            review1Templates_.TryGetValue(lang, out template);
+            review1Templates_.TryGetValue("en", out template);
             return template;
         }
 
@@ -163,9 +162,9 @@ namespace PRReviewAgent
         /// Gets the Recovery Detection template for the specified language.
         /// Returns null if the template has not been loaded (graceful fallback — recovery skips).
         /// </summary>
-        public string? GetReview1RecoveryTemplate(string lang)
+        public string? GetReview1RecoveryTemplate()
         {
-            review1RecoveryTemplates_.TryGetValue(lang, out string? template);
+            review1RecoveryTemplates_.TryGetValue("en", out string? template);
             return template;
         }
 
@@ -222,16 +221,6 @@ namespace PRReviewAgent
         {
             return review2Templates_.Values.AsEnumerable<string>();
         }
-
-        /// <summary>
-        /// Get project specific conding policy
-        /// </summary>
-        /// <returns></returns>
-        public string GetLocalPolicy()
-        {
-            return localPolicy_;
-        }
-
 
         /// <summary>
         /// Gets the extension from the specified file path.
@@ -373,6 +362,5 @@ namespace PRReviewAgent
         private Dictionary<string, string> learnedTemplates_ = new();
         private Dictionary<string, string> noproblemTemplates_ = new();
         private string[] extensions_ = new string[0];
-        private string localPolicy_ = string.Empty;
     }
 }
