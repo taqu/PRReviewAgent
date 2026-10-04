@@ -89,6 +89,14 @@ namespace PRReviewAgent.Services
             }
         }
 
+        public GitLabWebhookCommentTask(GitLabMrNoteWebhook payloadComment, string? explicitLanguage)
+        {
+            gitLabMrNoteWebhook_ = payloadComment;
+            _explicitLanguage = explicitLanguage;
+            _resolveLanguageLazily = true;
+            // Note: language_ is NOT set here; it is resolved in RunAsync.
+        }
+
         public static GitLabWebhookCommentTask FromMROpened(GitLabMergeRequestWebhook mrEvent, string language)
         {
             var synthetic = new GitLabMrNoteWebhook
@@ -179,6 +187,27 @@ namespace PRReviewAgent.Services
                 catch (Exception ex)
                 {
                     logger.LogError(ex, "Failed to resolve project");
+                }
+            }
+
+            // Resolve review language (lazy path: command-triggered review).
+            if (_resolveLanguageLazily)
+            {
+                long commentAuthorId = gitLabMrNoteWebhook_.ObjectAttributes?.AuthorId ?? gitLabMrNoteWebhook_.User?.Id ?? 0;
+                string userId = $"gitlab:{commentAuthorId}";
+                IUserLanguagePreferenceRepository? langPrefRepo = serviceProvider.GetService<IUserLanguagePreferenceRepository>();
+                if (_explicitLanguage != null)
+                {
+                    language_ = _explicitLanguage;
+                    if (langPrefRepo != null && project != null)
+                    {
+                        try { await langPrefRepo.SetAsync(project.Id, userId, language_, cancellationToken); }
+                        catch (Exception ex) { logger?.LogError(ex, "Failed to save language preference for user {UserId}", userId); }
+                    }
+                }
+                else
+                {
+                    language_ = await ReviewLanguageResolver.ResolveAsync(project?.Id ?? 0, userId, langPrefRepo, cancellationToken);
                 }
             }
 
@@ -925,6 +954,8 @@ namespace PRReviewAgent.Services
 
         private GitLabMrNoteWebhook gitLabMrNoteWebhook_;
         private string language_;
+        private readonly string? _explicitLanguage;
+        private readonly bool _resolveLanguageLazily;
         private StringBuilder stringBuilder_ = new StringBuilder();
     }
 }

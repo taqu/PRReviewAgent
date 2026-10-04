@@ -26,6 +26,21 @@ namespace PRReviewAgent.Services.AutoReview
                 return null;
             }
 
+            if (firstLine.Contains("/review_lang", StringComparison.OrdinalIgnoreCase))
+            {
+                int idx = firstLine.IndexOf("/review_lang", StringComparison.OrdinalIgnoreCase);
+                string after = firstLine.Substring(idx + "/review_lang".Length).TrimStart();
+                string? langToken = null;
+                if (!string.IsNullOrEmpty(after))
+                {
+                    // Take the first whitespace-delimited token
+                    int spaceIdx = after.IndexOfAny(new[] { ' ', '\t' });
+                    langToken = spaceIdx >= 0 ? after.Substring(0, spaceIdx) : after;
+                    if (string.IsNullOrEmpty(langToken)) langToken = null;
+                }
+                return new ReviewCommand(ReviewCommandType.ReviewLanguage, langToken);
+            }
+
             if (firstLine.Contains("/review", StringComparison.OrdinalIgnoreCase))
             {
                 string lang = GitLabWebhookCommentTask.FindLanguage(firstLine);

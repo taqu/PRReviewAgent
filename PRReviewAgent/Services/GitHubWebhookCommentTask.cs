@@ -77,6 +77,20 @@ namespace PRReviewAgent.Services
             };
         }
 
+        public GitHubWebhookCommentTask(PayloadIssueComment payloadIssueComment, string? explicitLanguage)
+        {
+            payloadIssueComment_ = payloadIssueComment;
+            _explicitLanguage = explicitLanguage;
+            _resolveLanguageLazily = true;
+            // Extract the pull request number from the pull request URL.
+            {
+                Uri uri = new Uri(payloadIssueComment_.issue.pull_request.url);
+                string number = uri.Segments[uri.Segments.Length - 1];
+                int.TryParse(number, out pullRequestNumber_);
+            }
+            // Note: language_ is NOT set here; it is resolved in RunAsync.
+        }
+
         /// <summary>
         /// Represents a collection of changes.
         /// </summary>
@@ -173,6 +187,26 @@ namespace PRReviewAgent.Services
                 catch (Exception ex)
                 {
                     logger.LogError(ex, "Failed to resolve project");
+                }
+            }
+
+            // Resolve review language (lazy path: command-triggered review).
+            if (_resolveLanguageLazily)
+            {
+                string userId = $"github:{payloadIssueComment_.sender.id}";
+                IUserLanguagePreferenceRepository? langPrefRepo = serviceProvider.GetService<IUserLanguagePreferenceRepository>();
+                if (_explicitLanguage != null)
+                {
+                    language_ = _explicitLanguage;
+                    if (langPrefRepo != null && project != null)
+                    {
+                        try { await langPrefRepo.SetAsync(project.Id, userId, language_, cancellationToken); }
+                        catch (Exception ex) { logger?.LogError(ex, "Failed to save language preference for user {UserId}", userId); }
+                    }
+                }
+                else
+                {
+                    language_ = await ReviewLanguageResolver.ResolveAsync(project?.Id ?? 0, userId, langPrefRepo, cancellationToken);
                 }
             }
 
@@ -899,6 +933,8 @@ namespace PRReviewAgent.Services
 
         private PayloadIssueComment payloadIssueComment_;
         private string language_;
+        private readonly string? _explicitLanguage;
+        private readonly bool _resolveLanguageLazily;
         private int pullRequestNumber_;
         private StringBuilder stringBuilder_ = new StringBuilder();
     }
