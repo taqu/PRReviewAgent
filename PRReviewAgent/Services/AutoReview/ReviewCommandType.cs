@@ -5,5 +5,6 @@ namespace PRReviewAgent.Services.AutoReview
         Review,
         AutoReviewOn,
         AutoReviewOff,
+        ReviewLanguage,
     }
 }

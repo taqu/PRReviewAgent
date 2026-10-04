@@ -89,6 +89,14 @@ namespace PRReviewAgent.Services
             }
         }
 
+        public GitLabWebhookCommentTask(GitLabMrNoteWebhook payloadComment, string? explicitLanguage)
+        {
+            gitLabMrNoteWebhook_ = payloadComment;
+            _explicitLanguage = explicitLanguage;
+            _resolveLanguageLazily = true;
+            // Note: language_ is NOT set here; it is resolved in RunAsync.
+        }
+
         public static GitLabWebhookCommentTask FromMROpened(GitLabMergeRequestWebhook mrEvent, string language)
         {
             var synthetic = new GitLabMrNoteWebhook
@@ -182,6 +190,27 @@ namespace PRReviewAgent.Services
                 }
             }
 
+            // Resolve review language (lazy path: command-triggered review).
+            if (_resolveLanguageLazily)
+            {
+                long commentAuthorId = gitLabMrNoteWebhook_.ObjectAttributes?.AuthorId ?? gitLabMrNoteWebhook_.User?.Id ?? 0;
+                string userId = $"gitlab:{commentAuthorId}";
+                IUserLanguagePreferenceRepository? langPrefRepo = serviceProvider.GetService<IUserLanguagePreferenceRepository>();
+                if (_explicitLanguage != null)
+                {
+                    language_ = _explicitLanguage;
+                    if (langPrefRepo != null && project != null)
+                    {
+                        try { await langPrefRepo.SetAsync(project.Id, userId, language_, cancellationToken); }
+                        catch (Exception ex) { logger?.LogError(ex, "Failed to save language preference for user {UserId}", userId); }
+                    }
+                }
+                else
+                {
+                    language_ = await ReviewLanguageResolver.ResolveAsync(project?.Id ?? 0, userId, langPrefRepo, cancellationToken);
+                }
+            }
+
             // Step 1: Fetch all diffs for the merge request.
             NGitLab.IMergeRequestClient mergeRequestClient = gitLabClient.GetMergeRequest((long)gitLabMrNoteWebhook_.Project.Id);
 
@@ -263,8 +292,8 @@ namespace PRReviewAgent.Services
             ReviewRequest reviewRequest = new ReviewRequest();
             reviewRequest.MergeRequestTitle = gitLabMrNoteWebhook_.MergeRequest.Title ?? string.Empty;
             reviewRequest.MergeRequestDescription = gitLabMrNoteWebhook_.MergeRequest.Description ?? string.Empty;
-            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template("en");
-            reviewRequest.ReviewRulesTurn1Recovery = Context.Instance.Settings.GetReview1RecoveryTemplate("en");
+            reviewRequest.ReviewRulesTurn1 = Context.Instance.Settings.GetReview1Template();
+            reviewRequest.ReviewRulesTurn1Recovery = Context.Instance.Settings.GetReview1RecoveryTemplate();
             reviewRequest.ReviewRulesTurn2 = Context.Instance.Settings.GetReview2Template(language_);
 
             GroupingConfig groupingConfig = Context.Instance.Settings.GetGroupingConfig();
@@ -925,6 +954,8 @@ namespace PRReviewAgent.Services
 
         private GitLabMrNoteWebhook gitLabMrNoteWebhook_;
         private string language_;
+        private readonly string? _explicitLanguage;
+        private readonly bool _resolveLanguageLazily;
         private StringBuilder stringBuilder_ = new StringBuilder();
     }
 }

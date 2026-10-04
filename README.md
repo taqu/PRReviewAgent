@@ -154,9 +154,18 @@ Comment `/review` on a pull request or merge request to trigger the agent.
 
 Specify a language with an optional language code:
 
-- `/review` — uses `default_language` from config
-- `/review /en` — English
-- `/review /ja` — Japanese
+- `/review` — uses saved language preference, or `default_language` from config if none is saved
+- `/review /en` — English (also saves this preference for the repository)
+- `/review /ja` — Japanese (also saves this preference for the repository)
+
+### Saving a Language Preference
+
+Use `/review_lang` to save your preferred review language for a repository without triggering a review.
+
+- `/review_lang en` — save English as your preferred language for this repository
+- `/review_lang ja` — save Japanese as your preferred language for this repository
+
+Preferences are stored per-repository and per-user. Once saved, subsequent `/review` commands without an explicit language code will use the stored preference. If no preference has been saved, `default_language` from `config.toml` is used as the fallback.
 
 ## Project Adaptation
 

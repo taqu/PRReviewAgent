@@ -198,6 +198,10 @@ namespace PRReviewAgent
                 builder.Services.AddSingleton<IAutoReviewUserSettingRepository>(autoReviewRepository);
                 builder.Services.AddSingleton<IAutoReviewPolicy, AutoReviewPolicy>();
                 System.Console.WriteLine($"Auto-review service initialized (enabled={arEnabled}, mode={arMode}).");
+                UserLanguagePreferenceRepository userLangPrefRepository = new UserLanguagePreferenceRepository(reviewDbPath);
+                userLangPrefRepository.InitializeAsync().GetAwaiter().GetResult();
+                builder.Services.AddSingleton<IUserLanguagePreferenceRepository>(userLangPrefRepository);
+                System.Console.WriteLine("User language preference service initialized.");
             }
 
             // Register auto-improve services if configured.
