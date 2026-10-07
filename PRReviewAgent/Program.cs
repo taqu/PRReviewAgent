@@ -180,6 +180,7 @@ namespace PRReviewAgent
             {
                 bool arEnabled = false;
                 AutoReviewMode arMode = AutoReviewMode.OptOut;
+                bool exceptCherryPick = true;
                 if (Context.Instance.Settings.Config.TryGetValue("auto_review", out object? arCfgObj)
                     && arCfgObj is Tomlyn.Model.TomlTable arCfgTbl)
                 {
@@ -190,8 +191,12 @@ namespace PRReviewAgent
                             ? AutoReviewMode.OptIn
                             : AutoReviewMode.OptOut;
                     }
+                    if (arCfgTbl.TryGetValue("except_cherrypick", out object? arCherryObj) && arCherryObj is bool arCherryBool)
+                    {
+                        exceptCherryPick = arCherryBool;
+                    }
                 }
-                AutoReviewOptions autoReviewOptions = new AutoReviewOptions { Enabled = arEnabled, Mode = arMode };
+                AutoReviewOptions autoReviewOptions = new AutoReviewOptions { Enabled = arEnabled, Mode = arMode, ExceptCherryPick = exceptCherryPick };
                 AutoReviewUserSettingRepository autoReviewRepository = new AutoReviewUserSettingRepository(reviewDbPath);
                 autoReviewRepository.InitializeAsync().GetAwaiter().GetResult();
                 builder.Services.AddSingleton(autoReviewOptions);

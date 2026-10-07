@@ -45,7 +45,7 @@ namespace PRReviewAgent.Services
 
             long authorId = _mrEvent.ObjectAttributes?.AuthorId ?? _mrEvent.User?.Id ?? 0;
             string userId = $"gitlab:{authorId}";
-            bool enabled = await policy.IsEnabledAsync(project.Id, userId, cancellationToken);
+            bool enabled = await policy.IsEnabledAsync(project.Id, userId, _mrEvent.ObjectAttributes.SourceBranch, cancellationToken);
             if (!enabled)
             {
                 logger?.LogDebug("Auto review not enabled for user {UserId} on project {ProjectId}", userId, project.Id);

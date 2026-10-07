@@ -11,9 +11,15 @@ namespace PRReviewAgent.Services.AutoReview
             _repository = repository;
         }
 
-        public async Task<bool> IsEnabledAsync(long projectId, string userId, CancellationToken ct)
+        public async Task<bool> IsEnabledAsync(long projectId, string userId, string? sourceBranch, CancellationToken ct)
         {
             if (!_options.Enabled) return false;
+            if (_options.ExceptCherryPick && null != sourceBranch)
+            {
+                if(sourceBranch.StartsWith("cherry-pick", StringComparison.OrdinalIgnoreCase)){
+                    return false;
+                }
+            }
             bool? userSetting = await _repository.GetAsync(projectId, userId, ct);
             if (userSetting.HasValue) return userSetting.Value;
             return _options.Mode == AutoReviewMode.OptOut;
