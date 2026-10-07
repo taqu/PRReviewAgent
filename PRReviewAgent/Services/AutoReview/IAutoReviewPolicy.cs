@@ -2,6 +2,6 @@ namespace PRReviewAgent.Services.AutoReview
 {
     public interface IAutoReviewPolicy
     {
-        Task<bool> IsEnabledAsync(long projectId, string userId, CancellationToken ct);
+        Task<bool> IsEnabledAsync(long projectId, string userId, string? sourceBranch, CancellationToken ct);
     }
 }

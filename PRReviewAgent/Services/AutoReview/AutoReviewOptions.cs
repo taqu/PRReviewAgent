@@ -4,5 +4,6 @@ namespace PRReviewAgent.Services.AutoReview
     {
         public bool Enabled { get; init; }
         public AutoReviewMode Mode { get; init; }
+        public bool ExceptCherryPick { get; init; }
     }
 }

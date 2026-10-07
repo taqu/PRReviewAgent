@@ -44,7 +44,7 @@ namespace PRReviewAgent.Services
             }
 
             string userId = $"github:{_prEvent.pull_request.user?.id ?? _prEvent.sender?.id ?? 0}";
-            bool enabled = await policy.IsEnabledAsync(project.Id, userId, cancellationToken);
+            bool enabled = await policy.IsEnabledAsync(project.Id, userId, string.Empty, cancellationToken);
             if (!enabled)
             {
                 logger?.LogDebug("Auto review not enabled for user {UserId} on project {ProjectId}", userId, project.Id);
