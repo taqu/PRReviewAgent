@@ -630,18 +630,7 @@ namespace PRReviewAgent.Services
 
                         int fileGroupCandidates = combinedCandidates.issues.Length;
                         int fileGroupSelected = 0, fileGroupCritical = 0, fileGroupMajor = 0, fileGroupMinor = 0;
-                        foreach (Prompt.Issue issue in combinedCandidates.issues)
-                        {
-                            string conf = issue.confidence?.Trim() ?? string.Empty;
-                            if (string.Equals(conf, "Critical", StringComparison.OrdinalIgnoreCase)) { fileGroupCritical++; fileGroupSelected++; }
-                            else if (string.Equals(conf, "Major", StringComparison.OrdinalIgnoreCase)) { fileGroupMajor++; fileGroupSelected++; }
-                            else if (string.Equals(conf, "Minor", StringComparison.OrdinalIgnoreCase)) { fileGroupMinor++; fileGroupSelected++; }
-                        }
                         totalCandidates += fileGroupCandidates;
-                        totalCritical += fileGroupCritical;
-                        totalMajor += fileGroupMajor;
-                        totalMinor += fileGroupMinor;
-                        totalSelected += fileGroupSelected;
 
                         // Selection turn with combined candidates.
                         string promptTurn2 = PromptBuilder.BuildTurn2(reviewRequest, combinedCandidates, stringBuilder_);
@@ -660,6 +649,8 @@ namespace PRReviewAgent.Services
                         try
                         {
                             (reviewResponse, selInputTokens, selOutputTokens) = await context.Agents.RunWithUsageAsync(promptTurn2, context.CancellationToken);
+                            (fileGroupCritical, fileGroupMajor, fileGroupMinor) = PromptBuilder.CountSeveritiesFromMarkdown(reviewResponse);
+                            fileGroupSelected = fileGroupCritical + fileGroupMajor + fileGroupMinor;
                         }
                         catch (Exception ex) { selException = ex; throw; }
                         finally
@@ -677,6 +668,11 @@ namespace PRReviewAgent.Services
                                 catch (Exception rex) { logger.LogError(rex, "Failed to complete Selection turn record"); }
                             }
                         }
+
+                        totalCritical += fileGroupCritical;
+                        totalMajor += fileGroupMajor;
+                        totalMinor += fileGroupMinor;
+                        totalSelected += fileGroupSelected;
 
                         if (benchmarkRecorder != null && !string.IsNullOrEmpty(reviewResponse))
                         {

@@ -255,7 +255,7 @@ namespace PRReviewAgent.Services.Statistics
                     {
                         turnStats.Add(new ReviewTurnStatistics
                         {
-                            TurnType = (int)reader.GetInt64(0),
+                            TurnType = (int)Enum.Parse<ReviewTurnType>(reader.GetString(0)),
                             Calls = (int)reader.GetInt64(1),
                             SuccessfulCalls = reader.IsDBNull(2) ? 0 : (int)reader.GetInt64(2),
                             FailedCalls = reader.IsDBNull(3) ? 0 : (int)reader.GetInt64(3),
