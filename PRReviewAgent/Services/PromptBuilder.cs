@@ -236,6 +236,44 @@ namespace PRReviewAgent.Services
             return (cleaned, ids);
         }
 
+        /// <summary>
+        /// Counts Critical, Major, and Minor findings in a Turn 2 markdown response.
+        /// Each finding is counted as one "### " heading beneath the corresponding "## " severity section.
+        /// </summary>
+        public static (int Critical, int Major, int Minor) CountSeveritiesFromMarkdown(string markdown)
+        {
+            if (string.IsNullOrEmpty(markdown))
+                return (0, 0, 0);
+
+            int critical = 0, major = 0, minor = 0;
+            int currentSection = 0; // 1=Critical, 2=Major, 3=Minor, 0=none
+
+            foreach (string rawLine in markdown.Split('\n'))
+            {
+                string line = rawLine.TrimEnd('\r');
+                if (line.StartsWith("## ", StringComparison.Ordinal))
+                {
+                    string heading = line.Substring(3).Trim();
+                    if (string.Equals(heading, "Critical", StringComparison.OrdinalIgnoreCase))
+                        currentSection = 1;
+                    else if (string.Equals(heading, "Major", StringComparison.OrdinalIgnoreCase))
+                        currentSection = 2;
+                    else if (string.Equals(heading, "Minor", StringComparison.OrdinalIgnoreCase))
+                        currentSection = 3;
+                    else
+                        currentSection = 0;
+                }
+                else if (line.StartsWith("### ", StringComparison.Ordinal))
+                {
+                    if (currentSection == 1) critical++;
+                    else if (currentSection == 2) major++;
+                    else if (currentSection == 3) minor++;
+                }
+            }
+
+            return (critical, major, minor);
+        }
+
         public static void AddNotFound(FileGroup fileGroup, List<string> reviews, string language, StringBuilder stringBuilder)
         {
             string? template = Context.Instance.Settings.GetNoProblemTemplate(language);
